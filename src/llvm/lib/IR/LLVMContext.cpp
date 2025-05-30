@@ -20,6 +20,8 @@
 #include "llvm/IR/DiagnosticInfo.h"
 #include "llvm/IR/DiagnosticPrinter.h"
 #include "llvm/IR/LLVMRemarkStreamer.h"
+#include "llvm/IR/Metadata.h"
+#include "llvm/IR/Module.h"
 #include "llvm/Remarks/RemarkStreamer.h"
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/ErrorHandling.h"
@@ -77,21 +79,16 @@ LLVMContext::LLVMContext() : pImpl(new LLVMContextImpl(*this)) {
          "gc-transition operand bundle id drifted!");
   (void)GCLiveEntry;
 
-  auto *ClangAttachedCall =
-      pImpl->getOrInsertBundleTag("clang.arc.attachedcall");
-  assert(ClangAttachedCall->second == LLVMContext::OB_clang_arc_attachedcall &&
-         "clang.arc.attachedcall operand bundle id drifted!");
-  (void)ClangAttachedCall;
-
   auto *PtrauthEntry = pImpl->getOrInsertBundleTag("ptrauth");
   assert(PtrauthEntry->second == LLVMContext::OB_ptrauth &&
          "ptrauth operand bundle id drifted!");
   (void)PtrauthEntry;
 
-  auto *KCFIEntry = pImpl->getOrInsertBundleTag("kcfi");
-  assert(KCFIEntry->second == LLVMContext::OB_kcfi &&
-         "kcfi operand bundle id drifted!");
-  (void)KCFIEntry;
+  auto *ClangAttachedCall =
+      pImpl->getOrInsertBundleTag("clang.arc.attachedcall");
+  assert(ClangAttachedCall->second == LLVMContext::OB_clang_arc_attachedcall &&
+         "clang.arc.attachedcall operand bundle id drifted!");
+  (void)ClangAttachedCall;
 
   SyncScope::ID SingleThreadSSID =
       pImpl->getOrInsertSyncScopeID("singlethread");
@@ -144,25 +141,13 @@ bool LLVMContext::getDiagnosticsHotnessRequested() const {
 void LLVMContext::setDiagnosticsHotnessThreshold(Optional<uint64_t> Threshold) {
   pImpl->DiagnosticsHotnessThreshold = Threshold;
 }
-void LLVMContext::setMisExpectWarningRequested(bool Requested) {
-  pImpl->MisExpectWarningRequested = Requested;
-}
-bool LLVMContext::getMisExpectWarningRequested() const {
-  return pImpl->MisExpectWarningRequested;
-}
+
 uint64_t LLVMContext::getDiagnosticsHotnessThreshold() const {
-  return pImpl->DiagnosticsHotnessThreshold.value_or(UINT64_MAX);
-}
-void LLVMContext::setDiagnosticsMisExpectTolerance(
-    Optional<uint32_t> Tolerance) {
-  pImpl->DiagnosticsMisExpectTolerance = Tolerance;
-}
-uint32_t LLVMContext::getDiagnosticsMisExpectTolerance() const {
-  return pImpl->DiagnosticsMisExpectTolerance.value_or(0);
+  return pImpl->DiagnosticsHotnessThreshold.getValueOr(UINT64_MAX);
 }
 
 bool LLVMContext::isDiagnosticsHotnessThresholdSetFromPSI() const {
-  return !pImpl->DiagnosticsHotnessThreshold.has_value();
+  return !pImpl->DiagnosticsHotnessThreshold.hasValue();
 }
 
 remarks::RemarkStreamer *LLVMContext::getMainRemarkStreamer() {
@@ -369,14 +354,6 @@ std::unique_ptr<DiagnosticHandler> LLVMContext::getDiagnosticHandler() {
   return std::move(pImpl->DiagHandler);
 }
 
-bool LLVMContext::hasSetOpaquePointersValue() const {
-  return pImpl->hasOpaquePointersValue();
-}
-
-void LLVMContext::setOpaquePointers(bool Enable) const {
-  pImpl->setOpaquePointers(Enable);
-}
-
 bool LLVMContext::supportsTypedPointers() const {
-  return !pImpl->getOpaquePointers();
+  return !pImpl->ForceOpaquePointers;
 }

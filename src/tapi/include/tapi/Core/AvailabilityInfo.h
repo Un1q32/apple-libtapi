@@ -15,10 +15,10 @@
 #define TAPI_CORE_AVAILABILITY_INFO_H
 
 #include "tapi/Core/LLVM.h"
+#include "tapi/Core/PackedVersion.h"
 #include "tapi/Defines.h"
 #include "llvm/ADT/StringSwitch.h"
 #include "llvm/Support/Error.h"
-#include "llvm/TextAPI/PackedVersion.h"
 
 TAPI_NAMESPACE_INTERNAL_BEGIN
 
@@ -27,6 +27,7 @@ struct AvailabilityInfo {
   PackedVersion _deprecated{0};
   PackedVersion _obsoleted{0};
   bool _unavailable{false};
+  bool _unconditionallyDeprecated{false};
   bool _isSPIAvailable{false};
 
   constexpr AvailabilityInfo(bool unavailable = false)
@@ -35,7 +36,7 @@ struct AvailabilityInfo {
   constexpr AvailabilityInfo(PackedVersion i, PackedVersion d, PackedVersion o,
                              bool u, bool ud, bool isSPI = false)
       : _introduced(i), _deprecated(d), _obsoleted(o), _unavailable(u),
-        _isSPIAvailable(isSPI) {}
+        _unconditionallyDeprecated(ud), _isSPIAvailable(isSPI) {}
 
   bool isDefault() const { return *this == AvailabilityInfo(); }
 
@@ -56,10 +57,11 @@ struct AvailabilityInfo {
   std::string str() const;
 
   bool isUnavailable() const { return _unavailable; }
+  bool isUnconditionallyDeprecated() const {
+    return _unconditionallyDeprecated;
+  }
 
   bool isSPIAvailable() const { return _isSPIAvailable; }
-
-  bool isObsolete() const { return !_obsoleted.empty(); }
 
   void print(raw_ostream &os) const;
 
@@ -74,9 +76,11 @@ struct AvailabilityInfo {
 inline bool operator==(const AvailabilityInfo &lhs,
                        const AvailabilityInfo &rhs) {
   return std::tie(lhs._introduced, lhs._deprecated, lhs._obsoleted,
-                  lhs._unavailable, lhs._isSPIAvailable) ==
+                  lhs._unavailable, lhs._unconditionallyDeprecated,
+                  lhs._isSPIAvailable) ==
          std::tie(rhs._introduced, rhs._deprecated, rhs._obsoleted,
-                  rhs._unavailable, rhs._isSPIAvailable);
+                  rhs._unavailable, rhs._unconditionallyDeprecated,
+                  rhs._isSPIAvailable);
 }
 
 inline bool operator!=(const AvailabilityInfo &lhs,
@@ -87,9 +91,11 @@ inline bool operator!=(const AvailabilityInfo &lhs,
 inline bool operator<(const AvailabilityInfo &lhs,
                       const AvailabilityInfo &rhs) {
   return std::tie(lhs._introduced, lhs._deprecated, lhs._obsoleted,
-                  lhs._unavailable, lhs._isSPIAvailable) <
+                  lhs._unavailable, lhs._unconditionallyDeprecated,
+                  lhs._isSPIAvailable) <
          std::tie(rhs._introduced, rhs._deprecated, rhs._obsoleted,
-                  rhs._unavailable, rhs._isSPIAvailable);
+                  rhs._unavailable, rhs._unconditionallyDeprecated,
+                  rhs._isSPIAvailable);
 }
 
 inline raw_ostream &operator<<(raw_ostream &os, const AvailabilityInfo &avail) {

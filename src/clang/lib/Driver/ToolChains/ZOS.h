@@ -23,14 +23,10 @@ public:
   ~ZOS() override;
 
   bool isPICDefault() const override { return false; }
-  bool isPIEDefault(const llvm::opt::ArgList &Args) const override {
-    return false;
-  }
+  bool isPIEDefault() const override { return false; }
   bool isPICDefaultForced() const override { return false; }
 
   bool IsIntegratedAssemblerDefault() const override { return true; }
-
-  unsigned GetDefaultDwarfVersion() const override { return 4; }
 
   void addClangTargetOptions(
       const llvm::opt::ArgList &DriverArgs, llvm::opt::ArgStringList &CC1Args,

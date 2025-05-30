@@ -36,8 +36,8 @@ TEST(FileListReader, version1) {
   public:
     std::map<std::string, HeaderType> headers;
 
-    void visitHeaderFile(FileListReader::HeaderInfo &header) override {
-      headers[header.path] = header.type;
+    void visitHeaderFile(HeaderType type, StringRef path) override {
+      headers[path.str()] = type;
     }
   };
 
@@ -106,8 +106,8 @@ TEST(FileListReader, version2) {
   public:
     std::map<std::string, HeaderType> headers;
 
-    void visitHeaderFile(FileListReader::HeaderInfo &header) override {
-      headers[header.path] = header.type;
+    void visitHeaderFile(HeaderType type, StringRef path) override {
+      headers[path.str()] = type;
     }
   };
 

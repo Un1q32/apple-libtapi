@@ -99,11 +99,7 @@ IdentifierResolver::~IdentifierResolver() {
 bool IdentifierResolver::isDeclInScope(Decl *D, DeclContext *Ctx, Scope *S,
                                        bool AllowInlineNamespace) const {
   Ctx = Ctx->getRedeclContext();
-  // The names for HLSL cbuffer/tbuffers only used by the CPU-side
-  // reflection API which supports querying bindings. It will not have name
-  // conflict with other Decls.
-  if (LangOpt.HLSL && isa<HLSLBufferDecl>(D))
-    return false;
+
   if (Ctx->isFunctionOrMethod() || (S && S->isFunctionPrototypeScope())) {
     // Ignore the scopes associated within transparent declaration contexts.
     while (S->getEntity() && S->getEntity()->isTransparentContext())
@@ -125,14 +121,12 @@ bool IdentifierResolver::isDeclInScope(Decl *D, DeclContext *Ctx, Scope *S,
       // of the controlled statement.
       //
       assert(S->getParent() && "No TUScope?");
-      // If the current decl is in a lambda, we shouldn't consider this is a
-      // redefinition as lambda has its own scope.
-      if (S->getParent()->isControlScope() && !S->isFunctionScope()) {
+      if (S->getParent()->getFlags() & Scope::ControlScope) {
         S = S->getParent();
         if (S->isDeclScope(D))
           return true;
       }
-      if (S->isFnTryCatchScope())
+      if (S->getFlags() & Scope::FnTryCatchScope)
         return S->getParent()->isDeclScope(D);
     }
     return false;
@@ -295,7 +289,7 @@ static DeclMatchKind compareDeclarations(NamedDecl *Existing, NamedDecl *New) {
 
     // If the existing declaration is somewhere in the previous declaration
     // chain of the new declaration, then prefer the new declaration.
-    for (auto *RD : New->redecls()) {
+    for (auto RD : New->redecls()) {
       if (RD == Existing)
         return DMK_Replace;
 

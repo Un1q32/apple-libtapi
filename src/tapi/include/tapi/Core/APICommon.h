@@ -14,9 +14,7 @@
 #ifndef TAPI_CORE_API_COMMON_H
 #define TAPI_CORE_API_COMMON_H
 
-#include "tapi/Core/LLVM.h"
 #include "tapi/Defines.h"
-#include "clang/Basic/SourceLocation.h"
 #include "llvm/ADT/BitmaskEnum.h"
 #include <cstdint>
 
@@ -40,35 +38,14 @@ enum class APILinkage : uint8_t {
   Exported   = 4, // API is exported.
 };
 
-// clang-format on
-
-class APILoc {
-public:
-  APILoc() = default;
-  APILoc(clang::SourceLocation source, clang::PresumedLoc presumed)
-      : sourceLoc(source), presumedLoc(presumed) {}
-  APILoc(std::string file, unsigned line, unsigned col);
-  APILoc(StringRef file, unsigned line, unsigned col);
-
-  bool isInvalid() const;
-  StringRef getFilename() const;
-  unsigned getLine() const;
-  unsigned getColumn() const;
-  clang::PresumedLoc getPresumedLoc() const;
-  clang::SourceLocation getSourceLocation() const;
-
-  bool operator==(const APILoc &other) const {
-    return std::tie(sourceLoc, file, line, col) ==
-           std::tie(other.sourceLoc, other.file, other.line, other.col);
-  }
-
-private:
-  llvm::Optional<clang::SourceLocation> sourceLoc;
-  llvm::Optional<clang::PresumedLoc> presumedLoc;
-  std::string file;
-  unsigned line;
-  unsigned col;
+enum class APIFlags : uint8_t {
+  None             = 0,
+  ThreadLocalValue = 1U << 0,
+  WeakDefined      = 1U << 1,
+  WeakReferenced   = 1U << 2,
+  LLVM_MARK_AS_BITMASK_ENUM(/*LargestValue=*/WeakReferenced)
 };
+// clang-format on
 
 TAPI_NAMESPACE_INTERNAL_END
 

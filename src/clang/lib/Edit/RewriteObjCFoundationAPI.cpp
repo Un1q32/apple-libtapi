@@ -704,7 +704,7 @@ static bool getLiteralInfo(SourceRange literalRange,
     }
   };
 
-  while (true) {
+  while (1) {
     if (Suff::has("u", text)) {
       UpperU = false;
     } else if (Suff::has("U", text)) {
@@ -725,11 +725,11 @@ static bool getLiteralInfo(SourceRange literalRange,
       break;
   }
 
-  if (!UpperU && !UpperL)
+  if (!UpperU.hasValue() && !UpperL.hasValue())
     UpperU = UpperL = true;
-  else if (UpperU && !UpperL)
+  else if (UpperU.hasValue() && !UpperL.hasValue())
     UpperL = UpperU;
-  else if (UpperL && !UpperU)
+  else if (UpperL.hasValue() && !UpperU.hasValue())
     UpperU = UpperL;
 
   Info.U = *UpperU ? "U" : "u";
@@ -796,28 +796,28 @@ static bool rewriteToNumberLiteral(const ObjCMessageExpr *Msg,
   case NSAPI::NSNumberWithUnsignedInt:
   case NSAPI::NSNumberWithUnsignedInteger:
     CallIsUnsigned = true;
-    [[fallthrough]];
+    LLVM_FALLTHROUGH;
   case NSAPI::NSNumberWithInt:
   case NSAPI::NSNumberWithInteger:
     break;
 
   case NSAPI::NSNumberWithUnsignedLong:
     CallIsUnsigned = true;
-    [[fallthrough]];
+    LLVM_FALLTHROUGH;
   case NSAPI::NSNumberWithLong:
     CallIsLong = true;
     break;
 
   case NSAPI::NSNumberWithUnsignedLongLong:
     CallIsUnsigned = true;
-    [[fallthrough]];
+    LLVM_FALLTHROUGH;
   case NSAPI::NSNumberWithLongLong:
     CallIsLongLong = true;
     break;
 
   case NSAPI::NSNumberWithDouble:
     CallIsDouble = true;
-    [[fallthrough]];
+    LLVM_FALLTHROUGH;
   case NSAPI::NSNumberWithFloat:
     CallIsFloating = true;
     break;

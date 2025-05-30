@@ -27,6 +27,7 @@ class MCSymbolWasm : public MCSymbol {
   wasm::WasmSignature *Signature = nullptr;
   Optional<wasm::WasmGlobalType> GlobalType;
   Optional<wasm::WasmTableType> TableType;
+  Optional<wasm::WasmTagType> TagType;
 
   /// An expression describing how to calculate the size of a symbol. If a
   /// symbol has no size this field will be NULL.
@@ -66,11 +67,6 @@ public:
     modifyFlags(wasm::WASM_SYMBOL_NO_STRIP, wasm::WASM_SYMBOL_NO_STRIP);
   }
 
-  bool isTLS() const { return getFlags() & wasm::WASM_SYMBOL_TLS; }
-  void setTLS() const {
-    modifyFlags(wasm::WASM_SYMBOL_TLS, wasm::WASM_SYMBOL_TLS);
-  }
-
   bool isWeak() const { return IsWeak; }
   void setWeak(bool isWeak) { IsWeak = isWeak; }
 
@@ -86,10 +82,10 @@ public:
   bool omitFromLinkingSection() const { return OmitFromLinkingSection; }
   void setOmitFromLinkingSection() { OmitFromLinkingSection = true; }
 
-  bool hasImportModule() const { return ImportModule.has_value(); }
+  bool hasImportModule() const { return ImportModule.hasValue(); }
   StringRef getImportModule() const {
-    if (ImportModule)
-      return ImportModule.value();
+    if (ImportModule.hasValue())
+      return ImportModule.getValue();
     // Use a default module name of "env" for now, for compatibility with
     // existing tools.
     // TODO(sbc): Find a way to specify a default value in the object format
@@ -98,16 +94,16 @@ public:
   }
   void setImportModule(StringRef Name) { ImportModule = Name; }
 
-  bool hasImportName() const { return ImportName.has_value(); }
+  bool hasImportName() const { return ImportName.hasValue(); }
   StringRef getImportName() const {
-    if (ImportName)
-      return ImportName.value();
+    if (ImportName.hasValue())
+      return ImportName.getValue();
     return getName();
   }
   void setImportName(StringRef Name) { ImportName = Name; }
 
-  bool hasExportName() const { return ExportName.has_value(); }
-  StringRef getExportName() const { return ExportName.value(); }
+  bool hasExportName() const { return ExportName.hasValue(); }
+  StringRef getExportName() const { return ExportName.getValue(); }
   void setExportName(StringRef Name) { ExportName = Name; }
 
   bool isFunctionTable() const {
@@ -129,15 +125,15 @@ public:
   void setSignature(wasm::WasmSignature *Sig) { Signature = Sig; }
 
   const wasm::WasmGlobalType &getGlobalType() const {
-    assert(GlobalType);
-    return GlobalType.value();
+    assert(GlobalType.hasValue());
+    return GlobalType.getValue();
   }
   void setGlobalType(wasm::WasmGlobalType GT) { GlobalType = GT; }
 
-  bool hasTableType() const { return TableType.has_value(); }
+  bool hasTableType() const { return TableType.hasValue(); }
   const wasm::WasmTableType &getTableType() const {
     assert(hasTableType());
-    return TableType.value();
+    return TableType.getValue();
   }
   void setTableType(wasm::WasmTableType TT) { TableType = TT; }
   void setTableType(wasm::ValType VT) {
@@ -146,6 +142,12 @@ public:
     wasm::WasmLimits Limits = {wasm::WASM_LIMITS_FLAG_NONE, 0, 0};
     setTableType({uint8_t(VT), Limits});
   }
+
+  const wasm::WasmTagType &getTagType() const {
+    assert(TagType.hasValue());
+    return TagType.getValue();
+  }
+  void setTagType(wasm::WasmTagType ET) { TagType = ET; }
 };
 
 } // end namespace llvm

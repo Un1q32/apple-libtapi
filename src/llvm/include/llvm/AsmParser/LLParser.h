@@ -10,29 +10,22 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef LLVM_ASMPARSER_LLPARSER_H
-#define LLVM_ASMPARSER_LLPARSER_H
+#ifndef LLVM_LIB_ASMPARSER_LLPARSER_H
+#define LLVM_LIB_ASMPARSER_LLPARSER_H
 
 #include "LLLexer.h"
+#include "llvm/ADT/Optional.h"
 #include "llvm/ADT/StringMap.h"
 #include "llvm/AsmParser/Parser.h"
 #include "llvm/IR/Attributes.h"
-#include "llvm/IR/FMF.h"
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/ModuleSummaryIndex.h"
+#include "llvm/IR/Operator.h"
+#include "llvm/IR/Type.h"
 #include <map>
 
 namespace llvm {
   class Module;
-  class ConstantRange;
-  class FunctionType;
-  class GlobalObject;
-  class SMDiagnostic;
-  class SMLoc;
-  class SourceMgr;
-  class Type;
-  struct MaybeAlign;
-  template <typename T> class Optional;
   class Function;
   class Value;
   class BasicBlock;
@@ -69,19 +62,16 @@ namespace llvm {
     APFloat APFloatVal{0.0};
     Constant *ConstantVal;
     std::unique_ptr<Constant *[]> ConstantStructElts;
-    bool NoCFI = false;
 
     ValID() = default;
     ValID(const ValID &RHS)
         : Kind(RHS.Kind), Loc(RHS.Loc), UIntVal(RHS.UIntVal), FTy(RHS.FTy),
           StrVal(RHS.StrVal), StrVal2(RHS.StrVal2), APSIntVal(RHS.APSIntVal),
-          APFloatVal(RHS.APFloatVal), ConstantVal(RHS.ConstantVal),
-          NoCFI(RHS.NoCFI) {
+          APFloatVal(RHS.APFloatVal), ConstantVal(RHS.ConstantVal) {
       assert(!RHS.ConstantStructElts);
     }
 
     bool operator<(const ValID &RHS) const {
-      assert(Kind == RHS.Kind && "Comparing ValIDs of different kinds");
       if (Kind == t_LocalID || Kind == t_GlobalID)
         return UIntVal < RHS.UIntVal;
       assert((Kind == t_LocalName || Kind == t_GlobalName ||
@@ -96,8 +86,6 @@ namespace llvm {
     typedef LLLexer::LocTy LocTy;
   private:
     LLVMContext &Context;
-    // Lexer to determine whether to use opaque pointers or not.
-    LLLexer OPLex;
     LLLexer Lex;
     // Module being parsed, null if we are only parsing summary index.
     Module *M;
@@ -132,14 +120,6 @@ namespace llvm {
     /// function.
     PerFunctionState *BlockAddressPFS;
 
-    // References to dso_local_equivalent. The key is the global's ValID, the
-    // value is a placeholder value that will be replaced. Note there are two
-    // maps for tracking ValIDs that are GlobalNames and ValIDs that are
-    // GlobalIDs. These are needed because "operator<" doesn't discriminate
-    // between the two.
-    std::map<ValID, GlobalValue *> ForwardRefDSOLocalEquivalentNames;
-    std::map<ValID, GlobalValue *> ForwardRefDSOLocalEquivalentIDs;
-
     // Attribute builder reference information.
     std::map<Value*, std::vector<unsigned> > ForwardRefAttrGroups;
     std::map<unsigned, AttrBuilder> NumberedAttrBuilders;
@@ -168,9 +148,8 @@ namespace llvm {
     LLParser(StringRef F, SourceMgr &SM, SMDiagnostic &Err, Module *M,
              ModuleSummaryIndex *Index, LLVMContext &Context,
              SlotMapping *Slots = nullptr)
-        : Context(Context), OPLex(F, SM, Err, Context),
-          Lex(F, SM, Err, Context), M(M), Index(Index), Slots(Slots),
-          BlockAddressPFS(nullptr) {}
+        : Context(Context), Lex(F, SM, Err, Context), M(M), Index(Index),
+          Slots(Slots), BlockAddressPFS(nullptr) {}
     bool Run(
         bool UpgradeDebugInfo, DataLayoutCallbackTy DataLayoutCallback =
                                    [](StringRef) { return None; });
@@ -193,8 +172,9 @@ namespace llvm {
     /// getGlobalVal - Get a value with the specified name or ID, creating a
     /// forward reference record if needed.  This can return null if the value
     /// exists but does not have the right type.
-    GlobalValue *getGlobalVal(const std::string &N, Type *Ty, LocTy Loc);
-    GlobalValue *getGlobalVal(unsigned ID, Type *Ty, LocTy Loc);
+    GlobalValue *getGlobalVal(const std::string &N, Type *Ty, LocTy Loc,
+                              bool IsCall);
+    GlobalValue *getGlobalVal(unsigned ID, Type *Ty, LocTy Loc, bool IsCall);
 
     /// Get a Comdat with the specified name, creating a forward reference
     /// record if needed.
@@ -282,8 +262,6 @@ namespace llvm {
     bool parseOptionalAlignment(MaybeAlign &Alignment,
                                 bool AllowParens = false);
     bool parseOptionalDerefAttrBytes(lltok::Kind AttrKind, uint64_t &Bytes);
-    bool parseOptionalUWTableKind(UWTableKind &Kind);
-    bool parseAllocKind(AllocFnKind &Kind);
     bool parseScopeAndOrdering(bool IsAtomic, SyncScope::ID &SSID,
                                AtomicOrdering &Ordering);
     bool parseScope(SyncScope::ID &SSID);
@@ -292,6 +270,7 @@ namespace llvm {
     bool parseOptionalCommaAlign(MaybeAlign &Alignment, bool &AteExtraComma);
     bool parseOptionalCommaAddrSpace(unsigned &AddrSpace, LocTy &Loc,
                                      bool &AteExtraComma);
+    bool parseOptionalCommaInAlloca(bool &IsInAlloca);
     bool parseAllocSizeArguments(unsigned &BaseSizeArg,
                                  Optional<unsigned> &HowManyArg);
     bool parseVScaleRangeArguments(unsigned &MinValue, unsigned &MaxValue);
@@ -327,10 +306,11 @@ namespace llvm {
                      unsigned DLLStorageClass, bool DSOLocal,
                      GlobalVariable::ThreadLocalMode TLM,
                      GlobalVariable::UnnamedAddr UnnamedAddr);
-    bool parseAliasOrIFunc(const std::string &Name, LocTy NameLoc, unsigned L,
-                           unsigned Visibility, unsigned DLLStorageClass,
-                           bool DSOLocal, GlobalVariable::ThreadLocalMode TLM,
-                           GlobalVariable::UnnamedAddr UnnamedAddr);
+    bool parseIndirectSymbol(const std::string &Name, LocTy NameLoc,
+                             unsigned L, unsigned Visibility,
+                             unsigned DLLStorageClass, bool DSOLocal,
+                             GlobalVariable::ThreadLocalMode TLM,
+                             GlobalVariable::UnnamedAddr UnnamedAddr);
     bool parseComdat();
     bool parseStandaloneMetadata();
     bool parseNamedMetadata();
@@ -444,8 +424,8 @@ namespace llvm {
       /// GetVal - Get a value with the specified name or ID, creating a
       /// forward reference record if needed.  This can return null if the value
       /// exists but does not have the right type.
-      Value *getVal(const std::string &Name, Type *Ty, LocTy Loc);
-      Value *getVal(unsigned ID, Type *Ty, LocTy Loc);
+      Value *getVal(const std::string &Name, Type *Ty, LocTy Loc, bool IsCall);
+      Value *getVal(unsigned ID, Type *Ty, LocTy Loc, bool IsCall);
 
       /// setInstName - After an instruction is parsed and inserted into its
       /// basic block, this installs its name.
@@ -467,10 +447,10 @@ namespace llvm {
     };
 
     bool convertValIDToValue(Type *Ty, ValID &ID, Value *&V,
-                             PerFunctionState *PFS);
+                             PerFunctionState *PFS, bool IsCall);
 
     Value *checkValidVariableType(LocTy Loc, const Twine &Name, Type *Ty,
-                                  Value *Val);
+                                  Value *Val, bool IsCall);
 
     bool parseConstantValue(Type *Ty, Constant *&C);
     bool parseValue(Type *Ty, Value *&V, PerFunctionState *PFS);
@@ -516,10 +496,6 @@ namespace llvm {
     bool parseExceptionArgs(SmallVectorImpl<Value *> &Args,
                             PerFunctionState &PFS);
 
-    bool resolveFunctionType(Type *RetType,
-                             const SmallVector<ParamInfo, 16> &ArgList,
-                             FunctionType *&FuncTy);
-
     // Constant Parsing.
     bool parseValID(ValID &ID, PerFunctionState *PFS,
                     Type *ExpectedTy = nullptr);
@@ -528,7 +504,6 @@ namespace llvm {
     bool parseGlobalValueVector(SmallVectorImpl<Constant *> &Elts,
                                 Optional<unsigned> *InRangeOp = nullptr);
     bool parseOptionalComdat(StringRef GlobalName, Comdat *&C);
-    bool parseSanitizer(GlobalVariable *GV);
     bool parseMetadataAsValue(Value *&V, PerFunctionState &PFS);
     bool parseValueAsMetadata(Metadata *&MD, const Twine &TypeMsg,
                               PerFunctionState *PFS);

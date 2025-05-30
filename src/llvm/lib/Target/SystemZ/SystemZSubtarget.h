@@ -77,39 +77,30 @@ protected:
 
 private:
   Triple TargetTriple;
-  std::unique_ptr<SystemZCallingConventionRegisters> SpecialRegisters;
+  SystemZCallingConventionRegisters *SpecialRegisters;
   SystemZInstrInfo InstrInfo;
   SystemZTargetLowering TLInfo;
   SystemZSelectionDAGInfo TSInfo;
-  std::unique_ptr<const SystemZFrameLowering> FrameLowering;
+  SystemZFrameLowering FrameLowering;
 
   SystemZSubtarget &initializeSubtargetDependencies(StringRef CPU,
-                                                    StringRef TuneCPU,
                                                     StringRef FS);
-  SystemZCallingConventionRegisters *initializeSpecialRegisters();
+  SystemZCallingConventionRegisters *initializeSpecialRegisters(void);
 
 public:
   SystemZSubtarget(const Triple &TT, const std::string &CPU,
-                   const std::string &TuneCPU, const std::string &FS,
-                   const TargetMachine &TM);
+                   const std::string &FS, const TargetMachine &TM);
+
+  ~SystemZSubtarget();
 
   SystemZCallingConventionRegisters *getSpecialRegisters() const {
     assert(SpecialRegisters && "Unsupported SystemZ calling convention");
-    return SpecialRegisters.get();
-  }
-
-  template <class SR> SR &getSpecialRegisters() const {
-    return *static_cast<SR *>(getSpecialRegisters());
+    return SpecialRegisters;
   }
 
   const TargetFrameLowering *getFrameLowering() const override {
-    return FrameLowering.get();
+    return &FrameLowering;
   }
-
-  template <class TFL> const TFL *getFrameLowering() const {
-    return static_cast<const TFL *>(getFrameLowering());
-  }
-
   const SystemZInstrInfo *getInstrInfo() const override { return &InstrInfo; }
   const SystemZRegisterInfo *getRegisterInfo() const override {
     return &InstrInfo.getRegisterInfo();

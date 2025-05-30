@@ -559,6 +559,10 @@ SDKDBBitcodeReader::Implementation::readAPIBlock(BitstreamCursor &cursor,
           return lib.takeError();
         continue;
       }
+      case api_block::DYLIB_VERSION:
+        api.getBinaryInfo().currentVersion = scratch[0];
+        api.getBinaryInfo().compatibilityVersion = scratch[1];
+        continue;
       case api_block::FLAGS:
         api.getBinaryInfo().isTwoLevelNamespace = (bool)scratch[0];
         api.getBinaryInfo().isAppExtensionSafe = (bool)scratch[1];
@@ -642,15 +646,18 @@ SDKDBBitcodeReader::Implementation::readAPIRecordFromScratch() const {
                                    inconvertibleErrorCode());
 
   // Default values for APIRecord.
-  APIRecord record{
-      "",
-      APILoc(),
-      /*Decl=*/nullptr,
-      AvailabilityInfo(),
-      APILinkage::Unknown,
-      SymbolFlags::None,
-      APIAccess::Unknown,
-  };
+  APIRecord record{"",
+                   "",
+                   "",
+                   APILoc(),
+                   /*Decl=*/nullptr,
+                   AvailabilityInfo(),
+                   APILinkage::Unknown,
+                   APIFlags::None,
+                   APIAccess::Unknown,
+                   DocComment(),
+                   DeclarationFragments(),
+                   DeclarationFragments()};
 
   unsigned offset = scratch[0];
   unsigned size = scratch[1];
@@ -661,7 +668,7 @@ SDKDBBitcodeReader::Implementation::readAPIRecordFromScratch() const {
 
   record.access = (APIAccess)scratch[2];
   record.linkage = (APILinkage)scratch[3];
-  record.flags = (SymbolFlags)scratch[4];
+  record.flags = (APIFlags)scratch[4];
   return record;
 }
 
@@ -671,6 +678,8 @@ Error SDKDBBitcodeReader::Implementation::readAvailabilityInfoFromScratch(
     return make_error<StringError>(
         "scratch entry is too small for availability",
         inconvertibleErrorCode());
+  record.availability = {scratch[0],       0,     scratch[1],
+                         (bool)scratch[2], false, (bool)scratch[3]};
 
   return Error::success();
 }
@@ -729,8 +738,10 @@ Error SDKDBBitcodeReader::Implementation::readGlobalBlock(
         if (!apiRecord)
           return apiRecord.takeError();
         record = api.addGlobal(
-            apiRecord->name, apiRecord->flags, apiRecord->loc,
-            apiRecord->availability, apiRecord->access,
+            apiRecord->name, apiRecord->declName, apiRecord->usr,
+            apiRecord->flags, apiRecord->loc, apiRecord->availability,
+            apiRecord->access, apiRecord->docComment,
+            apiRecord->declarationFragments, apiRecord->subHeading, {},
             /*Decl=*/nullptr, (GVKind)scratch[5], apiRecord->linkage);
         continue;
       }
@@ -802,13 +813,13 @@ Error SDKDBBitcodeReader::Implementation::readObjCClassBlock(
         auto superName = readStringFromTable(offset, size);
         if (!superName)
           return superName.takeError();
-        record = api.addObjCInterface(apiRecord->name, apiRecord->loc,
-                                      apiRecord->availability,
-                                      apiRecord->access, apiRecord->linkage,
-                                      *superName, /*Decl=*/nullptr);
-        // Old format might not have the exception attribute.
-        record->hasExceptionAttribute =
-            scratch.size() < 8 ? false : (bool)scratch[7];
+        SymbolInfo super(*superName);
+        record = api.addObjCInterface(
+            apiRecord->name, StringRef{}, apiRecord->usr, apiRecord->loc,
+            apiRecord->availability, apiRecord->access, apiRecord->linkage,
+            super, apiRecord->docComment, apiRecord->declarationFragments,
+            apiRecord->subHeading,
+            /*Decl=*/nullptr);
         continue;
       }
       case objc_class_block::AVAILABILITY: {
@@ -829,7 +840,7 @@ Error SDKDBBitcodeReader::Implementation::readObjCClassBlock(
       case objc_class_block::PROTOCOL: {
         if (auto protocol = readStringFromTable(scratch[0], scratch[1])) {
           auto str = api.copyString(*protocol);
-          record->protocols.emplace_back(str);
+          record->protocols.emplace_back(str, StringRef{});
         } else
           return protocol.takeError();
         continue;
@@ -908,10 +919,12 @@ Error SDKDBBitcodeReader::Implementation::readObjCCategoryBlock(
         auto interfaceName = readStringFromTable(offset, size);
         if (!interfaceName)
           return interfaceName.takeError();
-        record =
-            api.addObjCCategory(*interfaceName, apiRecord->name, apiRecord->loc,
-                                apiRecord->availability, apiRecord->access,
-                                /*Decl=*/nullptr);
+        SymbolInfo interface(*interfaceName);
+        record = api.addObjCCategory(
+            interface, apiRecord->name, apiRecord->usr, apiRecord->loc,
+            apiRecord->availability, apiRecord->access, apiRecord->docComment,
+            apiRecord->declarationFragments, apiRecord->subHeading,
+            /*Decl=*/nullptr);
         continue;
       }
       case objc_category_block::AVAILABILITY: {
@@ -932,7 +945,7 @@ Error SDKDBBitcodeReader::Implementation::readObjCCategoryBlock(
       case objc_category_block::PROTOCOL: {
         if (auto protocol = readStringFromTable(scratch[0], scratch[1])) {
           auto str = api.copyString(*protocol);
-          record->protocols.emplace_back(str);
+          record->protocols.emplace_back(str, StringRef{});
         } else
           return protocol.takeError();
         continue;
@@ -1006,9 +1019,11 @@ Error SDKDBBitcodeReader::Implementation::readObjCProtocolBlock(
         auto apiRecord = readAPIRecordFromScratch();
         if (!apiRecord)
           return apiRecord.takeError();
-        record = api.addObjCProtocol(apiRecord->name, apiRecord->loc,
-                                     apiRecord->availability, apiRecord->access,
-                                     /*Decl=*/nullptr);
+        record = api.addObjCProtocol(
+            apiRecord->name, apiRecord->usr, apiRecord->loc,
+            apiRecord->availability, apiRecord->access, apiRecord->docComment,
+            apiRecord->declarationFragments, apiRecord->subHeading,
+            /*Decl=*/nullptr);
         continue;
       }
       case objc_protocol_block::AVAILABILITY: {
@@ -1029,7 +1044,7 @@ Error SDKDBBitcodeReader::Implementation::readObjCProtocolBlock(
       case objc_protocol_block::PROTOCOL: {
         if (auto protocol = readStringFromTable(scratch[0], scratch[1])) {
           auto str = api.copyString(*protocol);
-          record->protocols.emplace_back(str);
+          record->protocols.emplace_back(str, StringRef{});
         } else
           return protocol.takeError();
         continue;
@@ -1102,11 +1117,13 @@ Error SDKDBBitcodeReader::Implementation::readObjCMethodBlock(
         auto apiRecord = readAPIRecordFromScratch();
         if (!apiRecord)
           return apiRecord.takeError();
-        record = api.addObjCMethod(&container, apiRecord->name, apiRecord->loc,
-                                   apiRecord->availability, apiRecord->access,
-                                   (bool)scratch[5], (bool)scratch[6],
-                                   (bool)scratch[7],
-                                   /*Decl=*/nullptr);
+        record = api.addObjCMethod(
+            &container, apiRecord->name, apiRecord->usr, apiRecord->loc,
+            apiRecord->availability, apiRecord->access, (bool)scratch[5],
+            (bool)scratch[6], (bool)scratch[7], apiRecord->docComment,
+            apiRecord->declarationFragments, apiRecord->subHeading,
+            /* signature */ {},
+            /*Decl=*/nullptr);
         continue;
       }
       case objc_method_block::AVAILABILITY: {
@@ -1179,9 +1196,11 @@ Error SDKDBBitcodeReader::Implementation::readObjCPropertyBlock(
         if (!setter)
           return setter.takeError();
         record = api.addObjCProperty(
-            &container, apiRecord->name, *getter, *setter, apiRecord->loc,
-            apiRecord->availability, apiRecord->access,
+            &container, apiRecord->name, apiRecord->usr, *getter, *setter,
+            apiRecord->loc, apiRecord->availability, apiRecord->access,
             (ObjCPropertyRecord::AttributeKind)scratch[5], (bool)scratch[6],
+            apiRecord->docComment, apiRecord->declarationFragments,
+            apiRecord->subHeading,
             /*Decl=*/nullptr);
         continue;
       }
@@ -1247,16 +1266,13 @@ Error SDKDBBitcodeReader::Implementation::readObjCInstanceVarBlock(
         auto apiRecord = readAPIRecordFromScratch();
         if (!apiRecord)
           return apiRecord.takeError();
-        // Do not emit an error, because old SDKDB formats are broken and don't
-        // have all required fields. Use an default for AccessControl instead.
-        ObjCInstanceVariableRecord::AccessControl control =
-            scratch.size() < 6
-                ? ObjCInstanceVariableRecord::AccessControl::None
-                : (ObjCInstanceVariableRecord::AccessControl)scratch[5];
         record = api.addObjCInstanceVariable(
-            &container, apiRecord->name, apiRecord->loc,
-            apiRecord->availability, apiRecord->access, control,
-            apiRecord->linkage, /*Decl=*/nullptr);
+            &container, apiRecord->name, apiRecord->usr, apiRecord->loc,
+            apiRecord->availability, apiRecord->access,
+            (ObjCInstanceVariableRecord::AccessControl)scratch[5],
+            apiRecord->linkage, apiRecord->docComment,
+            apiRecord->declarationFragments, apiRecord->subHeading,
+            /*Decl=*/nullptr);
         continue;
       }
       case objc_ivar_block::AVAILABILITY: {
@@ -1324,9 +1340,11 @@ Error SDKDBBitcodeReader::Implementation::readEnumBlock(BitstreamCursor &cursor,
         unsigned offset = scratch[5];
         unsigned size = scratch[6];
         if (auto usrStr = readStringFromTable(offset, size))
-          record = api.addEnum(apiRecord->name, *usrStr, apiRecord->loc,
-                               apiRecord->availability, apiRecord->access,
-                               /*Decl=*/nullptr);
+          record = api.addEnum(
+              apiRecord->name, apiRecord->declName, *usrStr, apiRecord->loc,
+              apiRecord->availability, apiRecord->access, apiRecord->docComment,
+              apiRecord->declarationFragments, apiRecord->subHeading,
+              /*Decl=*/nullptr);
         else
           return usrStr.takeError();
 
@@ -1406,9 +1424,12 @@ Error SDKDBBitcodeReader::Implementation::readEnumConstantBlock(
         auto apiRecord = readAPIRecordFromScratch();
         if (!apiRecord)
           return apiRecord.takeError();
-        record = api.addEnumConstant(parent, apiRecord->name, apiRecord->loc,
-                                     apiRecord->availability, apiRecord->access,
-                                     /*Decl=*/nullptr);
+        record = api.addEnumConstant(
+            parent, apiRecord->name, apiRecord->declName, apiRecord->usr,
+            apiRecord->loc, apiRecord->availability, apiRecord->access,
+            apiRecord->docComment, apiRecord->declarationFragments,
+            apiRecord->subHeading,
+            /*Decl=*/nullptr);
         continue;
       }
       case enum_constant_block::AVAILABILITY: {
@@ -1473,8 +1494,11 @@ Error SDKDBBitcodeReader::Implementation::readTypedefBlock(
         auto apiRecord = readAPIRecordFromScratch();
         if (!apiRecord)
           return apiRecord.takeError();
-        record = api.addTypeDef(apiRecord->name, apiRecord->loc,
+        record = api.addTypeDef(apiRecord->name, apiRecord->usr, apiRecord->loc,
                                 apiRecord->availability, apiRecord->access,
+                                StringRef{}, apiRecord->docComment,
+                                apiRecord->declarationFragments,
+                                apiRecord->subHeading,
                                 /*Decl=*/nullptr);
         continue;
       }

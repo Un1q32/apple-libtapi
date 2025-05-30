@@ -22,7 +22,6 @@
 #include "llvm/Analysis/DependenceAnalysis.h"
 #include "llvm/Analysis/LoopAnalysisManager.h"
 #include "llvm/Analysis/LoopInfo.h"
-#include "llvm/Analysis/LoopNestAnalysis.h"
 #include "llvm/Analysis/LoopPass.h"
 #include "llvm/Analysis/OptimizationRemarkEmitter.h"
 #include "llvm/Analysis/ScalarEvolution.h"
@@ -43,8 +42,10 @@
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Transforms/Scalar.h"
-#include "llvm/Transforms/Scalar/LoopPassManager.h"
+#include "llvm/Transforms/Utils.h"
+#include "llvm/Transforms/Utils/LCSSA.h"
 #include "llvm/Transforms/Utils/LoopPeel.h"
+#include "llvm/Transforms/Utils/LoopSimplify.h"
 #include "llvm/Transforms/Utils/LoopUtils.h"
 #include "llvm/Transforms/Utils/UnrollLoop.h"
 #include <cassert>
@@ -156,7 +157,7 @@ getUnrollAndJammedLoopSize(unsigned LoopSize,
 // unroll count was set explicitly.
 static bool computeUnrollAndJamCount(
     Loop *L, Loop *SubLoop, const TargetTransformInfo &TTI, DominatorTree &DT,
-    LoopInfo *LI, AssumptionCache *AC, ScalarEvolution &SE,
+    LoopInfo *LI, ScalarEvolution &SE,
     const SmallPtrSetImpl<const Value *> &EphValues,
     OptimizationRemarkEmitter *ORE, unsigned OuterTripCount,
     unsigned OuterTripMultiple, unsigned OuterLoopSize, unsigned InnerTripCount,
@@ -170,7 +171,7 @@ static bool computeUnrollAndJamCount(
   unsigned MaxTripCount = 0;
   bool UseUpperBound = false;
   bool ExplicitUnroll = computeUnrollCount(
-    L, TTI, DT, LI, AC, SE, EphValues, ORE, OuterTripCount, MaxTripCount,
+      L, TTI, DT, LI, SE, EphValues, ORE, OuterTripCount, MaxTripCount,
       /*MaxOrZero*/ false, OuterTripMultiple, OuterLoopSize, UP, PP,
       UseUpperBound);
   if (ExplicitUnroll || UseUpperBound) {
@@ -285,8 +286,8 @@ tryToUnrollAndJamLoop(Loop *L, DominatorTree &DT, LoopInfo *LI,
                       AssumptionCache &AC, DependenceInfo &DI,
                       OptimizationRemarkEmitter &ORE, int OptLevel) {
   TargetTransformInfo::UnrollingPreferences UP =
-      gatherUnrollingPreferences(L, SE, TTI, nullptr, nullptr, ORE, OptLevel,
-                                 None, None, None, None, None, None);
+      gatherUnrollingPreferences(L, SE, TTI, nullptr, nullptr, OptLevel, None,
+                                 None, None, None, None, None);
   TargetTransformInfo::PeelingPreferences PP =
       gatherPeelingPreferences(L, SE, TTI, None, None);
 
@@ -330,23 +331,14 @@ tryToUnrollAndJamLoop(Loop *L, DominatorTree &DT, LoopInfo *LI,
   SmallPtrSet<const Value *, 32> EphValues;
   CodeMetrics::collectEphemeralValues(L, &AC, EphValues);
   Loop *SubLoop = L->getSubLoops()[0];
-  InstructionCost InnerLoopSizeIC =
+  unsigned InnerLoopSize =
       ApproximateLoopSize(SubLoop, NumInlineCandidates, NotDuplicatable,
                           Convergent, TTI, EphValues, UP.BEInsns);
-  InstructionCost OuterLoopSizeIC =
+  unsigned OuterLoopSize =
       ApproximateLoopSize(L, NumInlineCandidates, NotDuplicatable, Convergent,
                           TTI, EphValues, UP.BEInsns);
-  LLVM_DEBUG(dbgs() << "  Outer Loop Size: " << OuterLoopSizeIC << "\n");
-  LLVM_DEBUG(dbgs() << "  Inner Loop Size: " << InnerLoopSizeIC << "\n");
-
-  if (!InnerLoopSizeIC.isValid() || !OuterLoopSizeIC.isValid()) {
-    LLVM_DEBUG(dbgs() << "  Not unrolling loop which contains instructions"
-                      << " with invalid cost.\n");
-    return LoopUnrollResult::Unmodified;
-  }
-  unsigned InnerLoopSize = *InnerLoopSizeIC.getValue();
-  unsigned OuterLoopSize = *OuterLoopSizeIC.getValue();
-
+  LLVM_DEBUG(dbgs() << "  Outer Loop Size: " << OuterLoopSize << "\n");
+  LLVM_DEBUG(dbgs() << "  Inner Loop Size: " << InnerLoopSize << "\n");
   if (NotDuplicatable) {
     LLVM_DEBUG(dbgs() << "  Not unrolling loop which contains non-duplicatable "
                          "instructions.\n");
@@ -372,8 +364,8 @@ tryToUnrollAndJamLoop(Loop *L, DominatorTree &DT, LoopInfo *LI,
   Optional<MDNode *> NewInnerEpilogueLoopID = makeFollowupLoopID(
       OrigOuterLoopID, {LLVMLoopUnrollAndJamFollowupAll,
                         LLVMLoopUnrollAndJamFollowupRemainderInner});
-  if (NewInnerEpilogueLoopID)
-    SubLoop->setLoopID(NewInnerEpilogueLoopID.value());
+  if (NewInnerEpilogueLoopID.hasValue())
+    SubLoop->setLoopID(NewInnerEpilogueLoopID.getValue());
 
   // Find trip count and trip multiple
   BasicBlock *Latch = L->getLoopLatch();
@@ -384,7 +376,7 @@ tryToUnrollAndJamLoop(Loop *L, DominatorTree &DT, LoopInfo *LI,
 
   // Decide if, and by how much, to unroll
   bool IsCountSetExplicitly = computeUnrollAndJamCount(
-    L, SubLoop, TTI, DT, LI, &AC, SE, EphValues, &ORE, OuterTripCount,
+      L, SubLoop, TTI, DT, LI, SE, EphValues, &ORE, OuterTripCount,
       OuterTripMultiple, OuterLoopSize, InnerTripCount, InnerLoopSize, UP, PP);
   if (UP.Count <= 1)
     return LoopUnrollResult::Unmodified;
@@ -402,15 +394,15 @@ tryToUnrollAndJamLoop(Loop *L, DominatorTree &DT, LoopInfo *LI,
     Optional<MDNode *> NewOuterEpilogueLoopID = makeFollowupLoopID(
         OrigOuterLoopID, {LLVMLoopUnrollAndJamFollowupAll,
                           LLVMLoopUnrollAndJamFollowupRemainderOuter});
-    if (NewOuterEpilogueLoopID)
-      EpilogueOuterLoop->setLoopID(NewOuterEpilogueLoopID.value());
+    if (NewOuterEpilogueLoopID.hasValue())
+      EpilogueOuterLoop->setLoopID(NewOuterEpilogueLoopID.getValue());
   }
 
   Optional<MDNode *> NewInnerLoopID =
       makeFollowupLoopID(OrigOuterLoopID, {LLVMLoopUnrollAndJamFollowupAll,
                                            LLVMLoopUnrollAndJamFollowupInner});
-  if (NewInnerLoopID)
-    SubLoop->setLoopID(NewInnerLoopID.value());
+  if (NewInnerLoopID.hasValue())
+    SubLoop->setLoopID(NewInnerLoopID.getValue());
   else
     SubLoop->setLoopID(OrigSubLoopID);
 
@@ -418,8 +410,8 @@ tryToUnrollAndJamLoop(Loop *L, DominatorTree &DT, LoopInfo *LI,
     Optional<MDNode *> NewOuterLoopID = makeFollowupLoopID(
         OrigOuterLoopID,
         {LLVMLoopUnrollAndJamFollowupAll, LLVMLoopUnrollAndJamFollowupOuter});
-    if (NewOuterLoopID) {
-      L->setLoopID(NewOuterLoopID.value());
+    if (NewOuterLoopID.hasValue()) {
+      L->setLoopID(NewOuterLoopID.getValue());
 
       // Do not setLoopAlreadyUnrolled if a followup was given.
       return UnrollResult;

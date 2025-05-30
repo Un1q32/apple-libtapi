@@ -115,7 +115,8 @@ private:
 public:
   /// The declaration for the comparison category type from the
   /// standard library.
-  const CXXRecordDecl *Record = nullptr;
+  // FIXME: Make this const
+  CXXRecordDecl *Record = nullptr;
 
   /// The Kind of the comparison category type
   ComparisonCategoryType Kind;
@@ -145,7 +146,7 @@ public:
     return Kind == CCK::PartialOrdering;
   }
 
-  /// Converts the specified result kind into the correct result kind
+  /// Converts the specified result kind into the the correct result kind
   /// for this category. Specifically it lowers strong equality results to
   /// weak equivalence if needed.
   ComparisonCategoryResult makeWeakResult(ComparisonCategoryResult Res) const {

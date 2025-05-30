@@ -25,10 +25,7 @@ using namespace tapi;
 #define PLATFORM_DRIVERKIT 10
 #endif
 
-
 namespace {
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wdeprecated-declarations"
 
 class LibTapiTest_TBDv4 : public LibTapiTest {};
 
@@ -159,7 +156,7 @@ TEST_F(LibTapiTest_TBDv4, LIF_LoadSymbols_x86_64) {
   ExportedSymbolSeq tbd_v4_undefs = {
       {"_weak3", false, false, true},
       {"_weak4", false, false, true},
-  };
+};
 
   checkSyms(tbd_v4_exports, file->exports());
   checkSyms(tbd_v4_undefs, file->undefineds());
@@ -190,36 +187,100 @@ TEST_F(LibTapiTest_TBDv4, LIF_LoadSymbols_i386) {
 }
 
 TEST_F(LibTapiTest_TBDv4, LIF_Platform_macOS) {
-  testPlatform("x86_64-macos", PLATFORM_MACOS, CPU_TYPE_X86_64,
-               CPU_SUBTYPE_X86_ALL);
+  static const char tbd_v4_macos[] =
+      "--- !tapi-tbd\n"
+      "tbd-version: 4\n"
+      "targets: [ x86_64-macos ]\n"
+      "install-name: /System/Library/Frameworks/Foo.framework/Foo\n"
+      "...\n";
+  writeTempFile(tbd_v4_macos);
+  std::string errorMessage;
+  auto file = std::unique_ptr<LinkerInterfaceFile>(LinkerInterfaceFile::create(
+      getTempFilePath(), CPU_TYPE_X86_64, CPU_SUBTYPE_X86_ALL,
+      ParsingFlags::ExactCpuSubType, PackedVersion32(10, 12, 0), errorMessage));
+  ASSERT_NE(nullptr, file);
+  EXPECT_EQ(std::vector<uint32_t>{PLATFORM_MACOS}, file->getPlatformSet());
 }
 
 TEST_F(LibTapiTest_TBDv4, LIF_Platform_driverkit) {
-  testPlatform("x86_64-driverkit", PLATFORM_DRIVERKIT, CPU_TYPE_X86_64,
-               CPU_SUBTYPE_X86_ALL);
+  static const char tbd_v4_driverkit[] =
+      "--- !tapi-tbd\n"
+      "tbd-version: 4\n"
+      "targets: [ x86_64-driverkit ]\n"
+      "install-name: /System/Library/Frameworks/Foo.framework/Foo\n"
+      "...\n";
+  writeTempFile(tbd_v4_driverkit);
+  std::string errorMessage;
+  auto file = std::unique_ptr<LinkerInterfaceFile>(LinkerInterfaceFile::create(
+      getTempFilePath(), CPU_TYPE_X86_64, CPU_SUBTYPE_X86_ALL,
+      ParsingFlags::ExactCpuSubType, PackedVersion32(10, 12, 0), errorMessage));
+  ASSERT_NE(nullptr, file);
+  EXPECT_EQ(std::vector<uint32_t>{PLATFORM_DRIVERKIT}, file->getPlatformSet());
 }
 
 TEST_F(LibTapiTest_TBDv4, LIF_Platform_iOS) {
-  testPlatform("arm64-ios", PLATFORM_IOS, CPU_TYPE_ARM64,
-               CPU_SUBTYPE_ARM64_ALL);
+  static const char tbd_v4_ios[] =
+      "--- !tapi-tbd\n"
+      "tbd-version: 4\n"
+      "targets: [ arm64-ios ]\n"
+      "install-name: /System/Library/Frameworks/Foo.framework/Foo\n"
+      "...\n";
+  writeTempFile(tbd_v4_ios);
+  std::string errorMessage;
+  auto file = std::unique_ptr<LinkerInterfaceFile>(LinkerInterfaceFile::create(
+      getTempFilePath(), CPU_TYPE_ARM64, CPU_SUBTYPE_ARM64_ALL,
+      ParsingFlags::ExactCpuSubType, PackedVersion32(10, 0, 0), errorMessage));
+  ASSERT_NE(nullptr, file);
+  EXPECT_EQ(std::vector<uint32_t>{PLATFORM_IOS}, file->getPlatformSet());
 }
 
 TEST_F(LibTapiTest_TBDv4, LIF_Platform_watchOS) {
-  testPlatform("armv7k-watchos", PLATFORM_WATCHOS, CPU_TYPE_ARM,
-               CPU_SUBTYPE_ARM_V7K);
+  static const char tbd_v4_watchos[] =
+      "--- !tapi-tbd\n"
+      "tbd-version: 4\n"
+      "targets: [ armv7k-watchos ]\n"
+      "install-name: /System/Library/Frameworks/Foo.framework/Foo\n"
+      "...\n";
+  writeTempFile(tbd_v4_watchos);
+  std::string errorMessage;
+  auto file = std::unique_ptr<LinkerInterfaceFile>(LinkerInterfaceFile::create(
+      getTempFilePath(), CPU_TYPE_ARM, CPU_SUBTYPE_ARM_V7K,
+      ParsingFlags::ExactCpuSubType, PackedVersion32(3, 0, 0), errorMessage));
+  ASSERT_NE(nullptr, file);
+  EXPECT_EQ(std::vector<uint32_t>{PLATFORM_WATCHOS}, file->getPlatformSet());
 }
 
 TEST_F(LibTapiTest_TBDv4, LIF_Platform_tvOS) {
-  testPlatform("arm64-tvos", PLATFORM_TVOS, CPU_TYPE_ARM64,
-               CPU_SUBTYPE_ARM64_ALL);
+  static const char tbd_v4_tvos[] =
+      "--- !tapi-tbd\n"
+      "tbd-version: 4\n"
+      "targets: [ arm64-tvos ]\n"
+      "install-name: /System/Library/Frameworks/Foo.framework/Foo\n"
+      "...\n";
+  writeTempFile(tbd_v4_tvos);
+  std::string errorMessage;
+  auto file = std::unique_ptr<LinkerInterfaceFile>(LinkerInterfaceFile::create(
+      getTempFilePath(), CPU_TYPE_ARM64, CPU_SUBTYPE_ARM64_ALL,
+      ParsingFlags::ExactCpuSubType, PackedVersion32(10, 0, 0), errorMessage));
+  ASSERT_NE(nullptr, file);
+  EXPECT_EQ(std::vector<uint32_t>{PLATFORM_TVOS}, file->getPlatformSet());
 }
 
 TEST_F(LibTapiTest_TBDv4, LIF_Platform_bridgeOS) {
-  testPlatform("arm64-bridgeos", PLATFORM_BRIDGEOS, CPU_TYPE_ARM64,
-               CPU_SUBTYPE_ARM64_ALL);
+  static const char tbd_v4_bridgeos[] =
+      "--- !tapi-tbd\n"
+      "tbd-version: 4\n"
+      "targets: [ arm64-bridgeos ]\n"
+      "install-name: /System/Library/Frameworks/Foo.framework/Foo\n"
+      "...\n";
+  writeTempFile(tbd_v4_bridgeos);
+  std::string errorMessage;
+  auto file = std::unique_ptr<LinkerInterfaceFile>(LinkerInterfaceFile::create(
+      getTempFilePath(), CPU_TYPE_ARM64, CPU_SUBTYPE_ARM64_ALL,
+      ParsingFlags::ExactCpuSubType, PackedVersion32(2, 0, 0), errorMessage));
+  ASSERT_NE(nullptr, file);
+  EXPECT_EQ(std::vector<uint32_t>{PLATFORM_BRIDGEOS}, file->getPlatformSet());
 }
-
-
 
 TEST_F(LibTapiTest_TBDv4, LIF_Load_iosmac1) {
   static const char tbd_v4_iosmac[] =
@@ -328,7 +389,8 @@ TEST_F(LibTapiTest_TBDv4, LIF_Load_zippered) {
       ParsingFlags::None, PackedVersion32(10, 14, 0), errorMessage));
   ASSERT_TRUE(errorMessage.empty());
   ASSERT_NE(nullptr, file);
-  EXPECT_EQ((std::vector<uint32_t>{PLATFORM_MACOS}), file->getPlatformSet());
+  EXPECT_EQ((std::vector<uint32_t>{PLATFORM_MACOS, PLATFORM_MACCATALYST}),
+            file->getPlatformSet());
 
   exports.clear();
   for (const auto &sym : file->exports())
@@ -357,7 +419,6 @@ TEST_F(LibTapiTest_TBDv4, LIF_Load_zippered) {
                          tbd_v4_x86_64_symbols.begin()));
 }
 
-// Test invalid files.
 TEST_F(LibTapiTest_TBDv4, LIF_Load_Unknown_Target) {
   const char input[] =
       "--- !tapi-tbd\n"
@@ -370,12 +431,12 @@ TEST_F(LibTapiTest_TBDv4, LIF_Load_Unknown_Target) {
   auto file = std::unique_ptr<LinkerInterfaceFile>(LinkerInterfaceFile::create(
       getTempFilePath(), CPU_TYPE_I386, CPU_SUBTYPE_I386_ALL,
       ParsingFlags::None, PackedVersion32(10, 11, 0), errorMessage));
-  ASSERT_EQ(nullptr, file);
-  ASSERT_EQ(std::string("malformed file\n") + getTempFilePath() +
-                ":3:13: error: unknown platform\n"
-                "targets:  [ i386-debian ]\n"
-                "            ^~~~~~~~~~~~\n",
-            errorMessage);
+  ASSERT_NE(nullptr, file);
+  ASSERT_TRUE(errorMessage.empty());
+  EXPECT_TRUE(file->getPlatformSet().empty());
+  EXPECT_EQ(
+      std::string("/System/Library/Frameworks/Umbrella.framework/Umbrella"),
+      file->getInstallName());
 }
 
 TEST_F(LibTapiTest_TBDv4, LIF_MalformedFile) {
@@ -467,5 +528,4 @@ TEST_F(LibTapiTest_TBDv4, LIF_NewLinkerSymbols) {
   ASSERT_FALSE(file->isInstallNameVersionSpecific());
 }
 
-#pragma clang diagnostic pop
 } // end namespace

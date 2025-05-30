@@ -23,12 +23,17 @@ using namespace clang;
 
 TAPI_NAMESPACE_INTERNAL_BEGIN
 
-FileManager::FileManager(const FileSystemOptions &fileSystemOpts,
-                         IntrusiveRefCntPtr<vfs::FileSystem> fs)
-    : clang::FileManager(fileSystemOpts, fs) {
+FileManager::FileManager(
+    const FileSystemOptions &fileSystemOpts,
+    IntrusiveRefCntPtr<FileSystemStatCacheFactory> cacheFactory,
+    IntrusiveRefCntPtr<vfs::FileSystem> fs)
+    : clang::FileManager(fileSystemOpts, fs), cacheFactory(cacheFactory) {
   // Record if initialized with VFS.
   if (fs)
     initWithVFS = true;
+
+  // Inject our stat cache.
+  installStatRecorder();
 }
 
 bool FileManager::exists(StringRef path) {
@@ -42,6 +47,12 @@ bool FileManager::isSymlink(StringRef path) {
   if (initWithVFS)
     return false;
   return sys::fs::is_symlink_file(path);
+}
+
+void FileManager::installStatRecorder() {
+  clearStatCache();
+  if (cacheFactory != nullptr)
+    setStatCache(std::unique_ptr<FileSystemStatCache>(cacheFactory->create()));
 }
 
 TAPI_NAMESPACE_INTERNAL_END

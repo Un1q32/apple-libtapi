@@ -40,10 +40,9 @@ namespace {
 using namespace llvm::opt; // for HelpHidden in Opts.inc
 enum ID {
   OPT_INVALID = 0, // This is not an option ID.
-#define OPTION(PREFIX, PREFIXED_NAME, ID, KIND, GROUP, ALIAS, ALIASARGS,       \
-               FLAGS, PARAM, HELP, METAVAR, VALUES)                            \
-  LLVM_MAKE_OPT_ID(PREFIX, PREFIXED_NAME, ID, KIND, GROUP, ALIAS, ALIASARGS,   \
-                   FLAGS, PARAM, HELP, METAVAR, VALUES),
+#define OPTION(PREFIX, NAME, ID, KIND, GROUP, ALIAS, ALIASARGS, FLAGS, PARAM,  \
+               HELPTEXT, METAVAR, VALUES)                                      \
+  OPT_##ID,
 #include "Opts.inc"
 #undef OPTION
 };
@@ -53,10 +52,13 @@ enum ID {
 #undef PREFIX
 
 const opt::OptTable::Info InfoTable[] = {
-#define OPTION(PREFIX, PREFIXED_NAME, ID, KIND, GROUP, ALIAS, ALIASARGS,       \
-               FLAGS, PARAM, HELP, METAVAR, VALUES)                            \
-  LLVM_CONSTRUCT_OPT_INFO(PREFIX, PREFIXED_NAME, ID, KIND, GROUP, ALIAS,       \
-                          ALIASARGS, FLAGS, PARAM, HELP, METAVAR, VALUES),
+#define OPTION(PREFIX, NAME, ID, KIND, GROUP, ALIAS, ALIASARGS, FLAGS, PARAM,  \
+               HELPTEXT, METAVAR, VALUES)                                      \
+  {                                                                            \
+      PREFIX,      NAME,      HELPTEXT,                                        \
+      METAVAR,     OPT_##ID,  opt::Option::KIND##Class,                        \
+      PARAM,       FLAGS,     OPT_##GROUP,                                     \
+      OPT_##ALIAS, ALIASARGS, VALUES},
 #include "Opts.inc"
 #undef OPTION
 };
@@ -568,8 +570,6 @@ static void printFileSectionSizes(StringRef file) {
         else if (MachO && OutputFormat == darwin)
           outs() << a->getFileName() << "(" << o->getFileName() << "):\n";
         printObjectSectionSizes(o);
-        if (!MachO && OutputFormat == darwin)
-          outs() << o->getFileName() << " (ex " << a->getFileName() << ")\n";
         if (OutputFormat == berkeley) {
           if (MachO)
             outs() << a->getFileName() << "(" << o->getFileName() << ")\n";
@@ -836,8 +836,6 @@ static void printFileSectionSizes(StringRef file) {
     else if (MachO && OutputFormat == darwin && MoreThanOneFile)
       outs() << o->getFileName() << ":\n";
     printObjectSectionSizes(o);
-    if (!MachO && OutputFormat == darwin)
-      outs() << o->getFileName() << "\n";
     if (OutputFormat == berkeley) {
       if (!MachO || MoreThanOneFile)
         outs() << o->getFileName();
@@ -864,17 +862,14 @@ static void printBerkeleyTotals() {
          << "(TOTALS)\n";
 }
 
-int llvm_size_main(int argc, char **argv) {
+int main(int argc, char **argv) {
   InitLLVM X(argc, argv);
   BumpPtrAllocator A;
   StringSaver Saver(A);
   SizeOptTable Tbl;
   ToolName = argv[0];
-  opt::InputArgList Args =
-      Tbl.parseArgs(argc, argv, OPT_UNKNOWN, Saver, [&](StringRef Msg) {
-        error(Msg);
-        exit(1);
-      });
+  opt::InputArgList Args = Tbl.parseArgs(argc, argv, OPT_UNKNOWN, Saver,
+                                         [&](StringRef Msg) { error(Msg); });
   if (Args.hasArg(OPT_help)) {
     Tbl.printHelp(
         outs(),
@@ -939,5 +934,4 @@ int llvm_size_main(int argc, char **argv) {
 
   if (HadError)
     return 1;
-  return 0;
 }

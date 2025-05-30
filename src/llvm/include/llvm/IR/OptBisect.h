@@ -15,7 +15,7 @@
 #define LLVM_IR_OPTBISECT_H
 
 #include "llvm/ADT/StringRef.h"
-#include <limits>
+#include "llvm/Support/ManagedStatic.h"
 
 namespace llvm {
 
@@ -43,12 +43,14 @@ public:
 /// optimization-related problems.
 class OptBisect : public OptPassGate {
 public:
-  /// Default constructor. Initializes the state to "disabled". The bisection
-  /// will be enabled by the cl::opt call-back when the command line option
-  /// is processed.
+  /// Default constructor, initializes the OptBisect state based on the
+  /// -opt-bisect-limit command line argument.
+  ///
+  /// By default, bisection is disabled.
+  ///
   /// Clients should not instantiate this class directly.  All access should go
   /// through LLVMContext.
-  OptBisect() = default;
+  OptBisect();
 
   virtual ~OptBisect() = default;
 
@@ -58,14 +60,7 @@ public:
   bool shouldRunPass(const Pass *P, StringRef IRDescription) override;
 
   /// isEnabled() should return true before calling shouldRunPass().
-  bool isEnabled() const override { return BisectLimit != Disabled; }
-
-  /// Set the new optimization limit and reset the counter. Passing
-  /// OptBisect::Disabled disables the limiting.
-  void setLimit(int Limit) {
-    BisectLimit = Limit;
-    LastBisectNum = 0;
-  }
+  bool isEnabled() const override { return BisectEnabled; }
 
   /// Checks the bisect limit to determine if the specified pass should run.
   ///
@@ -80,17 +75,14 @@ public:
   /// instance, function passes should call FunctionPass::skipFunction().
   bool checkPass(const StringRef PassName, const StringRef TargetDesc);
 
-  static const int Disabled = std::numeric_limits<int>::max();
-
 private:
-  int BisectLimit = Disabled;
-  int LastBisectNum = 0;
+  bool BisectEnabled = false;
+  unsigned LastBisectNum = 0;
 };
 
 /// Singleton instance of the OptBisect class, so multiple pass managers don't
 /// need to coordinate their uses of OptBisect.
-OptBisect &getOptBisector();
-
+extern ManagedStatic<OptBisect> OptBisector;
 } // end namespace llvm
 
 #endif // LLVM_IR_OPTBISECT_H

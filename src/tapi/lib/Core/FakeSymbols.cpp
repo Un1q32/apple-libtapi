@@ -15,7 +15,6 @@
 #include "llvm/Object/Archive.h"
 #include "llvm/Object/IRObjectFile.h"
 #include "llvm/Object/ObjectFile.h"
-#include "llvm/Object/OffloadBinary.h"
 #include "llvm/Object/TapiUniversal.h"
 #include "llvm/Object/WindowsResource.h"
 #include "llvm/Support/ErrorHandling.h"
@@ -66,11 +65,6 @@ IRObjectFile::create(MemoryBufferRef Object, LLVMContext &Context) {
 
 Expected<std::unique_ptr<TapiUniversal>>
 TapiUniversal::create(MemoryBufferRef Source) {
-  llvm_unreachable("not supported");
-}
-
-Expected<std::unique_ptr<OffloadBinary>>
-OffloadBinary::create(MemoryBufferRef Source) {
   llvm_unreachable("not supported");
 }
 

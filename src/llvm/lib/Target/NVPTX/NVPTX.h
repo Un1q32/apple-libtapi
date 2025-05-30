@@ -137,12 +137,10 @@ enum CvtMode {
   RZ,
   RM,
   RP,
-  RNA,
 
   BASE_MASK = 0x0F,
   FTZ_FLAG = 0x10,
-  SAT_FLAG = 0x20,
-  RELU_FLAG = 0x40
+  SAT_FLAG = 0x20
 };
 }
 
@@ -183,7 +181,6 @@ enum CmpMode {
 
 // Defines symbolic names for the NVPTX instructions.
 #define GET_INSTRINFO_ENUM
-#define GET_INSTRINFO_MC_HELPER_DECLS
 #include "NVPTXGenInstrInfo.inc"
 
 #endif

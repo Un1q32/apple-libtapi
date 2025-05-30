@@ -371,9 +371,6 @@ SymbolInfo index::getSymbolInfo(const Decl *D) {
     case Decl::NonTypeTemplateParm:
       Info.Kind = SymbolKind::NonTypeTemplateParm;
       break;
-    case Decl::Concept:
-      Info.Kind = SymbolKind::Concept;
-      break;
     // Other decls get the 'unknown' kind.
     default:
       break;
@@ -538,8 +535,6 @@ StringRef index::getSymbolKindString(SymbolKind K) {
   case SymbolKind::TemplateTypeParm: return "template-type-param";
   case SymbolKind::TemplateTemplateParm: return "template-template-param";
   case SymbolKind::NonTypeTemplateParm: return "non-type-template-param";
-  case SymbolKind::Concept:
-    return "concept";
   }
   llvm_unreachable("invalid symbol kind");
 }
@@ -560,7 +555,6 @@ StringRef index::getSymbolSubKindString(SymbolSubKind K) {
   case SymbolSubKind::SwiftAccessorMutableAddressor: return "acc-mutaddr";
   case SymbolSubKind::SwiftAccessorRead: return "acc-read";
   case SymbolSubKind::SwiftAccessorModify: return "acc-modify";
-  case SymbolSubKind::SwiftAccessorInit: return "acc-init";
   case SymbolSubKind::SwiftExtensionOfStruct: return "ext-struct";
   case SymbolSubKind::SwiftExtensionOfClass: return "ext-class";
   case SymbolSubKind::SwiftExtensionOfEnum: return "ext-enum";

@@ -1,8 +1,8 @@
 #include "clang/AST/JSONNodeDumper.h"
-#include "clang/AST/Type.h"
 #include "clang/Basic/SourceManager.h"
 #include "clang/Basic/Specifiers.h"
 #include "clang/Lex/Lexer.h"
+#include "llvm/ADT/StringSwitch.h"
 
 using namespace clang;
 
@@ -530,14 +530,6 @@ JSONNodeDumper::createCXXBaseSpecifier(const CXXBaseSpecifier &BS) {
 
 void JSONNodeDumper::VisitTypedefType(const TypedefType *TT) {
   JOS.attribute("decl", createBareDeclRef(TT->getDecl()));
-  if (!TT->typeMatchesDecl())
-    JOS.attribute("type", createQualType(TT->desugar()));
-}
-
-void JSONNodeDumper::VisitUsingType(const UsingType *TT) {
-  JOS.attribute("decl", createBareDeclRef(TT->getFoundDecl()));
-  if (!TT->typeMatchesDecl())
-    JOS.attribute("type", createQualType(TT->desugar()));
 }
 
 void JSONNodeDumper::VisitFunctionType(const FunctionType *T) {
@@ -670,11 +662,9 @@ void JSONNodeDumper::VisitUnresolvedUsingType(const UnresolvedUsingType *UUT) {
 
 void JSONNodeDumper::VisitUnaryTransformType(const UnaryTransformType *UTT) {
   switch (UTT->getUTTKind()) {
-#define TRANSFORM_TYPE_TRAIT_DEF(Enum, Trait)                                  \
-  case UnaryTransformType::Enum:                                               \
-    JOS.attribute("transformKind", #Trait);                                    \
+  case UnaryTransformType::EnumUnderlyingType:
+    JOS.attribute("transformKind", "underlying_type");
     break;
-#include "clang/Basic/TransformTypeTraits.def"
   }
 }
 
@@ -688,12 +678,6 @@ void JSONNodeDumper::VisitTemplateTypeParmType(
   JOS.attribute("index", TTPT->getIndex());
   attributeOnlyIfTrue("isPack", TTPT->isParameterPack());
   JOS.attribute("decl", createBareDeclRef(TTPT->getDecl()));
-}
-
-void JSONNodeDumper::VisitSubstTemplateTypeParmType(
-    const SubstTemplateTypeParmType *STTPT) {
-  if (auto PackIndex = STTPT->getPackIndex())
-    JOS.attribute("pack_index", *PackIndex);
 }
 
 void JSONNodeDumper::VisitAutoType(const AutoType *AT) {
@@ -760,18 +744,11 @@ void JSONNodeDumper::VisitNamedDecl(const NamedDecl *ND) {
     JOS.attribute("name", ND->getNameAsString());
     // FIXME: There are likely other contexts in which it makes no sense to ask
     // for a mangled name.
-    if (isa<RequiresExprBodyDecl>(ND->getDeclContext()))
-      return;
-
-    // Mangled names are not meaningful for locals, and may not be well-defined
-    // in the case of VLAs.
-    auto *VD = dyn_cast<VarDecl>(ND);
-    if (VD && VD->hasLocalStorage())
-      return;
-
-    std::string MangledName = ASTNameGen.getName(ND);
-    if (!MangledName.empty())
-      JOS.attribute("mangledName", MangledName);
+    if (!isa<RequiresExprBodyDecl>(ND->getDeclContext())) {
+      std::string MangledName = ASTNameGen.getName(ND);
+      if (!MangledName.empty())
+        JOS.attribute("mangledName", MangledName);
+    }
   }
 }
 
@@ -907,11 +884,6 @@ void JSONNodeDumper::VisitCXXRecordDecl(const CXXRecordDecl *RD) {
         JOS.value(createCXXBaseSpecifier(Spec));
     });
   }
-}
-
-void JSONNodeDumper::VisitHLSLBufferDecl(const HLSLBufferDecl *D) {
-  VisitNamedDecl(D);
-  JOS.attribute("bufferKind", D->isCBuffer() ? "cbuffer" : "tbuffer");
 }
 
 void JSONNodeDumper::VisitTemplateTypeParmDecl(const TemplateTypeParmDecl *D) {
@@ -1517,8 +1489,6 @@ void JSONNodeDumper::VisitIfStmt(const IfStmt *IS) {
   attributeOnlyIfTrue("hasVar", IS->hasVarStorage());
   attributeOnlyIfTrue("hasElse", IS->hasElseStorage());
   attributeOnlyIfTrue("isConstexpr", IS->isConstexpr());
-  attributeOnlyIfTrue("isConsteval", IS->isConsteval());
-  attributeOnlyIfTrue("constevalIsNegated", IS->isNegatedConsteval());
 }
 
 void JSONNodeDumper::VisitSwitchStmt(const SwitchStmt *SS) {
@@ -1712,19 +1682,4 @@ void JSONNodeDumper::visitVerbatimBlockLineComment(
 void JSONNodeDumper::visitVerbatimLineComment(
     const comments::VerbatimLineComment *C, const comments::FullComment *) {
   JOS.attribute("text", C->getText());
-}
-
-llvm::json::Object JSONNodeDumper::createFPOptions(FPOptionsOverride FPO) {
-  llvm::json::Object Ret;
-#define OPTION(NAME, TYPE, WIDTH, PREVIOUS)                                    \
-  if (FPO.has##NAME##Override())                                               \
-    Ret.try_emplace(#NAME, static_cast<unsigned>(FPO.get##NAME##Override()));
-#include "clang/Basic/FPOptions.def"
-  return Ret;
-}
-
-void JSONNodeDumper::VisitCompoundStmt(const CompoundStmt *S) {
-  VisitStmt(S);
-  if (S->hasStoredFPFeatures())
-    JOS.attribute("fpoptions", createFPOptions(S->getStoredFPFeatures()));
 }

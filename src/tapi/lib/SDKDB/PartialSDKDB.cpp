@@ -146,9 +146,18 @@ Error PartialSDKDB::serialize(
       /*compact*/ false,
       /*noUUID*/ true,
       /*noTarget*/ false,
-      /*externalOnly*/ true,
+      /*external*/ false,
       /*publicOnly*/ false,
       /*ignore line and col*/ true,
+      /*noUSR*/ true,
+      /*noDocComment*/ true,
+      /*noDeprecationInfo*/ true,
+      /*noStruct*/ true,
+      /*noDeclName*/ true,
+      /*noDeclFragments*/ true,
+      /*noElaboratedSymbolInfo*/ true,
+      /*noMacroDefinitions*/ true,
+      /*noUnifiedTypedefEntries*/ true,
   };
   for (const auto &api : binaryInterfaces) {
     APIJSONSerializer serializer(api, options);
@@ -158,7 +167,7 @@ Error PartialSDKDB::serialize(
   // SDKContentRoot Root.
   json::Array internalSDKInterfacesList;
   for (const auto &result : privateHeaderContext) {
-    APIJSONSerializer serializer(*result.api, options);
+    APIJSONSerializer serializer(result.api, options);
     internalSDKInterfacesList.emplace_back(serializer.getJSONObject());
   }
   for (const auto &api : privateHeaderAPIs) {
@@ -169,7 +178,7 @@ Error PartialSDKDB::serialize(
   // PublicSDKContentRoot Root.
   json::Array publicSDKInterfacesList;
   for (const auto &result : publicHeaderContext) {
-    APIJSONSerializer serializer(*result.api, options);
+    APIJSONSerializer serializer(result.api, options);
     publicSDKInterfacesList.emplace_back(serializer.getJSONObject());
   }
   for (const auto &api : publicHeaderAPIs) {

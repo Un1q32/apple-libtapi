@@ -43,9 +43,8 @@ unsigned getOffsetAfterTokenSequence(
         GetOffsetAfterSequence) {
   SourceManagerForFile VirtualSM(FileName, Code);
   SourceManager &SM = VirtualSM.get();
-  LangOptions LangOpts = createLangOpts();
   Lexer Lex(SM.getMainFileID(), SM.getBufferOrFake(SM.getMainFileID()), SM,
-            LangOpts);
+            createLangOpts());
   Token Tok;
   // Get the first token.
   Lex.LexFromRawLexer(Tok);
@@ -266,8 +265,6 @@ bool IncludeCategoryManager::isMainHeader(StringRef IncludeName) const {
   return false;
 }
 
-const llvm::Regex HeaderIncludes::IncludeRegex(IncludeRegexPattern);
-
 HeaderIncludes::HeaderIncludes(StringRef FileName, StringRef Code,
                                const IncludeStyle &Style)
     : FileName(FileName), Code(Code), FirstIncludeOffset(-1),
@@ -276,7 +273,8 @@ HeaderIncludes::HeaderIncludes(StringRef FileName, StringRef Code,
       MaxInsertOffset(MinInsertOffset +
                       getMaxHeaderInsertionOffset(
                           FileName, Code.drop_front(MinInsertOffset), Style)),
-      Categories(Style, FileName) {
+      Categories(Style, FileName),
+      IncludeRegex(llvm::Regex(IncludeRegexPattern)) {
   // Add 0 for main header and INT_MAX for headers that are not in any
   // category.
   Priorities = {0, INT_MAX};

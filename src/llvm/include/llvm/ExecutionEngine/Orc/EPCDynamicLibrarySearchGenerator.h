@@ -15,12 +15,10 @@
 #define LLVM_EXECUTIONENGINE_ORC_EPCDYNAMICLIBRARYSEARCHGENERATOR_H
 
 #include "llvm/ADT/FunctionExtras.h"
-#include "llvm/ExecutionEngine/Orc/Core.h"
+#include "llvm/ExecutionEngine/Orc/ExecutorProcessControl.h"
 
 namespace llvm {
 namespace orc {
-
-class ExecutorProcessControl;
 
 class EPCDynamicLibrarySearchGenerator : public DefinitionGenerator {
 public:
@@ -32,24 +30,24 @@ public:
   /// If the Allow predicate is given then only symbols matching the predicate
   /// will be searched for. If the predicate is not given then all symbols will
   /// be searched for.
-  EPCDynamicLibrarySearchGenerator(ExecutionSession &ES,
+  EPCDynamicLibrarySearchGenerator(ExecutorProcessControl &EPC,
                                    tpctypes::DylibHandle H,
                                    SymbolPredicate Allow = SymbolPredicate())
-      : EPC(ES.getExecutorProcessControl()), H(H), Allow(std::move(Allow)) {}
+      : EPC(EPC), H(H), Allow(std::move(Allow)) {}
 
   /// Permanently loads the library at the given path and, on success, returns
   /// a DynamicLibrarySearchGenerator that will search it for symbol definitions
   /// in the library. On failure returns the reason the library failed to load.
   static Expected<std::unique_ptr<EPCDynamicLibrarySearchGenerator>>
-  Load(ExecutionSession &ES, const char *LibraryPath,
+  Load(ExecutorProcessControl &EPC, const char *LibraryPath,
        SymbolPredicate Allow = SymbolPredicate());
 
   /// Creates a EPCDynamicLibrarySearchGenerator that searches for symbols in
   /// the target process.
   static Expected<std::unique_ptr<EPCDynamicLibrarySearchGenerator>>
-  GetForTargetProcess(ExecutionSession &ES,
+  GetForTargetProcess(ExecutorProcessControl &EPC,
                       SymbolPredicate Allow = SymbolPredicate()) {
-    return Load(ES, nullptr, std::move(Allow));
+    return Load(EPC, nullptr, std::move(Allow));
   }
 
   Error tryToGenerate(LookupState &LS, LookupKind K, JITDylib &JD,

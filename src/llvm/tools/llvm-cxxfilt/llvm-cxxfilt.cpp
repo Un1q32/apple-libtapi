@@ -25,10 +25,9 @@ using namespace llvm;
 namespace {
 enum ID {
   OPT_INVALID = 0, // This is not an option ID.
-#define OPTION(PREFIX, PREFIXED_NAME, ID, KIND, GROUP, ALIAS, ALIASARGS,       \
-               FLAGS, PARAM, HELP, METAVAR, VALUES)                            \
-  LLVM_MAKE_OPT_ID(PREFIX, PREFIXED_NAME, ID, KIND, GROUP, ALIAS, ALIASARGS,   \
-                   FLAGS, PARAM, HELP, METAVAR, VALUES),
+#define OPTION(PREFIX, NAME, ID, KIND, GROUP, ALIAS, ALIASARGS, FLAGS, PARAM,  \
+               HELPTEXT, METAVAR, VALUES)                                      \
+  OPT_##ID,
 #include "Opts.inc"
 #undef OPTION
 };
@@ -38,10 +37,13 @@ enum ID {
 #undef PREFIX
 
 const opt::OptTable::Info InfoTable[] = {
-#define OPTION(PREFIX, PREFIXED_NAME, ID, KIND, GROUP, ALIAS, ALIASARGS,       \
-               FLAGS, PARAM, HELP, METAVAR, VALUES)                            \
-  LLVM_CONSTRUCT_OPT_INFO(PREFIX, PREFIXED_NAME, ID, KIND, GROUP, ALIAS,       \
-                          ALIASARGS, FLAGS, PARAM, HELP, METAVAR, VALUES),
+#define OPTION(PREFIX, NAME, ID, KIND, GROUP, ALIAS, ALIASARGS, FLAGS, PARAM,  \
+               HELPTEXT, METAVAR, VALUES)                                      \
+  {                                                                            \
+      PREFIX,      NAME,      HELPTEXT,                                        \
+      METAVAR,     OPT_##ID,  opt::Option::KIND##Class,                        \
+      PARAM,       FLAGS,     OPT_##GROUP,                                     \
+      OPT_##ALIAS, ALIASARGS, VALUES},
 #include "Opts.inc"
 #undef OPTION
 };
@@ -63,27 +65,34 @@ static void error(const Twine &Message) {
 }
 
 static std::string demangle(const std::string &Mangled) {
+  int Status;
+  std::string Prefix;
+
   const char *DecoratedStr = Mangled.c_str();
   if (StripUnderscore)
     if (DecoratedStr[0] == '_')
       ++DecoratedStr;
+  size_t DecoratedLength = strlen(DecoratedStr);
 
-  std::string Result;
-  if (nonMicrosoftDemangle(DecoratedStr, Result))
-    return Result;
-
-  std::string Prefix;
   char *Undecorated = nullptr;
 
-  if (Types)
-    Undecorated = itaniumDemangle(DecoratedStr, nullptr, nullptr, nullptr);
+  if (Types ||
+      ((DecoratedLength >= 2 && strncmp(DecoratedStr, "_Z", 2) == 0) ||
+       (DecoratedLength >= 4 && strncmp(DecoratedStr, "___Z", 4) == 0)))
+    Undecorated = itaniumDemangle(DecoratedStr, nullptr, nullptr, &Status);
 
-  if (!Undecorated && strncmp(DecoratedStr, "__imp_", 6) == 0) {
+  if (!Undecorated &&
+      (DecoratedLength > 6 && strncmp(DecoratedStr, "__imp_", 6) == 0)) {
     Prefix = "import thunk for ";
-    Undecorated = itaniumDemangle(DecoratedStr + 6, nullptr, nullptr, nullptr);
+    Undecorated = itaniumDemangle(DecoratedStr + 6, nullptr, nullptr, &Status);
   }
 
-  Result = Undecorated ? Prefix + Undecorated : Mangled;
+  if (!Undecorated &&
+      (DecoratedLength >= 2 && strncmp(DecoratedStr, "_R", 2) == 0)) {
+    Undecorated = rustDemangle(DecoratedStr, nullptr, nullptr, &Status);
+  }
+
+  std::string Result(Undecorated ? Prefix + Undecorated : Mangled);
   free(Undecorated);
   return Result;
 }
@@ -119,7 +128,7 @@ static void SplitStringDelims(
 static bool IsLegalItaniumChar(char C) {
   // Itanium CXX ABI [External Names]p5.1.1:
   // '$' and '.' in mangled names are reserved for private implementations.
-  return isAlnum(C) || C == '.' || C == '$' || C == '_';
+  return isalnum(C) || C == '.' || C == '$' || C == '_';
 }
 
 // If 'Split' is true, then 'Mangled' is broken into individual words and each
@@ -138,7 +147,7 @@ static void demangleLine(llvm::raw_ostream &OS, StringRef Mangled, bool Split) {
   OS.flush();
 }
 
-int llvm_cxxfilt_main(int argc, char **argv) {
+int main(int argc, char **argv) {
   InitLLVM X(argc, argv);
   BumpPtrAllocator A;
   StringSaver Saver(A);

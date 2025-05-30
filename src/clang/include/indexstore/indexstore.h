@@ -1,9 +1,9 @@
 /*===-- indexstore/indexstore.h - Index Store C API ----------------- C -*-===*\
 |*                                                                            *|
-|* Part of the LLVM Project, under the Apache License v2.0 with LLVM          *|
-|* Exceptions.                                                                *|
-|* See https://llvm.org/LICENSE.txt for license information.                  *|
-|* SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception                    *|
+|*                     The LLVM Compiler Infrastructure                       *|
+|*                                                                            *|
+|* This file is distributed under the University of Illinois Open Source      *|
+|* License. See LICENSE.TXT for details.                                      *|
 |*                                                                            *|
 |*===----------------------------------------------------------------------===*|
 |*                                                                            *|
@@ -25,7 +25,7 @@
  * INDEXSTORE_VERSION_MAJOR is intended for "major" source/ABI breaking changes.
  */
 #define INDEXSTORE_VERSION_MAJOR 0
-#define INDEXSTORE_VERSION_MINOR 15 /* added Swift init accessor sub-symbol */
+#define INDEXSTORE_VERSION_MINOR 12
 
 #define INDEXSTORE_VERSION_ENCODE(major, minor) ( \
       ((major) * 10000)                           \
@@ -128,34 +128,10 @@ typedef struct {
 INDEXSTORE_PUBLIC unsigned
 indexstore_format_version(void);
 
-INDEXSTORE_PUBLIC unsigned indexstore_version(void);
-
 typedef void *indexstore_t;
-typedef void *indexstore_creation_options_t;
-
-INDEXSTORE_PUBLIC indexstore_creation_options_t
-indexstore_creation_options_create(void);
-
-INDEXSTORE_PUBLIC void
-indexstore_creation_options_dispose(indexstore_creation_options_t);
-
-/// Adds a remapping from \c path_prefix to \c remapped_path_prefix.
-///
-/// This should be used to convert hermetic or remote paths embedded in the index data to the
-/// equivalent paths on the local machine.
-INDEXSTORE_PUBLIC void
-indexstore_creation_options_add_prefix_mapping(indexstore_creation_options_t options,
-                                               const char *path_prefix,
-                                               const char *remapped_path_prefix);
 
 INDEXSTORE_PUBLIC indexstore_t
 indexstore_store_create(const char *store_path, indexstore_error_t *error);
-
-
-/// Open the indexstore at the specified path using the specified options, which may be NULL.
-INDEXSTORE_PUBLIC indexstore_t
-indexstore_store_create_with_options(const char *store_path, indexstore_creation_options_t options,
-                                     indexstore_error_t *error);
 
 INDEXSTORE_PUBLIC void
 indexstore_store_dispose(indexstore_t);
@@ -282,7 +258,6 @@ typedef enum {
   INDEXSTORE_SYMBOL_KIND_CONVERSIONFUNCTION = 24,
   INDEXSTORE_SYMBOL_KIND_PARAMETER = 25,
   INDEXSTORE_SYMBOL_KIND_USING = 26,
-  INDEXSTORE_SYMBOL_KIND_CONCEPT = 27,
 
   INDEXSTORE_SYMBOL_KIND_COMMENTTAG = 1000,
 } indexstore_symbol_kind_t;
@@ -295,7 +270,6 @@ typedef enum {
   INDEXSTORE_SYMBOL_SUBKIND_ACCESSORSETTER = 4,
   INDEXSTORE_SYMBOL_SUBKIND_USINGTYPENAME = 5,
   INDEXSTORE_SYMBOL_SUBKIND_USINGVALUE = 6,
-  INDEXSTORE_SYMBOL_SUBKIND_USINGENUM = 7,
 
   INDEXSTORE_SYMBOL_SUBKIND_SWIFTACCESSORWILLSET = 1000,
   INDEXSTORE_SYMBOL_SUBKIND_SWIFTACCESSORDIDSET = 1001,
@@ -313,7 +287,6 @@ typedef enum {
   INDEXSTORE_SYMBOL_SUBKIND_SWIFTGENERICTYPEPARAM = 1013,
   INDEXSTORE_SYMBOL_SUBKIND_SWIFTACCESSORREAD = 1014,
   INDEXSTORE_SYMBOL_SUBKIND_SWIFTACCESSORMODIFY = 1015,
-  INDEXSTORE_SYMBOL_SUBKIND_SWIFTACCESSORINIT = 1016,
 } indexstore_symbol_subkind_t;
 
 INDEXSTORE_OPTIONS(uint64_t, indexstore_symbol_property_t) {

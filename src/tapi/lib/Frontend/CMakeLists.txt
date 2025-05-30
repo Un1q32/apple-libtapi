@@ -5,6 +5,7 @@ set(LLVM_LINK_COMPONENTS
 
 add_tapi_library(tapiFrontend
   APIVisitor.cpp
+  DeclarationFragmentsBuilder.cpp
   Frontend.cpp
   FrontendContext.cpp
 

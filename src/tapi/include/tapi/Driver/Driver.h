@@ -80,12 +80,28 @@ public:
     SDKDB() = delete;
   };
 
+  class GenerateAPITests {
+  public:
+    /// \brief Run tapi with the provided arguments.
+    static bool run(DiagnosticsEngine &diag, Options &opts);
+
+    GenerateAPITests() = delete;
+  };
+
   class APIVerify {
   public:
     /// \brief Run tapi with the provided arguments.
     static bool run(DiagnosticsEngine &diag, Options &opts);
 
     APIVerify() = delete;
+  };
+
+  class ExtractAPI {
+  public:
+    /// \brief Run tapi with the provided arguments.
+    static bool run(DiagnosticsEngine &diag, Options &opts);
+
+    ExtractAPI() = delete;
   };
 };
 

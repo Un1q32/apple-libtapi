@@ -13,6 +13,7 @@
 
 #include "tapi/APIVerifier/APIVerifier.h"
 #include "TAPIStructuralEquivalence.h"
+#include "tapi/Core/TextStubCommon.h"
 #include "clang/AST/Decl.h"
 #include "clang/AST/Type.h"
 #include "llvm/ADT/SmallPtrSet.h"
@@ -107,36 +108,36 @@ void APIVerifier::verify(FrontendContext &api1, FrontendContext &api2,
     DeclToCompare.emplace_back(r1->decl, r2->decl);
   };
 
-  for (auto &it : api2.api->typeDefs) {
-    auto *record = api1.api->findTypeDef(it.first);
+  for (auto &it : api2.api.typeDefs) {
+    auto *record = api1.api.findTypeDef(it.first);
     if (!record)
       continue; // allow missing typedef.
 
     addAPIToCompare(record, it.second);
   }
 
-  for (auto &it : api2.api->globals) {
+  for (auto &it : api2.api.globals) {
     if (it.second->kind != GVKind::Variable)
       continue;
-    auto *record = api1.api->findGlobalVariable(it.first);
+    auto *record = api1.api.findGlobalVariable(it.first);
     if (!record)
       diagnoseMissingAPI(it.second);
     else
       addAPIToCompare(record, it.second);
   }
 
-  for (auto &it : api2.api->globals) {
+  for (auto &it : api2.api.globals) {
     if (it.second->kind != GVKind::Function)
       continue;
-    auto *record = api1.api->findFunction(it.first);
+    auto *record = api1.api.findFunction(it.first);
     if (!record)
       diagnoseMissingAPI(it.second);
     else
       addAPIToCompare(record, it.second);
   }
 
-  for (auto &it : api2.api->enums) {
-    auto *record = api1.api->findEnum(it.first);
+  for (auto &it : api2.api.enums) {
+    auto *record = api1.api.findEnum(it.first);
     // FIXME: this was missing enum *constants* before the change.
     // Do we still allow missing enum decls?
     if (!record)
@@ -152,24 +153,24 @@ void APIVerifier::verify(FrontendContext &api1, FrontendContext &api2,
     }
   }
 
-  for (auto &it : api2.api->interfaces) {
-    auto *record = api1.api->findObjCInterface(it.first);
+  for (auto &it : api2.api.interfaces) {
+    auto *record = api1.api.findObjCInterface(it.first);
     if (!record)
       diagnoseMissingAPI(it.second);
     else
       addAPIToCompare(record, it.second);
   }
 
-  for (auto &it : api2.api->protocols) {
-    auto *record = api1.api->findObjCProtocol(it.first);
+  for (auto &it : api2.api.protocols) {
+    auto *record = api1.api.findObjCProtocol(it.first);
     if (!record)
       diagnoseMissingAPI(it.second);
     else
       addAPIToCompare(record, it.second);
   }
 
-  for (auto &it : api2.api->categories) {
-    auto *record = api1.api->findObjCCategory(it.first.first, it.first.second);
+  for (auto &it : api2.api.categories) {
+    auto *record = api1.api.findObjCCategory(it.first.first, it.first.second);
     if (!record)
       diagnoseMissingAPI(it.second);
     else

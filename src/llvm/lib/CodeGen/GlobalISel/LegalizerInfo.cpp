@@ -13,6 +13,7 @@
 
 #include "llvm/CodeGen/GlobalISel/LegalizerInfo.h"
 #include "llvm/ADT/SmallBitVector.h"
+#include "llvm/CodeGen/GlobalISel/GISelChangeObserver.h"
 #include "llvm/CodeGen/MachineInstr.h"
 #include "llvm/CodeGen/MachineOperand.h"
 #include "llvm/CodeGen/MachineRegisterInfo.h"
@@ -22,7 +23,9 @@
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/LowLevelTypeImpl.h"
+#include "llvm/Support/MathExtras.h"
 #include <algorithm>
+#include <map>
 
 using namespace llvm;
 using namespace LegalizeActions;
@@ -126,19 +129,18 @@ static bool mutationIsSane(const LegalizeRule &Rule,
   case FewerElements:
     if (!OldTy.isVector())
       return false;
-    [[fallthrough]];
+    LLVM_FALLTHROUGH;
   case MoreElements: {
     // MoreElements can go from scalar to vector.
-    const ElementCount OldElts = OldTy.isVector() ?
-      OldTy.getElementCount() : ElementCount::getFixed(1);
+    const unsigned OldElts = OldTy.isVector() ? OldTy.getNumElements() : 1;
     if (NewTy.isVector()) {
       if (Rule.getAction() == FewerElements) {
         // Make sure the element count really decreased.
-        if (ElementCount::isKnownGE(NewTy.getElementCount(), OldElts))
+        if (NewTy.getNumElements() >= OldElts)
           return false;
       } else {
         // Make sure the element count really increased.
-        if (ElementCount::isKnownLE(NewTy.getElementCount(), OldElts))
+        if (NewTy.getNumElements() <= OldElts)
           return false;
       }
     } else if (Rule.getAction() == MoreElements)
@@ -296,7 +298,7 @@ LegalizeRuleSet &LegalizerInfo::getActionDefinitionsBuilder(
     std::initializer_list<unsigned> Opcodes) {
   unsigned Representative = *Opcodes.begin();
 
-  assert(Opcodes.size() >= 2 &&
+  assert(!llvm::empty(Opcodes) && Opcodes.begin() + 1 != Opcodes.end() &&
          "Initializer list must have at least two opcodes");
 
   for (unsigned Op : llvm::drop_begin(Opcodes))
@@ -350,7 +352,8 @@ LegalizerInfo::getAction(const MachineInstr &MI,
 
   SmallVector<LegalityQuery::MemDesc, 2> MemDescrs;
   for (const auto &MMO : MI.memoperands())
-    MemDescrs.push_back({*MMO});
+    MemDescrs.push_back({MMO->getMemoryType(), 8 * MMO->getAlign().value(),
+                         MMO->getSuccessOrdering()});
 
   return getAction({MI.getOpcode(), Types, MemDescrs});
 }

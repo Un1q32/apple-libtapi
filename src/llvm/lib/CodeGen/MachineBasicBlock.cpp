@@ -11,8 +11,8 @@
 //===----------------------------------------------------------------------===//
 
 #include "llvm/CodeGen/MachineBasicBlock.h"
+#include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/CodeGen/LiveIntervals.h"
-#include "llvm/CodeGen/LivePhysRegs.h"
 #include "llvm/CodeGen/LiveVariables.h"
 #include "llvm/CodeGen/MachineDominators.h"
 #include "llvm/CodeGen/MachineFunction.h"
@@ -26,15 +26,16 @@
 #include "llvm/CodeGen/TargetSubtargetInfo.h"
 #include "llvm/Config/llvm-config.h"
 #include "llvm/IR/BasicBlock.h"
+#include "llvm/IR/DataLayout.h"
 #include "llvm/IR/DebugInfoMetadata.h"
 #include "llvm/IR/ModuleSlotTracker.h"
 #include "llvm/MC/MCAsmInfo.h"
 #include "llvm/MC/MCContext.h"
+#include "llvm/Support/DataTypes.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Target/TargetMachine.h"
 #include <algorithm>
-#include <cmath>
 using namespace llvm;
 
 #define DEBUG_TYPE "codegen"
@@ -52,7 +53,8 @@ MachineBasicBlock::MachineBasicBlock(MachineFunction &MF, const BasicBlock *B)
     IrrLoopHeaderWeight = B->getIrrLoopHeaderWeight();
 }
 
-MachineBasicBlock::~MachineBasicBlock() = default;
+MachineBasicBlock::~MachineBasicBlock() {
+}
 
 /// Return the MCSymbol for this basic block.
 MCSymbol *MachineBasicBlock::getSymbol() const {
@@ -132,8 +134,9 @@ void ilist_callback_traits<MachineBasicBlock>::addNodeToList(
 
   // Make sure the instructions have their operands in the reginfo lists.
   MachineRegisterInfo &RegInfo = MF.getRegInfo();
-  for (MachineInstr &MI : N->instrs())
-    MI.addRegOperandsToUseLists(RegInfo);
+  for (MachineBasicBlock::instr_iterator
+         I = N->instr_begin(), E = N->instr_end(); I != E; ++I)
+    I->AddRegOperandsToUseLists(RegInfo);
 }
 
 void ilist_callback_traits<MachineBasicBlock>::removeNodeFromList(
@@ -151,7 +154,7 @@ void ilist_traits<MachineInstr>::addNodeToList(MachineInstr *N) {
   // Add the instruction's register operands to their corresponding
   // use/def lists.
   MachineFunction *MF = Parent->getParent();
-  N->addRegOperandsToUseLists(MF->getRegInfo());
+  N->AddRegOperandsToUseLists(MF->getRegInfo());
   MF->handleInsertion(*N);
 }
 
@@ -163,7 +166,7 @@ void ilist_traits<MachineInstr>::removeNodeFromList(MachineInstr *N) {
   // Remove from the use/def lists.
   if (MachineFunction *MF = N->getMF()) {
     MF->handleRemoval(*N);
-    N->removeRegOperandsFromUseLists(MF->getRegInfo());
+    N->RemoveRegOperandsFromUseLists(MF->getRegInfo());
   }
 
   N->setParent(nullptr);
@@ -191,7 +194,7 @@ void ilist_traits<MachineInstr>::transferNodesFromList(ilist_traits &FromList,
 
 void ilist_traits<MachineInstr>::deleteNode(MachineInstr *MI) {
   assert(!MI->getParent() && "MI is still in a block!");
-  Parent->getParent()->deleteMachineInstr(MI);
+  Parent->getParent()->DeleteMachineInstr(MI);
 }
 
 MachineBasicBlock::iterator MachineBasicBlock::getFirstNonPHI() {
@@ -278,8 +281,8 @@ MachineBasicBlock::getLastNonDebugInstr(bool SkipPseudoOp) {
 }
 
 bool MachineBasicBlock::hasEHPadSuccessor() const {
-  for (const MachineBasicBlock *Succ : successors())
-    if (Succ->isEHPad())
+  for (const_succ_iterator I = succ_begin(), E = succ_end(); I != E; ++I)
+    if ((*I)->isEHPad())
       return true;
   return false;
 }
@@ -452,7 +455,7 @@ void MachineBasicBlock::print(raw_ostream &OS, ModuleSlotTracker &MST,
   if (IrrLoopHeaderWeight && IsStandalone) {
     if (Indexes) OS << '\t';
     OS.indent(2) << "; Irreducible loop header weight: "
-                 << IrrLoopHeaderWeight.value() << '\n';
+                 << IrrLoopHeaderWeight.getValue() << '\n';
   }
 }
 
@@ -477,28 +480,6 @@ void MachineBasicBlock::printName(raw_ostream &os, unsigned printNameFlags,
   os << "bb." << getNumber();
   bool hasAttributes = false;
 
-  auto PrintBBRef = [&](const BasicBlock *bb) {
-    os << "%ir-block.";
-    if (bb->hasName()) {
-      os << bb->getName();
-    } else {
-      int slot = -1;
-
-      if (moduleSlotTracker) {
-        slot = moduleSlotTracker->getLocalSlot(bb);
-      } else if (bb->getParent()) {
-        ModuleSlotTracker tmpTracker(bb->getModule(), false);
-        tmpTracker.incorporateFunction(*bb->getParent());
-        slot = tmpTracker.getLocalSlot(bb);
-      }
-
-      if (slot == -1)
-        os << "<ir-block badref>";
-      else
-        os << slot;
-    }
-  };
-
   if (printNameFlags & PrintNameIr) {
     if (const auto *bb = getBasicBlock()) {
       if (bb->hasName()) {
@@ -506,31 +487,34 @@ void MachineBasicBlock::printName(raw_ostream &os, unsigned printNameFlags,
       } else {
         hasAttributes = true;
         os << " (";
-        PrintBBRef(bb);
+
+        int slot = -1;
+
+        if (moduleSlotTracker) {
+          slot = moduleSlotTracker->getLocalSlot(bb);
+        } else if (bb->getParent()) {
+          ModuleSlotTracker tmpTracker(bb->getModule(), false);
+          tmpTracker.incorporateFunction(*bb->getParent());
+          slot = tmpTracker.getLocalSlot(bb);
+        }
+
+        if (slot == -1)
+          os << "<ir-block badref>";
+        else
+          os << (Twine("%ir-block.") + Twine(slot)).str();
       }
     }
   }
 
   if (printNameFlags & PrintNameAttributes) {
-    if (isMachineBlockAddressTaken()) {
+    if (hasAddressTaken()) {
       os << (hasAttributes ? ", " : " (");
-      os << "machine-block-address-taken";
-      hasAttributes = true;
-    }
-    if (isIRBlockAddressTaken()) {
-      os << (hasAttributes ? ", " : " (");
-      os << "ir-block-address-taken ";
-      PrintBBRef(getAddressTakenIRBlock());
+      os << "address-taken";
       hasAttributes = true;
     }
     if (isEHPad()) {
       os << (hasAttributes ? ", " : " (");
       os << "landing-pad";
-      hasAttributes = true;
-    }
-    if (isInlineAsmBrIndirectTarget()) {
-      os << (hasAttributes ? ", " : " (");
-      os << "inlineasm-br-indirect-target";
       hasAttributes = true;
     }
     if (isEHFuncletEntry()) {
@@ -930,10 +914,6 @@ bool MachineBasicBlock::isLayoutSuccessor(const MachineBasicBlock *MBB) const {
   return std::next(I) == MachineFunction::const_iterator(MBB);
 }
 
-const MachineBasicBlock *MachineBasicBlock::getSingleSuccessor() const {
-  return Successors.size() == 1 ? Successors[0] : nullptr;
-}
-
 MachineBasicBlock *MachineBasicBlock::getFallThrough() {
   MachineFunction::iterator Fallthrough = getIterator();
   ++Fallthrough;
@@ -1054,31 +1034,36 @@ MachineBasicBlock *MachineBasicBlock::SplitCriticalEdge(
   // Collect a list of virtual registers killed by the terminators.
   SmallVector<Register, 4> KilledRegs;
   if (LV)
-    for (MachineInstr &MI :
-         llvm::make_range(getFirstInstrTerminator(), instr_end())) {
-      for (MachineOperand &MO : MI.operands()) {
-        if (!MO.isReg() || MO.getReg() == 0 || !MO.isUse() || !MO.isKill() ||
-            MO.isUndef())
+    for (instr_iterator I = getFirstInstrTerminator(), E = instr_end();
+         I != E; ++I) {
+      MachineInstr *MI = &*I;
+      for (MachineInstr::mop_iterator OI = MI->operands_begin(),
+           OE = MI->operands_end(); OI != OE; ++OI) {
+        if (!OI->isReg() || OI->getReg() == 0 ||
+            !OI->isUse() || !OI->isKill() || OI->isUndef())
           continue;
-        Register Reg = MO.getReg();
+        Register Reg = OI->getReg();
         if (Register::isPhysicalRegister(Reg) ||
-            LV->getVarInfo(Reg).removeKill(MI)) {
+            LV->getVarInfo(Reg).removeKill(*MI)) {
           KilledRegs.push_back(Reg);
-          LLVM_DEBUG(dbgs() << "Removing terminator kill: " << MI);
-          MO.setIsKill(false);
+          LLVM_DEBUG(dbgs() << "Removing terminator kill: " << *MI);
+          OI->setIsKill(false);
         }
       }
     }
 
   SmallVector<Register, 4> UsedRegs;
   if (LIS) {
-    for (MachineInstr &MI :
-         llvm::make_range(getFirstInstrTerminator(), instr_end())) {
-      for (const MachineOperand &MO : MI.operands()) {
-        if (!MO.isReg() || MO.getReg() == 0)
+    for (instr_iterator I = getFirstInstrTerminator(), E = instr_end();
+         I != E; ++I) {
+      MachineInstr *MI = &*I;
+
+      for (MachineInstr::mop_iterator OI = MI->operands_begin(),
+           OE = MI->operands_end(); OI != OE; ++OI) {
+        if (!OI->isReg() || OI->getReg() == 0)
           continue;
 
-        Register Reg = MO.getReg();
+        Register Reg = OI->getReg();
         if (!is_contained(UsedRegs, Reg))
           UsedRegs.push_back(Reg);
       }
@@ -1091,9 +1076,9 @@ MachineBasicBlock *MachineBasicBlock::SplitCriticalEdge(
   // SlotIndexes.
   SmallVector<MachineInstr*, 4> Terminators;
   if (Indexes) {
-    for (MachineInstr &MI :
-         llvm::make_range(getFirstInstrTerminator(), instr_end()))
-      Terminators.push_back(&MI);
+    for (instr_iterator I = getFirstInstrTerminator(), E = instr_end();
+         I != E; ++I)
+      Terminators.push_back(&*I);
   }
 
   // Since we replaced all uses of Succ with NMBB, that should also be treated
@@ -1104,9 +1089,9 @@ MachineBasicBlock *MachineBasicBlock::SplitCriticalEdge(
 
   if (Indexes) {
     SmallVector<MachineInstr*, 4> NewTerminators;
-    for (MachineInstr &MI :
-         llvm::make_range(getFirstInstrTerminator(), instr_end()))
-      NewTerminators.push_back(&MI);
+    for (instr_iterator I = getFirstInstrTerminator(), E = instr_end();
+         I != E; ++I)
+      NewTerminators.push_back(&*I);
 
     for (MachineInstr *Terminator : Terminators) {
       if (!is_contained(NewTerminators, Terminator))
@@ -1451,7 +1436,7 @@ MachineBasicBlock::getSuccProbability(const_succ_iterator Succ) const {
     // ditribute the complemental of the sum to each unknown probability.
     unsigned KnownProbNum = 0;
     auto Sum = BranchProbability::getZero();
-    for (const auto &P : Probs) {
+    for (auto &P : Probs) {
       if (!P.isUnknown()) {
         Sum += P;
         KnownProbNum++;
@@ -1634,16 +1619,6 @@ MachineBasicBlock::liveout_iterator MachineBasicBlock::liveout_begin() const {
   }
 
   return liveout_iterator(*this, ExceptionPointer, ExceptionSelector, false);
-}
-
-bool MachineBasicBlock::sizeWithoutDebugLargerThan(unsigned Limit) const {
-  unsigned Cntr = 0;
-  auto R = instructionsWithoutDebug(begin(), end());
-  for (auto I = R.begin(), E = R.end(); I != E; ++I) {
-    if (++Cntr > Limit)
-      return true;
-  }
-  return false;
 }
 
 const MBBSectionID MBBSectionID::ColdSectionID(MBBSectionID::SectionType::Cold);

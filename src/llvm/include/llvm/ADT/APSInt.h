@@ -5,11 +5,10 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-///
-/// \file
-/// This file implements the APSInt class, which is a simple class that
-/// represents an arbitrary sized integer that knows its signedness.
-///
+//
+// This file implements the APSInt class, which is a simple class that
+// represents an arbitrary sized integer that knows its signedness.
+//
 //===----------------------------------------------------------------------===//
 
 #ifndef LLVM_ADT_APSINT_H
@@ -20,12 +19,12 @@
 namespace llvm {
 
 /// An arbitrary precision integer that knows its signedness.
-class [[nodiscard]] APSInt : public APInt {
-  bool IsUnsigned = false;
+class LLVM_NODISCARD APSInt : public APInt {
+  bool IsUnsigned;
 
 public:
   /// Default constructor that creates an uninitialized APInt.
-  explicit APSInt() = default;
+  explicit APSInt() : IsUnsigned(false) {}
 
   /// Create an APSInt with the specified width, default to unsigned.
   explicit APSInt(uint32_t BitWidth, bool isUnsigned = true)
@@ -59,7 +58,7 @@ public:
   /// that 0 is not a positive value.
   ///
   /// \returns true if this APSInt is positive.
-  bool isStrictlyPositive() const { return isNonNegative() && !isZero(); }
+  bool isStrictlyPositive() const { return isNonNegative() && !isNullValue(); }
 
   APSInt &operator=(APInt RHS) {
     // Retain our current sign.
@@ -144,10 +143,6 @@ public:
       ashrInPlace(Amt);
     return *this;
   }
-  APSInt relativeShr(unsigned Amt) const {
-    return IsUnsigned ? APSInt(relativeLShr(Amt), true)
-                      : APSInt(relativeAShr(Amt), false);
-  }
 
   inline bool operator<(const APSInt& RHS) const {
     assert(IsUnsigned == RHS.IsUnsigned && "Signedness mismatch!");
@@ -201,10 +196,6 @@ public:
   APSInt& operator<<=(unsigned Amt) {
     static_cast<APInt&>(*this) <<= Amt;
     return *this;
-  }
-  APSInt relativeShl(unsigned Amt) const {
-    return IsUnsigned ? APSInt(relativeLShl(Amt), true)
-                      : APSInt(relativeAShl(Amt), false);
   }
 
   APSInt& operator++() {
@@ -353,17 +344,17 @@ inline raw_ostream &operator<<(raw_ostream &OS, const APSInt &I) {
 }
 
 /// Provide DenseMapInfo for APSInt, using the DenseMapInfo for APInt.
-template <> struct DenseMapInfo<APSInt, void> {
+template <> struct DenseMapInfo<APSInt> {
   static inline APSInt getEmptyKey() {
-    return APSInt(DenseMapInfo<APInt, void>::getEmptyKey());
+    return APSInt(DenseMapInfo<APInt>::getEmptyKey());
   }
 
   static inline APSInt getTombstoneKey() {
-    return APSInt(DenseMapInfo<APInt, void>::getTombstoneKey());
+    return APSInt(DenseMapInfo<APInt>::getTombstoneKey());
   }
 
   static unsigned getHashValue(const APSInt &Key) {
-    return DenseMapInfo<APInt, void>::getHashValue(Key);
+    return DenseMapInfo<APInt>::getHashValue(Key);
   }
 
   static bool isEqual(const APSInt &LHS, const APSInt &RHS) {

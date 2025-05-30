@@ -1,8 +1,9 @@
 //===--- FillInMissingProtocolStubs.cpp -  --------------------------------===//
 //
-// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
-// See https://llvm.org/LICENSE.txt for license information.
-// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//                     The LLVM Compiler Infrastructure
+//
+// This file is distributed under the University of Illinois Open Source
+// License. See LICENSE.TXT for details.
 //
 //===----------------------------------------------------------------------===//
 //
@@ -145,20 +146,7 @@ public:
       if (Availability == AR_NotYetIntroduced || Availability == AR_Unavailable)
         continue;
       auto &Map = M->isInstanceMethod() ? InstanceMethods : ClassMethods;
-      MethodInfo MI(M, P, Priority);
-      auto [I, Inserted] = Map.insert(std::make_pair(M->getSelector(), MI));
-      if (Inserted)
-        continue;
-
-      // Prefer a required method so we do not miss fixits, and the lowest
-      // priority so the order of fixits will be deterministic.
-      if (MI.isRequired() != I->second.isRequired()) {
-        if (MI.isRequired())
-          I->second = MI;
-        continue;
-      }
-      if (MI.ProtocolPriority < I->second.ProtocolPriority)
-        I->second = MI;
+      Map.insert(std::make_pair(M->getSelector(), MethodInfo(M, P, Priority)));
     }
   }
 

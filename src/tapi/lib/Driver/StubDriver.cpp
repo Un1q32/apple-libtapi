@@ -11,9 +11,8 @@
 ///
 //===----------------------------------------------------------------------===//
 
-#include "tapi/Core/ClangDiagnostics.h"
 #include "tapi/Core/FileSystem.h"
-#include "tapi/Core/InterfaceFileManager.h"
+#include "tapi/Core/InterfaceFile.h"
 #include "tapi/Core/Path.h"
 #include "tapi/Core/Registry.h"
 #include "tapi/Core/Utils.h"
@@ -25,8 +24,6 @@
 #include "clang/Driver/DriverDiagnostic.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/FileSystem.h"
-#include "llvm/TextAPI/InterfaceFile.h"
-#include <queue>
 #include <string>
 
 using namespace llvm;
@@ -39,14 +36,10 @@ TAPI_NAMESPACE_INTERNAL_BEGIN
 namespace {
 
 struct Context {
-  Context(FileManager &fm, DiagnosticsEngine &diag, bool isBnI)
-      : fm(fm), diag(diag),
-        interfaceMgr(InterfaceFileManager(fm, /*isVolatile=*/isBnI)) {
+  Context(FileManager &fm, DiagnosticsEngine &diag) : fm(fm), diag(diag) {
     registry.addBinaryReaders();
     registry.addYAMLReaders();
     registry.addYAMLWriters();
-    registry.addJSONReaders();
-    registry.addJSONWriters();
   }
 
   Context(const Context &) = delete;
@@ -54,7 +47,8 @@ struct Context {
   bool deleteInputFile = false;
   bool inlinePrivateFrameworks = false;
   bool deletePrivateFrameworks = false;
-  bool traceLibraryLocation = false;
+  bool recordUUIDs = true;
+  bool setInstallAPIFlag = false;
 
 
   PathSeq sysroots;
@@ -66,8 +60,7 @@ struct Context {
   Registry registry;
   FileManager &fm;
   DiagnosticsEngine &diag;
-  InterfaceFileManager interfaceMgr;
-  FileType fileType;
+  VersionedFileType fileType;
 };
 
 struct SymlinkInfo {
@@ -103,21 +96,6 @@ findAndGetReexportedLibrary(const StringRef reexportName, Context &ctx,
       ctx.diag.report(diag::err_cannot_read_file) << path << ec.message();
     return nullptr;
   }
-
-  if (ctx.traceLibraryLocation)
-    errs() << path << "\n";
-
-  if (StringRef(path).endswith(".tbd")) {
-    auto file = ctx.registry.readTextFile(std::move(bufferOrError.get()),
-                                          ReadFlags::Symbols);
-    if (!file) {
-      if (printErrors)
-        ctx.diag.report(diag::err_cannot_read_file)
-            << path << toString(file.takeError());
-      return nullptr;
-    }
-    return std::move(*file);
-  }
   auto file =
       ctx.registry.readFile(std::move(bufferOrError.get()), ReadFlags::Symbols);
   if (!file) {
@@ -126,19 +104,16 @@ findAndGetReexportedLibrary(const StringRef reexportName, Context &ctx,
           << path << toString(file.takeError());
     return nullptr;
   }
-  auto interface = convertToInterfaceFile(*file);
-  return std::move(interface);
+  return std::move(file.get());
 }
 
 static bool isPrivatePath(StringRef path, bool isSymlink = false) {
   // Remove the iOSSupport/DriverKit prefix to identify public locations inside
   // the iOSSupport/DriverKit directory.
-  path.consume_front(MACCATALYST_PREFIX_PATH);
-  path.consume_front(DRIVERKIT_PREFIX_PATH);
+  path.consume_front("/System/iOSSupport");
+  path.consume_front("/System/DriverKit");
   // Also /Library/Apple prefix for ROSP.
   path.consume_front("/Library/Apple");
-  // Also /System/Cryptexes/OS for SPLAT.
-  path.consume_front(CRYPTEXES_PREFIX_PATH);
 
   if (path.startswith("/usr/local/lib"))
     return true;
@@ -165,11 +140,7 @@ static bool isPrivatePath(StringRef path, bool isSymlink = false) {
     std::tie(name, rest) =
         path.drop_front(sizeof("/System/Library/Frameworks")).split('.');
 
-    // Allow symlinks to top-level frameworks
-    if (isSymlink && rest == "framework")
-      return false;
-
-    // only top level framework are public
+    // but only top level framework
     // /System/Library/Frameworks/Foo.framework/Foo ==> true
     // /System/Library/Frameworks/Foo.framework/Versions/A/Foo ==> true
     // /System/Library/Frameworks/Foo.framework/Resources/libBar.dylib ==> false
@@ -190,7 +161,7 @@ static bool isPrivatePath(StringRef path, bool isSymlink = false) {
 
 
 static bool inlineFrameworks(Context &ctx, InterfaceFile *dylib) {
-  assert(ctx.fileType >= FileType::TBD_V3 &&
+  assert(ctx.fileType >= TBDv3 &&
          "inlining is not supported for earlier TBD versions");
   auto &reexports = dylib->reexportedLibraries();
   for (auto &lib : reexports) {
@@ -214,7 +185,9 @@ static bool inlineFrameworks(Context &ctx, InterfaceFile *dylib) {
           << reexportedDylib->getPath();
       return false;
     }
-    dylib->inlineLibrary(reexportedDylib, overwriteFramework);
+    // Clear InstallAPI flag.
+    reexportedDylib->setInstallAPI(false);
+    dylib->inlineFramework(reexportedDylib, overwriteFramework);
   }
 
   return true;
@@ -238,7 +211,7 @@ static bool stubifyDynamicLibrary(Context &ctx) {
   if (!ctx.registry.canRead(bufferOrErr.get()->getMemBufferRef(),
                             FileType::MachO_DynamicLibrary |
                                 FileType::MachO_DynamicLibrary_Stub |
-                                Registry::getTextFileType())) {
+                                FileType::TBD)) {
     ctx.diag.report(diag::err_not_a_dylib) << inputFile->getName();
     return false;
   }
@@ -250,10 +223,8 @@ static bool stubifyDynamicLibrary(Context &ctx) {
         << ctx.inputPath << toString(file.takeError());
     return false;
   }
-  if (ctx.traceLibraryLocation)
-    errs() << ctx.inputPath << "\n";
 
-  auto interface = convertToInterfaceFile(*file);
+  std::unique_ptr<InterfaceFile> interface = std::move(file.get());
   auto *dylib = interface.get();
   if (!ctx.registry.canWrite(dylib, ctx.fileType)) {
     ctx.diag.report(diag::err_cannot_convert_dylib) << dylib->getPath();
@@ -265,8 +236,13 @@ static bool stubifyDynamicLibrary(Context &ctx) {
       return false;
   }
 
+  if (!ctx.recordUUIDs)
+    dylib->clearUUIDs();
+
+  dylib->setInstallAPI(ctx.setInstallAPIFlag);
+
   if (auto result =
-          ctx.interfaceMgr.writeFile(ctx.outputPath, dylib, ctx.fileType)) {
+          ctx.registry.writeFile(ctx.outputPath, dylib, ctx.fileType)) {
     ctx.diag.report(diag::err_cannot_write_file)
         << ctx.outputPath << toString(std::move(result));
     return false;
@@ -285,7 +261,7 @@ static bool stubifyDynamicLibrary(Context &ctx) {
 
 /// \brief Converts all dynamic libraries/frameworks to text-based stubs if
 /// possible. Also create the same symlinks as the ones that pointed to the
-/// original library. If requested the source library will be deleted.
+/// orignal library. If requested the source library will be deleted.
 ///
 /// inputPath is the canonical path - no symlinks and no path relative elements.
 static bool stubifyDirectory(Context &ctx) {
@@ -417,32 +393,18 @@ static bool stubifyDirectory(Context &ctx) {
     if (!ctx.registry.canRead(bufferOrErr.get()->getMemBufferRef(),
                               FileType::MachO_DynamicLibrary |
                                   FileType::MachO_DynamicLibrary_Stub |
-                                  Registry::getTextFileType()))
+                                  FileType::TBD))
       continue;
 
-    std::unique_ptr<InterfaceFile> interface = nullptr;
-    if (path.endswith(".tbd")) {
-      auto file2 = ctx.registry.readTextFile(std::move(bufferOrErr.get()),
-                                             ReadFlags::Symbols);
-      if (!file2) {
-        ctx.diag.report(diag::err_cannot_read_file)
-            << path << toString(file2.takeError());
-        return false;
-      }
-      interface = std::move(*file2);
-    } else {
-      auto file2 = ctx.registry.readFile(std::move(bufferOrErr.get()),
-                                         ReadFlags::Symbols);
-      if (!file2) {
-        ctx.diag.report(diag::err_cannot_read_file)
-            << path << toString(file2.takeError());
-        return false;
-      }
-      interface = convertToInterfaceFile(*file2);
+    auto file2 =
+        ctx.registry.readFile(std::move(bufferOrErr.get()), ReadFlags::Symbols);
+    if (!file2) {
+      ctx.diag.report(diag::err_cannot_read_file)
+          << path << toString(file2.takeError());
+      return false;
     }
 
-    if (ctx.traceLibraryLocation)
-      errs() << path << "\n";
+    std::unique_ptr<InterfaceFile> interface = std::move(file2.get());
 
     // Normalize path for map lookup by removing the extension.
     SmallString<PATH_MAX> normalizedPath(path);
@@ -479,12 +441,20 @@ static bool stubifyDirectory(Context &ctx) {
       return false;
     }
 
-    if (ctx.inlinePrivateFrameworks && !inlineFrameworks(ctx, dylib.get()))
-      return false;
+    // WORKAROUND: Do not perform inlining when the installapi flag is set.
+    if (!dylib->isInstallAPI() && ctx.inlinePrivateFrameworks)
+      if (!inlineFrameworks(ctx, dylib.get()))
+        return false;
 
 
-    auto result = ctx.interfaceMgr.writeFile(std::string(output), dylib.get(),
-                                             ctx.fileType);
+    if (!ctx.recordUUIDs)
+      dylib->clearUUIDs();
+
+    if (ctx.setInstallAPIFlag)
+      dylib->setInstallAPI();
+
+    auto result =
+        ctx.registry.writeFile(output.str().str(), dylib.get(), ctx.fileType);
     if (result) {
       ctx.diag.report(diag::err_cannot_write_file)
           << output << toString(std::move(result));
@@ -566,19 +536,19 @@ bool Driver::Stub::run(DiagnosticsEngine &diag, Options &opts) {
     return false;
   }
 
-  if ((opts.tapiOptions.fileType < FileType::TBD_V3) &&
+  if ((opts.tapiOptions.fileType < TBDv3) &&
       opts.tapiOptions.inlinePrivateFrameworks) {
     diag.report(diag::err_inlining_not_supported) << opts.tapiOptions.fileType;
     return false;
   }
 
   // FIME: Copy everything for now.
-  Context ctx(opts.getFileManager(), diag, opts.tapiOptions.isBnI);
+  Context ctx(opts.getFileManager(), diag);
   ctx.deleteInputFile = opts.tapiOptions.deleteInputFile;
   ctx.inlinePrivateFrameworks = opts.tapiOptions.inlinePrivateFrameworks;
   ctx.deletePrivateFrameworks = opts.tapiOptions.deletePrivateFrameworks;
-  ctx.traceLibraryLocation = opts.tapiOptions.traceLibraryLocation;
-
+  ctx.recordUUIDs = opts.tapiOptions.recordUUIDs;
+  ctx.setInstallAPIFlag = opts.tapiOptions.setInstallAPIFlag;
 
   // Handle isysroot.
   for (auto &root : opts.tapiOptions.allSysroots) {

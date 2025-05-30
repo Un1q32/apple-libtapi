@@ -12,7 +12,6 @@
 //===----------------------------------------------------------------------===//
 
 #include "tapi/Core/FileListReader.h"
-#include "clang/Basic/LangStandard.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/JSON.h"
 #include "llvm/Support/MemoryBuffer.h"
@@ -29,11 +28,14 @@ private:
                                   StringRef error);
   Expected<StringRef> parsePath(const Object *obj);
   Expected<HeaderType> parseType(const Object *obj);
-  Optional<clang::Language> parseLanguage(const Object *obj);
-  bool parseSwiftCompatibilityHeaderIndicator(const Object *obj);
   Error parseHeaders(Array &headers);
 
 public:
+  struct HeaderInfo {
+    HeaderType type;
+    std::string path;
+  };
+
   std::unique_ptr<MemoryBuffer> inputBuffer;
   unsigned version;
   std::vector<HeaderInfo> headerList;
@@ -76,29 +78,6 @@ FileListReader::Implementation::parsePath(const Object *obj) {
   return *path;
 }
 
-Optional<clang::Language>
-FileListReader::Implementation::parseLanguage(const Object *obj) {
-  auto language = obj->getString("language");
-  if (!language)
-    return None;
-
-  return StringSwitch<clang::Language>(*language)
-      .Case("c", clang::Language::C)
-      .Case("c++", clang::Language::CXX)
-      .Case("objective-c", clang::Language::ObjC)
-      .Case("objective-c++", clang::Language::ObjCXX)
-      .Default(clang::Language::Unknown);
-}
-
-bool FileListReader::Implementation::parseSwiftCompatibilityHeaderIndicator(
-    const Object *obj) {
-  auto isSwiftCompatibilityHeader = obj->getBoolean("swiftCompatibilityHeader");
-  if (!isSwiftCompatibilityHeader)
-    return false;
-
-  return *isSwiftCompatibilityHeader;
-}
-
 Error FileListReader::Implementation::parseHeaders(Array &headers) {
   for (const auto &header : headers) {
     auto *obj = header.getAsObject();
@@ -111,12 +90,8 @@ Error FileListReader::Implementation::parseHeaders(Array &headers) {
     auto path = parsePath(obj);
     if (!path)
       return path.takeError();
-    bool isSwiftCompatibilityHeader =
-        parseSwiftCompatibilityHeaderIndicator(obj);
-    auto language = parseLanguage(obj);
 
-    headerList.emplace_back(HeaderInfo{*type, std::string(*path), language,
-                                       isSwiftCompatibilityHeader});
+    headerList.emplace_back(HeaderInfo{*type, std::string(*path)});
   }
 
   return Error::success();
@@ -140,7 +115,7 @@ Error FileListReader::Implementation::parse(StringRef input) {
     return make_error<StringError>("invalid version number",
                                    inconvertibleErrorCode());
 
-  if (version < 1 || version > 3)
+  if (version < 1 || version > 2)
     return make_error<StringError>("unsupported version",
                                    inconvertibleErrorCode());
 
@@ -181,13 +156,14 @@ FileListReader::~FileListReader() { delete &impl; }
 int FileListReader::getVersion() const { return impl.version; }
 
 void FileListReader::visit(Visitor &visitor) {
-  for (auto &file : impl.headerList)
-    visitor.visitHeaderFile(file);
+  for (const auto &file : impl.headerList)
+    visitor.visitHeaderFile(file.type, file.path);
 }
 
 FileListReader::Visitor::~Visitor() {}
 
-void FileListReader::Visitor::visitHeaderFile(HeaderInfo &header) {}
+void FileListReader::Visitor::visitHeaderFile(HeaderType type, StringRef path) {
+}
 
 TAPI_NAMESPACE_INTERNAL_END
 

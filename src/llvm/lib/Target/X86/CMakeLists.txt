@@ -12,15 +12,13 @@ tablegen(LLVM X86GenEVEX2VEXTables.inc -gen-x86-EVEX2VEX-tables)
 tablegen(LLVM X86GenExegesis.inc -gen-exegesis)
 tablegen(LLVM X86GenFastISel.inc -gen-fast-isel)
 tablegen(LLVM X86GenGlobalISel.inc -gen-global-isel)
-tablegen(LLVM X86GenInstrInfo.inc -gen-instr-info
-                                  -instr-info-expand-mi-operand-info=0)
-tablegen(LLVM X86GenMnemonicTables.inc -gen-x86-mnemonic-tables -asmwriternum=1)
+tablegen(LLVM X86GenInstrInfo.inc -gen-instr-info)
 tablegen(LLVM X86GenRegisterBank.inc -gen-register-bank)
 tablegen(LLVM X86GenRegisterInfo.inc -gen-register-info)
 tablegen(LLVM X86GenSubtargetInfo.inc -gen-subtarget)
 
 if (X86_GEN_FOLD_TABLES)
-  tablegen(LLVM X86GenFoldTables.inc -gen-x86-fold-tables -asmwriternum=1)
+  tablegen(LLVM X86GenFoldTables.inc -gen-x86-fold-tables)
 endif()
 
 add_public_tablegen_target(X86CommonTableGen)
@@ -39,7 +37,6 @@ set(sources
   X86PreAMXConfig.cpp
   X86LowerAMXIntrinsics.cpp
   X86TileConfig.cpp
-  X86FastPreTileConfig.cpp
   X86FastTileConfig.cpp
   X86PreTileConfig.cpp
   X86ExpandPseudo.cpp
@@ -47,7 +44,6 @@ set(sources
   X86FixupBWInsts.cpp
   X86FixupLEAs.cpp
   X86AvoidStoreForwardingBlocks.cpp
-  X86DynAllocaExpander.cpp
   X86FixupSetCC.cpp
   X86FlagsCopyLowering.cpp
   X86FloatingPoint.cpp
@@ -64,7 +60,6 @@ set(sources
   X86InstrFoldTables.cpp
   X86InstrInfo.cpp
   X86EvexToVex.cpp
-  X86KCFI.cpp
   X86LegalizerInfo.cpp
   X86LoadValueInjectionLoadHardening.cpp
   X86LoadValueInjectionRetHardening.cpp
@@ -76,7 +71,6 @@ set(sources
   X86PartialReduction.cpp
   X86RegisterBankInfo.cpp
   X86RegisterInfo.cpp
-  X86ReturnThunks.cpp
   X86SelectionDAGInfo.cpp
   X86ShuffleDecodeConstantPool.cpp
   X86SpeculativeLoadHardening.cpp
@@ -86,6 +80,7 @@ set(sources
   X86TargetObjectFile.cpp
   X86TargetTransformInfo.cpp
   X86VZeroUpper.cpp
+  X86WinAllocaExpander.cpp
   X86WinEHState.cpp
   X86InsertWait.cpp
   )
@@ -96,7 +91,6 @@ add_llvm_target(X86CodeGen ${sources}
   AsmPrinter
   CodeGen
   Core
-  Instrumentation
   MC
   SelectionDAG
   Support
@@ -114,6 +108,5 @@ add_llvm_target(X86CodeGen ${sources}
 
 add_subdirectory(AsmParser)
 add_subdirectory(Disassembler)
-add_subdirectory(MCA)
 add_subdirectory(MCTargetDesc)
 add_subdirectory(TargetInfo)

@@ -7,7 +7,6 @@
 //===----------------------------------------------------------------------===//
 
 #include "PrimType.h"
-#include "Pointer.h"
 
 using namespace clang;
 using namespace clang::interp;

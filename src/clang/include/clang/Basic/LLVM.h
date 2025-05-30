@@ -51,14 +51,6 @@ namespace llvm {
   class raw_ostream;
   class raw_pwrite_stream;
   // TODO: DenseMap, ...
-
-  namespace cas {
-  class ActionCache;
-  class ObjectStore;
-  class CASID;
-  class ObjectProxy;
-  class ObjectRef;
-  } // namespace cas
 }
 
 
@@ -66,13 +58,10 @@ namespace clang {
   // Casting operators.
   using llvm::isa;
   using llvm::isa_and_nonnull;
-  using llvm::isa_and_present;
   using llvm::cast;
   using llvm::dyn_cast;
   using llvm::dyn_cast_or_null;
-  using llvm::dyn_cast_if_present;
   using llvm::cast_or_null;
-  using llvm::cast_if_present;
 
   // ADT's.
   using llvm::ArrayRef;
@@ -98,14 +87,6 @@ namespace clang {
 
   using llvm::raw_ostream;
   using llvm::raw_pwrite_stream;
-
-  namespace cas {
-  using llvm::cas::ActionCache;
-  using llvm::cas::CASID;
-  using llvm::cas::ObjectProxy;
-  using llvm::cas::ObjectRef;
-  using llvm::cas::ObjectStore;
-  } // namespace cas
 } // end namespace clang.
 
 #endif

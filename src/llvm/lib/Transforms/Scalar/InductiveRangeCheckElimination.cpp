@@ -56,6 +56,8 @@
 #include "llvm/Analysis/BranchProbabilityInfo.h"
 #include "llvm/Analysis/LoopAnalysisManager.h"
 #include "llvm/Analysis/LoopInfo.h"
+#include "llvm/Analysis/LoopPass.h"
+#include "llvm/Analysis/PostDominators.h"
 #include "llvm/Analysis/ScalarEvolution.h"
 #include "llvm/Analysis/ScalarEvolutionExpressions.h"
 #include "llvm/IR/BasicBlock.h"
@@ -307,7 +309,7 @@ InductiveRangeCheck::parseRangeCheckICmp(Loop *L, ICmpInst *ICI,
 
   case ICmpInst::ICMP_SLE:
     std::swap(LHS, RHS);
-    [[fallthrough]];
+    LLVM_FALLTHROUGH;
   case ICmpInst::ICMP_SGE:
     IsSigned = true;
     if (match(RHS, m_ConstantInt<0>())) {
@@ -318,7 +320,7 @@ InductiveRangeCheck::parseRangeCheckICmp(Loop *L, ICmpInst *ICI,
 
   case ICmpInst::ICMP_SLT:
     std::swap(LHS, RHS);
-    [[fallthrough]];
+    LLVM_FALLTHROUGH;
   case ICmpInst::ICMP_SGT:
     IsSigned = true;
     if (match(RHS, m_ConstantInt<-1>())) {
@@ -335,7 +337,7 @@ InductiveRangeCheck::parseRangeCheckICmp(Loop *L, ICmpInst *ICI,
 
   case ICmpInst::ICMP_ULT:
     std::swap(LHS, RHS);
-    [[fallthrough]];
+    LLVM_FALLTHROUGH;
   case ICmpInst::ICMP_UGT:
     IsSigned = false;
     if (IsLoopInvariant(LHS)) {
@@ -1184,7 +1186,6 @@ void LoopConstrainer::cloneLoop(LoopConstrainer::ClonedLoop &Result,
       for (PHINode &PN : SBB->phis()) {
         Value *OldIncoming = PN.getIncomingValueForBlock(OriginalBB);
         PN.addIncoming(GetClonedValue(OldIncoming), ClonedBB);
-        SE.forgetValue(&PN);
       }
     }
   }
@@ -1410,12 +1411,12 @@ bool LoopConstrainer::run() {
 
   bool IsSignedPredicate = MainLoopStructure.IsSignedPredicate;
   Optional<SubRanges> MaybeSR = calculateSubRanges(IsSignedPredicate);
-  if (!MaybeSR) {
+  if (!MaybeSR.hasValue()) {
     LLVM_DEBUG(dbgs() << "irce: could not compute subranges\n");
     return false;
   }
 
-  SubRanges SR = *MaybeSR;
+  SubRanges SR = MaybeSR.getValue();
   bool Increasing = MainLoopStructure.IndVarIncreasing;
   IntegerType *IVTy =
       cast<IntegerType>(Range.getBegin()->getType());
@@ -1428,9 +1429,9 @@ bool LoopConstrainer::run() {
   // constructor.
   ClonedLoop PreLoop, PostLoop;
   bool NeedsPreLoop =
-      Increasing ? SR.LowLimit.has_value() : SR.HighLimit.has_value();
+      Increasing ? SR.LowLimit.hasValue() : SR.HighLimit.hasValue();
   bool NeedsPostLoop =
-      Increasing ? SR.HighLimit.has_value() : SR.LowLimit.has_value();
+      Increasing ? SR.HighLimit.hasValue() : SR.LowLimit.hasValue();
 
   Value *ExitPreLoopAt = nullptr;
   Value *ExitMainLoopAt = nullptr;
@@ -1452,7 +1453,7 @@ bool LoopConstrainer::run() {
       return false;
     }
 
-    if (!Expander.isSafeToExpandAt(ExitPreLoopAtSCEV, InsertPt)) {
+    if (!isSafeToExpandAt(ExitPreLoopAtSCEV, InsertPt, SE)) {
       LLVM_DEBUG(dbgs() << "irce: could not prove that it is safe to expand the"
                         << " preloop exit limit " << *ExitPreLoopAtSCEV
                         << " at block " << InsertPt->getParent()->getName()
@@ -1479,7 +1480,7 @@ bool LoopConstrainer::run() {
       return false;
     }
 
-    if (!Expander.isSafeToExpandAt(ExitMainLoopAtSCEV, InsertPt)) {
+    if (!isSafeToExpandAt(ExitMainLoopAtSCEV, InsertPt, SE)) {
       LLVM_DEBUG(dbgs() << "irce: could not prove that it is safe to expand the"
                         << " main loop exit limit " << *ExitMainLoopAtSCEV
                         << " at block " << InsertPt->getParent()->getName()
@@ -1583,11 +1584,8 @@ InductiveRangeCheck::computeSafeIterationSpace(
     bool IsLatchSigned) const {
   // We can deal when types of latch check and range checks don't match in case
   // if latch check is more narrow.
-  auto *IVType = dyn_cast<IntegerType>(IndVar->getType());
-  auto *RCType = dyn_cast<IntegerType>(getBegin()->getType());
-  // Do not work with pointer types.
-  if (!IVType || !RCType)
-    return None;
+  auto *IVType = cast<IntegerType>(IndVar->getType());
+  auto *RCType = cast<IntegerType>(getBegin()->getType());
   if (IVType->getBitWidth() > RCType->getBitWidth())
     return None;
   // IndVar is of the form "A + B * I" (where "I" is the canonical induction
@@ -1712,9 +1710,9 @@ IntersectSignedRange(ScalarEvolution &SE,
                      const InductiveRangeCheck::Range &R2) {
   if (R2.isEmpty(SE, /* IsSigned */ true))
     return None;
-  if (!R1)
+  if (!R1.hasValue())
     return R2;
-  auto &R1Value = R1.value();
+  auto &R1Value = R1.getValue();
   // We never return empty ranges from this function, and R1 is supposed to be
   // a result of intersection. Thus, R1 is never empty.
   assert(!R1Value.isEmpty(SE, /* IsSigned */ true) &&
@@ -1741,9 +1739,9 @@ IntersectUnsignedRange(ScalarEvolution &SE,
                        const InductiveRangeCheck::Range &R2) {
   if (R2.isEmpty(SE, /* IsSigned */ false))
     return None;
-  if (!R1)
+  if (!R1.hasValue())
     return R2;
-  auto &R1Value = R1.value();
+  auto &R1Value = R1.getValue();
   // We never return empty ranges from this function, and R1 is supposed to be
   // a result of intersection. Thus, R1 is never empty.
   assert(!R1Value.isEmpty(SE, /* IsSigned */ false) &&
@@ -1765,14 +1763,10 @@ IntersectUnsignedRange(ScalarEvolution &SE,
 }
 
 PreservedAnalyses IRCEPass::run(Function &F, FunctionAnalysisManager &AM) {
-  auto &DT = AM.getResult<DominatorTreeAnalysis>(F);
-  LoopInfo &LI = AM.getResult<LoopAnalysis>(F);
-  // There are no loops in the function. Return before computing other expensive
-  // analyses.
-  if (LI.empty())
-    return PreservedAnalyses::all();
   auto &SE = AM.getResult<ScalarEvolutionAnalysis>(F);
+  auto &DT = AM.getResult<DominatorTreeAnalysis>(F);
   auto &BPI = AM.getResult<BranchProbabilityAnalysis>(F);
+  LoopInfo &LI = AM.getResult<LoopAnalysis>(F);
 
   // Get BFI analysis result on demand. Please note that modification of
   // CFG invalidates this analysis and we should handle it.
@@ -1860,7 +1854,7 @@ InductiveRangeCheckElimination::isProfitableToTransform(const Loop &L,
                                                         LoopStructure &LS) {
   if (SkipProfitabilityChecks)
     return true;
-  if (GetBFI) {
+  if (GetBFI.hasValue()) {
     BlockFrequencyInfo &BFI = (*GetBFI)();
     uint64_t hFreq = BFI.getBlockFreq(LS.Header).getFrequency();
     uint64_t phFreq = BFI.getBlockFreq(L.getLoopPreheader()).getFrequency();
@@ -1902,7 +1896,7 @@ bool InductiveRangeCheckElimination::run(
   LLVMContext &Context = Preheader->getContext();
   SmallVector<InductiveRangeCheck, 16> RangeChecks;
 
-  for (auto *BBI : L->getBlocks())
+  for (auto BBI : L->getBlocks())
     if (BranchInst *TBI = dyn_cast<BranchInst>(BBI->getTerminator()))
       InductiveRangeCheck::extractRangeChecksFromBranch(TBI, L, SE, BPI,
                                                         RangeChecks);
@@ -1926,12 +1920,12 @@ bool InductiveRangeCheckElimination::run(
   const char *FailureReason = nullptr;
   Optional<LoopStructure> MaybeLoopStructure =
       LoopStructure::parseLoopStructure(SE, *L, FailureReason);
-  if (!MaybeLoopStructure) {
+  if (!MaybeLoopStructure.hasValue()) {
     LLVM_DEBUG(dbgs() << "irce: could not parse loop structure: "
                       << FailureReason << "\n";);
     return false;
   }
-  LoopStructure LS = *MaybeLoopStructure;
+  LoopStructure LS = MaybeLoopStructure.getValue();
   if (!isProfitableToTransform(*L, LS))
     return false;
   const SCEVAddRecExpr *IndVar =
@@ -1952,22 +1946,24 @@ bool InductiveRangeCheckElimination::run(
   for (InductiveRangeCheck &IRC : RangeChecks) {
     auto Result = IRC.computeSafeIterationSpace(SE, IndVar,
                                                 LS.IsSignedPredicate);
-    if (Result) {
+    if (Result.hasValue()) {
       auto MaybeSafeIterRange =
-          IntersectRange(SE, SafeIterRange, Result.value());
-      if (MaybeSafeIterRange) {
-        assert(!MaybeSafeIterRange.value().isEmpty(SE, LS.IsSignedPredicate) &&
-               "We should never return empty ranges!");
+          IntersectRange(SE, SafeIterRange, Result.getValue());
+      if (MaybeSafeIterRange.hasValue()) {
+        assert(
+            !MaybeSafeIterRange.getValue().isEmpty(SE, LS.IsSignedPredicate) &&
+            "We should never return empty ranges!");
         RangeChecksToEliminate.push_back(IRC);
-        SafeIterRange = MaybeSafeIterRange.value();
+        SafeIterRange = MaybeSafeIterRange.getValue();
       }
     }
   }
 
-  if (!SafeIterRange)
+  if (!SafeIterRange.hasValue())
     return false;
 
-  LoopConstrainer LC(*L, LI, LPMAddNewLoop, LS, SE, DT, SafeIterRange.value());
+  LoopConstrainer LC(*L, LI, LPMAddNewLoop, LS, SE, DT,
+                     SafeIterRange.getValue());
   bool Changed = LC.run();
 
   if (Changed) {

@@ -11,8 +11,6 @@
 
 #include "MCTargetDesc/BPFMCTargetDesc.h"
 #include "llvm/IR/PassManager.h"
-#include "llvm/Pass.h"
-#include "llvm/PassRegistry.h"
 #include "llvm/Target/TargetMachine.h"
 
 namespace llvm {
@@ -23,7 +21,6 @@ ModulePass *createBPFCheckAndAdjustIR();
 
 FunctionPass *createBPFAbstractMemberAccess(BPFTargetMachine *TM);
 FunctionPass *createBPFPreserveDIType();
-FunctionPass *createBPFIRPeephole();
 FunctionPass *createBPFISelDag(BPFTargetMachine &TM);
 FunctionPass *createBPFMISimplifyPatchablePass();
 FunctionPass *createBPFMIPeepholePass();
@@ -36,7 +33,6 @@ void initializeBPFCheckAndAdjustIRPass(PassRegistry&);
 
 void initializeBPFAbstractMemberAccessLegacyPassPass(PassRegistry &);
 void initializeBPFPreserveDITypePass(PassRegistry&);
-void initializeBPFIRPeepholePass(PassRegistry&);
 void initializeBPFMISimplifyPatchablePass(PassRegistry&);
 void initializeBPFMIPeepholePass(PassRegistry&);
 void initializeBPFMIPeepholeTruncElimPass(PassRegistry&);
@@ -55,13 +51,6 @@ public:
 };
 
 class BPFPreserveDITypePass : public PassInfoMixin<BPFPreserveDITypePass> {
-public:
-  PreservedAnalyses run(Function &F, FunctionAnalysisManager &AM);
-
-  static bool isRequired() { return true; }
-};
-
-class BPFIRPeepholePass : public PassInfoMixin<BPFIRPeepholePass> {
 public:
   PreservedAnalyses run(Function &F, FunctionAnalysisManager &AM);
 

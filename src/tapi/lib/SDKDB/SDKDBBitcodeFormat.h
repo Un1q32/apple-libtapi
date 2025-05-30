@@ -323,7 +323,7 @@ namespace library_table_block {
 // These IDs must \em not be renumbered or reordered without incrementing
 // VERSION_MAJOR.
 enum {
-  // Target Triple for the lookup table.
+  // Taget Triple for the lookup table.
   TARGET_TRIPLE = 1,
 
   // OnDiskHashTable.

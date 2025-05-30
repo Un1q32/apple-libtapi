@@ -13,7 +13,6 @@
 
 #include "llvm/ProfileData/GCOV.h"
 #include "llvm/ADT/STLExtras.h"
-#include "llvm/ADT/SmallSet.h"
 #include "llvm/Config/llvm-config.h"
 #include "llvm/Demangle/Demangle.h"
 #include "llvm/Support/Debug.h"
@@ -24,6 +23,7 @@
 #include "llvm/Support/raw_ostream.h"
 #include <algorithm>
 #include <system_error>
+#include <unordered_map>
 
 using namespace llvm;
 
@@ -346,7 +346,7 @@ StringRef GCOVFunction::getName(bool demangle) const {
         }
       }
       demangled = Name;
-    } while (false);
+    } while (0);
   }
   return demangled;
 }
@@ -491,12 +491,12 @@ uint64_t GCOVBlock::getCyclesCount(const BlockVector &blocks) {
   uint64_t count = 0, d;
   for (;;) {
     // Make blocks on the line traversable and try finding a cycle.
-    for (const auto *b : blocks) {
+    for (auto b : blocks) {
       const_cast<GCOVBlock *>(b)->traversable = true;
       const_cast<GCOVBlock *>(b)->incoming = nullptr;
     }
     d = 0;
-    for (const auto *block : blocks) {
+    for (auto block : blocks) {
       auto *b = const_cast<GCOVBlock *>(block);
       if (b->traversable && (d = augmentOneCycle(b, stack)) > 0)
         break;
@@ -507,7 +507,7 @@ uint64_t GCOVBlock::getCyclesCount(const BlockVector &blocks) {
   }
   // If there is no more loop, all traversable bits should have been cleared.
   // This property is needed by subsequent calls.
-  for (const auto *b : blocks) {
+  for (auto b : blocks) {
     assert(!b->traversable);
     (void)b;
   }
@@ -663,8 +663,6 @@ void Context::collectFunction(GCOVFunction &f, Summary &summary) {
   if (f.startLine >= si.startLineToFunctions.size())
     si.startLineToFunctions.resize(f.startLine + 1);
   si.startLineToFunctions[f.startLine].push_back(&f);
-  SmallSet<uint32_t, 16> lines;
-  SmallSet<uint32_t, 16> linesExec;
   for (const GCOVBlock &b : f.blocksRange()) {
     if (b.lines.empty())
       continue;
@@ -673,9 +671,9 @@ void Context::collectFunction(GCOVFunction &f, Summary &summary) {
       si.lines.resize(maxLineNum + 1);
     for (uint32_t lineNum : b.lines) {
       LineInfo &line = si.lines[lineNum];
-      if (lines.insert(lineNum).second)
+      if (!line.exists)
         ++summary.lines;
-      if (b.count && linesExec.insert(lineNum).second)
+      if (line.count == 0 && b.count)
         ++summary.linesExec;
       line.exists = true;
       line.count += b.count;

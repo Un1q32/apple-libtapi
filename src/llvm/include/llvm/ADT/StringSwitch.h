@@ -4,16 +4,14 @@
 // See https://llvm.org/LICENSE.txt for license information.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //===----------------------------------------------------------------------===/
-///
-/// \file
-///  This file implements the StringSwitch template, which mimics a switch()
-///  statement whose cases are string literals.
-///
+//
+//  This file implements the StringSwitch template, which mimics a switch()
+//  statement whose cases are string literals.
+//
 //===----------------------------------------------------------------------===/
 #ifndef LLVM_ADT_STRINGSWITCH_H
 #define LLVM_ADT_STRINGSWITCH_H
 
-#include "llvm/ADT/Optional.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Compiler.h"
 #include <cassert>
@@ -179,13 +177,15 @@ public:
     return CaseLower(S0, Value).CasesLower(S1, S2, S3, S4, Value);
   }
 
-  [[nodiscard]] R Default(T Value) {
+  LLVM_NODISCARD
+  R Default(T Value) {
     if (Result)
       return std::move(*Result);
     return Value;
   }
 
-  [[nodiscard]] operator R() {
+  LLVM_NODISCARD
+  operator R() {
     assert(Result && "Fell off the end of a string-switch");
     return std::move(*Result);
   }

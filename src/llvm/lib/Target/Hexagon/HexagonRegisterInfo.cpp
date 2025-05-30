@@ -228,7 +228,7 @@ void HexagonRegisterInfo::eliminateFrameIndex(MachineBasicBlock::iterator II,
     case Hexagon::PS_fia:
       MI.setDesc(HII.get(Hexagon::A2_addi));
       MI.getOperand(FIOp).ChangeToImmediate(RealOffset);
-      MI.removeOperand(FIOp+1);
+      MI.RemoveOperand(FIOp+1);
       return;
     case Hexagon::PS_fi:
       // Set up the instruction for updating below.
@@ -255,7 +255,7 @@ void HexagonRegisterInfo::eliminateFrameIndex(MachineBasicBlock::iterator II,
       case Hexagon::PS_vstorerw_ai:
       case Hexagon::PS_vstorerw_nt_ai:
         IsPair = true;
-        [[fallthrough]];
+        LLVM_FALLTHROUGH;
       case Hexagon::PS_vloadrv_ai:
       case Hexagon::PS_vloadrv_nt_ai:
       case Hexagon::PS_vstorerv_ai:

@@ -18,6 +18,7 @@
 #include "llvm/CodeGen/MachineRegisterInfo.h"
 #include "llvm/CodeGen/SelectionDAG.h"
 #include "llvm/CodeGen/SelectionDAGISel.h"
+#include "llvm/CodeGen/TargetLowering.h"
 #include "llvm/Config/llvm-config.h"
 #include "llvm/IR/CallingConv.h"
 #include "llvm/IR/Constants.h"
@@ -254,7 +255,7 @@ bool MSP430DAGToDAGISel::SelectAddr(SDValue N,
   Base = (AM.BaseType == MSP430ISelAddressMode::FrameIndexBase)
              ? CurDAG->getTargetFrameIndex(
                    AM.Base.FrameIndex,
-                   N.getValueType())
+                   getTargetLowering()->getPointerTy(CurDAG->getDataLayout()))
              : AM.Base.Reg;
 
   if (AM.GV)
@@ -303,11 +304,13 @@ static bool isValidIndexedLoad(const LoadSDNode *LD) {
 
   switch (VT.getSimpleVT().SimpleTy) {
   case MVT::i8:
+    // Sanity check
     if (cast<ConstantSDNode>(LD->getOffset())->getZExtValue() != 1)
       return false;
 
     break;
   case MVT::i16:
+    // Sanity check
     if (cast<ConstantSDNode>(LD->getOffset())->getZExtValue() != 2)
       return false;
 

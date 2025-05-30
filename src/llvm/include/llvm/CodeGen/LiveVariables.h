@@ -37,7 +37,6 @@
 #include "llvm/CodeGen/MachineInstr.h"
 #include "llvm/CodeGen/TargetRegisterInfo.h"
 #include "llvm/InitializePasses.h"
-#include "llvm/PassRegistry.h"
 
 namespace llvm {
 
@@ -189,12 +188,6 @@ public:
   //===--------------------------------------------------------------------===//
   //  API to update live variable information
 
-  /// Recompute liveness from scratch for a virtual register \p Reg that is
-  /// known to have a single def that dominates all uses. This can be useful
-  /// after removing some uses of \p Reg. It is not necessary for the whole
-  /// machine function to be in SSA form.
-  void recomputeForSingleDefVirtReg(Register Reg);
-
   /// replaceKillInstruction - Update register kill info by replacing a kill
   /// instruction with a new one.
   void replaceKillInstruction(Register Reg, MachineInstr &OldMI,
@@ -219,7 +212,8 @@ public:
       return false;
 
     bool Removed = false;
-    for (MachineOperand &MO : MI.operands()) {
+    for (unsigned i = 0, e = MI.getNumOperands(); i != e; ++i) {
+      MachineOperand &MO = MI.getOperand(i);
       if (MO.isReg() && MO.isKill() && MO.getReg() == Reg) {
         MO.setIsKill(false);
         Removed = true;
@@ -254,7 +248,8 @@ public:
       return false;
 
     bool Removed = false;
-    for (MachineOperand &MO : MI.operands()) {
+    for (unsigned i = 0, e = MI.getNumOperands(); i != e; ++i) {
+      MachineOperand &MO = MI.getOperand(i);
       if (MO.isReg() && MO.isDef() && MO.getReg() == Reg) {
         MO.setIsDead(false);
         Removed = true;

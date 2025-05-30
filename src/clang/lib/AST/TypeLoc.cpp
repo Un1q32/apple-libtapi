@@ -194,21 +194,15 @@ SourceLocation TypeLoc::getBeginLoc() const {
   while (true) {
     switch (Cur.getTypeLocClass()) {
     case Elaborated:
-      if (Cur.getLocalSourceRange().getBegin().isValid()) {
-        LeftMost = Cur;
-        break;
-      }
-      Cur = Cur.getNextTypeLoc();
-      if (Cur.isNull())
-        break;
-      continue;
+      LeftMost = Cur;
+      break;
     case FunctionProto:
       if (Cur.castAs<FunctionProtoTypeLoc>().getTypePtr()
               ->hasTrailingReturn()) {
         LeftMost = Cur;
         break;
       }
-      [[fallthrough]];
+      LLVM_FALLTHROUGH;
     case FunctionNoProto:
     case ConstantArray:
     case DependentSizedArray:
@@ -246,8 +240,6 @@ SourceLocation TypeLoc::getEndLoc() const {
     case IncompleteArray:
     case VariableArray:
     case FunctionNoProto:
-      // The innermost type with suffix syntax always determines the end of the
-      // type.
       Last = Cur;
       break;
     case FunctionProto:
@@ -256,19 +248,12 @@ SourceLocation TypeLoc::getEndLoc() const {
       else
         Last = Cur;
       break;
-    case ObjCObjectPointer:
-      // `id` and `id<...>` have no star location.
-      if (Cur.castAs<ObjCObjectPointerTypeLoc>().getStarLoc().isInvalid())
-        break;
-      [[fallthrough]];
     case Pointer:
     case BlockPointer:
     case MemberPointer:
     case LValueReference:
     case RValueReference:
     case PackExpansion:
-      // Types with prefix syntax only determine the end of the type if there
-      // is no suffix type.
       if (!Last)
         Last = Cur;
       break;
@@ -366,7 +351,6 @@ TypeSpecifierType BuiltinTypeLoc::getWrittenTypeSpec() const {
   case BuiltinType::LongDouble:
   case BuiltinType::Float16:
   case BuiltinType::Float128:
-  case BuiltinType::Ibm128:
   case BuiltinType::ShortAccum:
   case BuiltinType::Accum:
   case BuiltinType::LongAccum:
@@ -513,16 +497,12 @@ SourceRange AttributedTypeLoc::getLocalSourceRange() const {
   return getAttr() ? getAttr()->getRange() : SourceRange();
 }
 
-SourceRange BTFTagAttributedTypeLoc::getLocalSourceRange() const {
-  return getAttr() ? getAttr()->getRange() : SourceRange();
-}
-
 void TypeOfTypeLoc::initializeLocal(ASTContext &Context,
                                        SourceLocation Loc) {
   TypeofLikeTypeLoc<TypeOfTypeLoc, TypeOfType, TypeOfTypeLocInfo>
       ::initializeLocal(Context, Loc);
-  this->getLocalData()->UnmodifiedTInfo =
-      Context.getTrivialTypeSourceInfo(getUnmodifiedType(), Loc);
+  this->getLocalData()->UnderlyingTInfo = Context.getTrivialTypeSourceInfo(
+      getUnderlyingType(), Loc);
 }
 
 void UnaryTransformTypeLoc::initializeLocal(ASTContext &Context,
@@ -536,8 +516,6 @@ void UnaryTransformTypeLoc::initializeLocal(ASTContext &Context,
 
 void ElaboratedTypeLoc::initializeLocal(ASTContext &Context,
                                         SourceLocation Loc) {
-  if (isEmpty())
-    return;
   setElaboratedKeywordLoc(Loc);
   NestedNameSpecifierLocBuilder Builder;
   Builder.MakeTrivial(Context, getTypePtr()->getQualifier(), Loc);
@@ -634,7 +612,6 @@ void AutoTypeLoc::initializeLocal(ASTContext &Context, SourceLocation Loc) {
   setFoundDecl(nullptr);
   setRAngleLoc(Loc);
   setLAngleLoc(Loc);
-  setRParenLoc(Loc);
   TemplateSpecializationTypeLoc::initializeArgLocs(Context, getNumArgs(),
                                                    getTypePtr()->getArgs(),
                                                    getArgInfos(), Loc);
@@ -693,10 +670,6 @@ namespace {
 
     TypeLoc VisitAttributedTypeLoc(AttributedTypeLoc T) {
       return Visit(T.getModifiedLoc());
-    }
-
-    TypeLoc VisitBTFTagAttributedTypeLoc(BTFTagAttributedTypeLoc T) {
-      return Visit(T.getWrappedLoc());
     }
 
     TypeLoc VisitMacroQualifiedTypeLoc(MacroQualifiedTypeLoc T) {

@@ -191,13 +191,6 @@ class MarshallingInfoStringVector<KeyPathAndMacro kpm>
   code Denormalizer = "denormalizeStringVector";
 }
 
-// Marshalled option accepting vector of '='-separated pair of strings.
-class MarshallingInfoStringPairVector<KeyPathAndMacro kpm>
-  : MarshallingInfo<kpm, "std::vector<StringPair>({})"> {
-  code Normalizer = "normalizeStringPairVector";
-  code Denormalizer = "denormalizeStringPairVector";
-}
-
 // Marshalled option - single positive flag.
 class MarshallingInfoFlag<KeyPathAndMacro kpm, code defaultvalue = "false">
   : MarshallingInfo<kpm, defaultvalue> {
@@ -221,7 +214,7 @@ class MarshallingInfoBitfieldFlag<KeyPathAndMacro kpm, code value>
 }
 
 // Implementation detail of BoolOption.
-class MarshallingInfoBooleanFlag<KeyPathAndMacro kpm, code defaultvalue, code value,
+class MarshallingInfoBooleanFlag<KeyPathAndMacro kpm, code defaultvalue, code value, code name,
                                  code other_value, code other_name>
   : MarshallingInfoFlag<kpm, defaultvalue> {
   code Normalizer = "makeBooleanOptionNormalizer("#value#", "#other_value#", OPT_"#other_name#")";

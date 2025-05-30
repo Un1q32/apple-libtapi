@@ -28,7 +28,6 @@
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/Endian.h"
 #include "llvm/Support/Error.h"
-#include "llvm/Support/VirtualFileSystem.h"
 #include "llvm/Support/raw_ostream.h"
 #include <cassert>
 #include <cstdint>
@@ -43,10 +42,6 @@
 namespace llvm {
 
 class IndexedInstrProfReader;
-
-namespace vfs {
-class FileSystem;
-} // namespace vfs
 
 namespace coverage {
 
@@ -200,11 +195,11 @@ public:
   ArrayRef<CounterExpression> getExpressions() const { return Expressions; }
 
   /// Return a counter that represents the expression that adds LHS and RHS.
-  Counter add(Counter LHS, Counter RHS, bool Simplify = true);
+  Counter add(Counter LHS, Counter RHS);
 
   /// Return a counter that represents the expression that subtracts RHS from
   /// LHS.
-  Counter subtract(Counter LHS, Counter RHS, bool Simplify = true);
+  Counter subtract(Counter LHS, Counter RHS);
 };
 
 using LineColPair = std::pair<unsigned, unsigned>;
@@ -610,8 +605,7 @@ public:
   /// Ignores non-instrumented object files unless all are not instrumented.
   static Expected<std::unique_ptr<CoverageMapping>>
   load(ArrayRef<StringRef> ObjectFilenames, StringRef ProfileFilename,
-       vfs::FileSystem &FS, ArrayRef<StringRef> Arches = None,
-       StringRef CompilationDir = "");
+       ArrayRef<StringRef> Arches = None, StringRef CompilationDir = "");
 
   /// The number of functions that couldn't have their profiles mapped.
   ///
@@ -699,16 +693,15 @@ public:
 /// An iterator over the \c LineCoverageStats objects for lines described by
 /// a \c CoverageData instance.
 class LineCoverageIterator
-    : public iterator_facade_base<LineCoverageIterator,
-                                  std::forward_iterator_tag,
-                                  const LineCoverageStats> {
+    : public iterator_facade_base<
+          LineCoverageIterator, std::forward_iterator_tag, LineCoverageStats> {
 public:
   LineCoverageIterator(const CoverageData &CD)
       : LineCoverageIterator(CD, CD.begin()->Line) {}
 
   LineCoverageIterator(const CoverageData &CD, unsigned Line)
       : CD(CD), WrappedSegment(nullptr), Next(CD.begin()), Ended(false),
-        Line(Line) {
+        Line(Line), Segments(), Stats() {
     this->operator++();
   }
 
@@ -717,6 +710,8 @@ public:
   }
 
   const LineCoverageStats &operator*() const { return Stats; }
+
+  LineCoverageStats &operator*() { return Stats; }
 
   LineCoverageIterator &operator++();
 
@@ -1008,10 +1003,7 @@ enum CovMapVersion {
   Version4 = 3,
   // Branch regions referring to two counters are added
   Version5 = 4,
-  // Compilation directory is stored separately and combined with relative
-  // filenames to produce an absolute file path.
-  Version6 = 5,
-  // The current version is Version6.
+  // The current version is Version5.
   CurrentVersion = INSTR_PROF_COVMAP_VERSION
 };
 

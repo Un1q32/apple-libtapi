@@ -24,6 +24,8 @@ std::string AvailabilityInfo::str() const {
 void AvailabilityInfo::print(raw_ostream &os) const {
   os << "i:" << _introduced << " d:" << _deprecated << " o:" << _obsoleted
      << " u:" << static_cast<int>((bool)_unavailable);
+  if (_unconditionallyDeprecated)
+    os << " (deprecated)";
   if (_isSPIAvailable)
     os << " (spi)";
 }

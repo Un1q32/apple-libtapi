@@ -171,7 +171,8 @@ bool ByteCodeStmtGen<Emitter>::visitReturnStmt(const ReturnStmt *RS) {
       return this->emitRet(*ReturnType, RS);
     } else {
       // RVO - construct the value in the return location.
-      if (!this->visitInitializer(RE))
+      auto ReturnLocation = [this, RE] { return this->emitGetParamPtr(0, RE); };
+      if (!this->visitInitializer(RE, ReturnLocation))
         return false;
       this->emitCleanup();
       return this->emitRetVoid(RS);
@@ -187,12 +188,6 @@ bool ByteCodeStmtGen<Emitter>::visitReturnStmt(const ReturnStmt *RS) {
 template <class Emitter>
 bool ByteCodeStmtGen<Emitter>::visitIfStmt(const IfStmt *IS) {
   BlockScope<Emitter> IfScope(this);
-
-  if (IS->isNonNegatedConsteval())
-    return visitStmt(IS->getThen());
-  if (IS->isNegatedConsteval())
-    return IS->getElse() ? visitStmt(IS->getElse()) : true;
-
   if (auto *CondInit = IS->getInit())
     if (!visitStmt(IS->getInit()))
       return false;
@@ -231,35 +226,32 @@ bool ByteCodeStmtGen<Emitter>::visitIfStmt(const IfStmt *IS) {
 
 template <class Emitter>
 bool ByteCodeStmtGen<Emitter>::visitVarDecl(const VarDecl *VD) {
+  auto DT = VD->getType();
+
   if (!VD->hasLocalStorage()) {
     // No code generation required.
     return true;
   }
 
   // Integers, pointers, primitives.
-  if (Optional<PrimType> T = this->classify(VD->getType())) {
-    const Expr *Init = VD->getInit();
-
-    if (!Init)
-      return false;
-
-    unsigned Offset =
-        this->allocateLocalPrimitive(VD, *T, VD->getType().isConstQualified());
-    // Compile the initializer in its own scope.
+  if (Optional<PrimType> T = this->classify(DT)) {
+    auto Off = this->allocateLocalPrimitive(VD, *T, DT.isConstQualified());
+    // Compile the initialiser in its own scope.
     {
       ExprScope<Emitter> Scope(this);
-      if (!this->visit(Init))
+      if (!this->visit(VD->getInit()))
         return false;
     }
     // Set the value.
-    return this->emitSetLocal(*T, Offset, VD);
+    return this->emitSetLocal(*T, Off, VD);
+  } else {
+    // Composite types - allocate storage and initialize it.
+    if (auto Off = this->allocateLocal(VD)) {
+      return this->visitLocalInitializer(VD->getInit(), *Off);
+    } else {
+      return this->bail(VD);
+    }
   }
-
-  // Composite types - allocate storage and initialize it.
-  if (Optional<unsigned> Offset = this->allocateLocal(VD))
-    return this->visitLocalInitializer(VD->getInit(), *Offset);
-
-  return this->bail(VD);
 }
 
 namespace clang {

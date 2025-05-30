@@ -18,20 +18,16 @@
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Config/config.h"
+#include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Compiler.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/ErrorOr.h"
 #include "llvm/Support/FileSystem.h"
-#include "llvm/Support/Path.h"
 #include "llvm/Support/Program.h"
 #include "llvm/Support/raw_ostream.h"
-
-#ifdef __APPLE__
-#include "llvm/Support/CommandLine.h"
-#endif
-
-#include <string>
+#include <cassert>
 #include <system_error>
+#include <string>
 #include <vector>
 
 using namespace llvm;
@@ -74,7 +70,7 @@ std::string llvm::DOT::EscapeString(const std::string &Label) {
             Str.erase(Str.begin()+i); continue;
           default: break;
         }
-      [[fallthrough]];
+      LLVM_FALLTHROUGH;
     case '{': case '}':
     case '<': case '>':
     case '|': case '"':
@@ -98,8 +94,11 @@ StringRef llvm::DOT::getColorString(unsigned ColorNumber) {
 
 static std::string replaceIllegalFilenameChars(std::string Filename,
                                                const char ReplacementChar) {
-  std::string IllegalChars =
-      is_style_windows(sys::path::Style::native) ? "\\/:?\"<>|" : "/";
+#ifdef _WIN32
+  std::string IllegalChars = "\\/:?\"<>|";
+#else
+  std::string IllegalChars = "/";
+#endif
 
   for (char IllegalChar : IllegalChars) {
     std::replace(Filename.begin(), Filename.end(), IllegalChar,

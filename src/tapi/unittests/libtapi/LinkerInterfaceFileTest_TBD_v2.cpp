@@ -17,8 +17,6 @@ using namespace tapi;
 #define DEBUG_TYPE "libtapi-test"
 
 namespace {
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wdeprecated-declarations"
 
 class LibTapiTest_TBDv2 : public LibTapiTest {};
 
@@ -173,17 +171,20 @@ TEST_F(LibTapiTest_TBDv2, LIF_isSupported) {
       sizeof(unsupported_file)));
 }
 
-// These tests intentionally call deprecated apis.
 TEST_F(LibTapiTest_TBDv2, LIF_shouldPreferTextBasedStubFile) {
   EXPECT_TRUE(LinkerInterfaceFile::shouldPreferTextBasedStubFile(
       INPUT_PATH "/installapi.tbd"));
-  EXPECT_TRUE(LinkerInterfaceFile::shouldPreferTextBasedStubFile(
+  EXPECT_FALSE(LinkerInterfaceFile::shouldPreferTextBasedStubFile(
       INPUT_PATH "/install.tbd"));
 }
 
 TEST_F(LibTapiTest_TBDv2, LIF_isEquivalent) {
-  EXPECT_FALSE(LinkerInterfaceFile::areEquivalent(INPUT_PATH "/libuuid1.tbd",
+  EXPECT_TRUE(LinkerInterfaceFile::areEquivalent(INPUT_PATH "/libuuid1.tbd",
+                                                 INPUT_PATH "/libuuid.dylib"));
+  EXPECT_FALSE(LinkerInterfaceFile::areEquivalent(INPUT_PATH "/libuuid2.tbd",
                                                   INPUT_PATH "/libuuid.dylib"));
+  EXPECT_TRUE(LinkerInterfaceFile::areEquivalent(INPUT_PATH "/libuuid3.tbd",
+                                                 INPUT_PATH "/libuuid.dylib"));
 }
 
 // Test parsing a .tbd file.
@@ -348,21 +349,22 @@ TEST_F(LibTapiTest_TBDv2, LIF_Load_Install_Name) {
   EXPECT_TRUE(file->isInstallNameVersionSpecific());
 }
 
-// Test for invalid files.
 TEST_F(LibTapiTest_TBDv2, LIF_Load_Unknown_Platform) {
   writeTempFile(tbd_v2_file_unknown_platform);
   std::string errorMessage;
   auto file = std::unique_ptr<LinkerInterfaceFile>(LinkerInterfaceFile::create(
       getTempFilePath(), CPU_TYPE_I386, CPU_SUBTYPE_I386_ALL,
       ParsingFlags::None, PackedVersion32(10, 11, 0), errorMessage));
-  EXPECT_EQ(nullptr, file);
-  ASSERT_EQ(std::string("malformed file\n") + getTempFilePath() +
-                ":3:11: error: unknown platform\n"
-                "platform: unknown\n"
-                "          ^~~~~~~\n",
-            errorMessage);
+  ASSERT_TRUE(errorMessage.empty());
+  ASSERT_NE(nullptr, file);
+
+  EXPECT_TRUE(file->getPlatformSet().empty());
+  EXPECT_EQ(std::string("Test.dylib"), file->getInstallName());
+  EXPECT_TRUE(file->isApplicationExtensionSafe());
+  EXPECT_TRUE(file->hasTwoLevelNamespace());
 }
 
+// Test for invalid files.
 TEST_F(LibTapiTest_TBDv2, LIF_UnsupportedFileType) {
   writeTempFile(unsupported_file);
   std::string errorMessage;
@@ -1164,5 +1166,4 @@ TEST_F(LibTapiTest_TBDv2, LIF_Load_unknown_arch) {
 }
 
 
-#pragma clang diagnostic pop
 } // end namespace

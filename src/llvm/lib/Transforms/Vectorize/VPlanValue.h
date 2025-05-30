@@ -96,23 +96,17 @@ public:
     VPVReplicateSC,
     VPVWidenSC,
     VPVWidenCallSC,
-    VPVWidenCanonicalIVSC,
     VPVWidenGEPSC,
     VPVWidenSelectSC,
 
     // Phi-like VPValues. Need to be kept together.
     VPVBlendSC,
-    VPVPredInstPHI,
-    // Header-phi recipes. Need to be kept together.
-    VPVCanonicalIVPHISC,
-    VPVActiveLaneMaskPHISC,
     VPVFirstOrderRecurrencePHISC,
     VPVWidenPHISC,
+    VPVWidenCanonicalIVSC,
     VPVWidenIntOrFpInductionSC,
-    VPVWidenPointerInductionSC,
+    VPVPredInstPHI,
     VPVReductionPHISC,
-    VPVFirstHeaderPHISC = VPVCanonicalIVPHISC,
-    VPVLastPHISC = VPVReductionPHISC,
   };
 
   VPValue(Value *UV = nullptr, VPDef *Def = nullptr)
@@ -183,17 +177,11 @@ public:
   void replaceAllUsesWith(VPValue *New);
 
   VPDef *getDef() { return Def; }
-  const VPDef *getDef() const { return Def; }
 
   /// Returns the underlying IR value, if this VPValue is defined outside the
   /// scope of VPlan. Returns nullptr if the VPValue is defined by a VPDef
   /// inside a VPlan.
   Value *getLiveInIRValue() {
-    assert(!getDef() &&
-           "VPValue is not a live-in; it is defined by a VPDef inside a VPlan");
-    return getUnderlyingValue();
-  }
-  const Value *getLiveInIRValue() const {
     assert(!getDef() &&
            "VPValue is not a live-in; it is defined by a VPDef inside a VPlan");
     return getUnderlyingValue();
@@ -212,7 +200,9 @@ public:
   /// Subclass identifier (for isa/dyn_cast).
   enum class VPUserID {
     Recipe,
-    LiveOut,
+    // TODO: Currently VPUsers are used in VPBlockBase, but in the future the
+    // only VPUsers should either be recipes or live-outs.
+    Block
   };
 
 private:
@@ -289,22 +279,6 @@ public:
 
   /// Method to support type inquiry through isa, cast, and dyn_cast.
   static inline bool classof(const VPDef *Recipe);
-
-  /// Returns true if the VPUser uses scalars of operand \p Op. Conservatively
-  /// returns if only first (scalar) lane is used, as default.
-  virtual bool usesScalars(const VPValue *Op) const {
-    assert(is_contained(operands(), Op) &&
-           "Op must be an operand of the recipe");
-    return onlyFirstLaneUsed(Op);
-  }
-
-  /// Returns true if the VPUser only uses the first lane of operand \p Op.
-  /// Conservatively returns false.
-  virtual bool onlyFirstLaneUsed(const VPValue *Op) const {
-    assert(is_contained(operands(), Op) &&
-           "Op must be an operand of the recipe");
-    return false;
-  }
 };
 
 /// This class augments a recipe with a set of VPValues defined by the recipe.
@@ -346,14 +320,11 @@ public:
   /// type identification.
   using VPRecipeTy = enum {
     VPBranchOnMaskSC,
-    VPExpandSCEVSC,
     VPInstructionSC,
     VPInterleaveSC,
     VPReductionSC,
     VPReplicateSC,
-    VPScalarIVStepsSC,
     VPWidenCallSC,
-    VPWidenCanonicalIVSC,
     VPWidenGEPSC,
     VPWidenMemoryInstructionSC,
     VPWidenSC,
@@ -361,17 +332,13 @@ public:
 
     // Phi-like recipes. Need to be kept together.
     VPBlendSC,
-    VPPredInstPHISC,
-    // Header-phi recipes. Need to be kept together.
-    VPCanonicalIVPHISC,
-    VPActiveLaneMaskPHISC,
     VPFirstOrderRecurrencePHISC,
     VPWidenPHISC,
+    VPWidenCanonicalIVSC,
     VPWidenIntOrFpInductionSC,
-    VPWidenPointerInductionSC,
+    VPPredInstPHISC,
     VPReductionPHISC,
     VPFirstPHISC = VPBlendSC,
-    VPFirstHeaderPHISC = VPCanonicalIVPHISC,
     VPLastPHISC = VPReductionPHISC,
   };
 
@@ -436,6 +403,7 @@ public:
 
 class VPlan;
 class VPBasicBlock;
+class VPRegionBlock;
 
 /// This class can be used to assign consecutive numbers to all VPValues in a
 /// VPlan and allows querying the numbering for printing, similar to the

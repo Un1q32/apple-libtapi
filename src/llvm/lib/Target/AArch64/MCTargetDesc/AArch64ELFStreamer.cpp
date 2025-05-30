@@ -107,9 +107,6 @@ class AArch64TargetAsmStreamer : public AArch64TargetStreamer {
   void emitARM64WinCFIClearUnwoundToCall() override {
     OS << "\t.seh_clear_unwound_to_call\n";
   }
-  void emitARM64WinCFIPACSignLR() override {
-    OS << "\t.seh_pac_sign_lr\n";
-  }
 
 public:
   AArch64TargetAsmStreamer(MCStreamer &S, formatted_raw_ostream &OS);
@@ -180,8 +177,8 @@ public:
     // We can't just use EmitIntValue here, as that will emit a data mapping
     // symbol, and swap the endianness on big-endian systems (instructions are
     // always little-endian).
-    for (char &C : Buffer) {
-      C = uint8_t(Inst);
+    for (unsigned I = 0; I < 4; ++I) {
+      Buffer[I] = uint8_t(Inst);
       Inst >>= 8;
     }
 
@@ -257,7 +254,6 @@ void AArch64TargetELFStreamer::emitInst(uint32_t Inst) {
 }
 
 void AArch64TargetELFStreamer::emitDirectiveVariantPCS(MCSymbol *Symbol) {
-  getStreamer().getAssembler().registerSymbol(*Symbol);
   cast<MCSymbolELF>(Symbol)->setOther(ELF::STO_AARCH64_VARIANT_PCS);
 }
 

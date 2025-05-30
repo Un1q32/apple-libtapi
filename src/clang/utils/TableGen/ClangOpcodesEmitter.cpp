@@ -120,14 +120,11 @@ void ClangOpcodesEmitter::EmitInterp(raw_ostream &OS, StringRef N, Record *R) {
 
     OS << "case OP_" << ID << ": {\n";
 
-    if (CanReturn)
-      OS << "  bool DoReturn = (S.Current == StartFrame);\n";
-
     // Emit calls to read arguments.
     for (size_t I = 0, N = Args.size(); I < N; ++I) {
       OS << "  auto V" << I;
       OS << " = ";
-      OS << "ReadArg<" << Args[I]->getValueAsString("Name") << ">(S, PC);\n";
+      OS << "PC.read<" << Args[I]->getValueAsString("Name") << ">();\n";
     }
 
     // Emit a call to the template method and pass arguments.
@@ -149,9 +146,6 @@ void ClangOpcodesEmitter::EmitInterp(raw_ostream &OS, StringRef N, Record *R) {
     if (CanReturn) {
       OS << "  if (!S.Current || S.Current->isRoot())\n";
       OS << "    return true;\n";
-
-      OS << "  if (DoReturn)\n";
-      OS << "    return true;\n";
     }
 
     OS << "  continue;\n";
@@ -167,10 +161,8 @@ void ClangOpcodesEmitter::EmitDisasm(raw_ostream &OS, StringRef N, Record *R) {
     OS << "  PrintName(\"" << ID << "\");\n";
     OS << "  OS << \"\\t\"";
 
-    for (auto *Arg : R->getValueAsListOfDefs("Args")) {
-      OS << " << ReadArg<" << Arg->getValueAsString("Name") << ">(P, PC)";
-      OS << " << \" \"";
-    }
+    for (auto *Arg : R->getValueAsListOfDefs("Args"))
+      OS << " << PC.read<" << Arg->getValueAsString("Name") << ">() << \" \"";
 
     OS << " << \"\\n\";\n";
     OS << "  continue;\n";

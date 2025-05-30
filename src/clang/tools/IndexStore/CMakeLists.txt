@@ -8,6 +8,11 @@ set(SOURCES
   ../../include/indexstore/IndexStoreCXX.h
   )
 
+set(LIBS
+  clangIndex
+  clangIndexDataStore
+)
+
 if(NOT CMAKE_SYSTEM_NAME STREQUAL Windows)
   set(LLVM_EXPORTED_SYMBOL_FILE ${CMAKE_CURRENT_SOURCE_DIR}/IndexStore.exports)
 endif()
@@ -23,10 +28,11 @@ add_clang_library(IndexStore SHARED
   ${SOURCES}
 
   LINK_LIBS
-  clangIndex
-  clangIndexDataStore
+  ${LIBS}
 
   LINK_COMPONENTS
+  ${LLVM_TARGETS_TO_BUILD}
+  Core
   Support
   )
 

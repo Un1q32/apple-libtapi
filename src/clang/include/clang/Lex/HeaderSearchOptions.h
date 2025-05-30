@@ -14,11 +14,10 @@
 #include "llvm/ADT/Hashing.h"
 #include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/StringRef.h"
-#include "llvm/Support/HashBuilder.h"
 #include <cstdint>
-#include <map>
 #include <string>
 #include <vector>
+#include <map>
 
 namespace clang {
 
@@ -143,12 +142,6 @@ public:
   /// file.
   unsigned ModuleMapFileHomeIsCwd : 1;
 
-  /// Set the base path of a built module file to be the current working
-  /// directory. This is useful for sharing module files across machines
-  /// that build with different paths without having to rewrite all
-  /// modulemap files to have working directory relative paths.
-  unsigned ModuleFileHomeIsCwd : 1;
-
   /// Also search for prebuilt implicit modules in the prebuilt module cache
   /// path.
   unsigned EnablePrebuiltImplicitModules : 1;
@@ -216,9 +209,6 @@ public:
 
   unsigned ModulesValidateDiagnosticOptions : 1;
 
-  /// Whether to entirely skip writing diagnostic options.
-  unsigned ModulesSkipDiagnosticOptions : 1;
-
   unsigned ModulesHashContent : 1;
 
   /// Whether we should include all things that could impact the module in the
@@ -231,14 +221,13 @@ public:
   HeaderSearchOptions(StringRef _Sysroot = "/")
       : Sysroot(_Sysroot), ModuleFormat("raw"), DisableModuleHash(false),
         ImplicitModuleMaps(false), ModuleMapFileHomeIsCwd(false),
-        ModuleFileHomeIsCwd(false), EnablePrebuiltImplicitModules(false),
-        UseBuiltinIncludes(true), UseStandardSystemIncludes(true),
-        UseStandardCXXIncludes(true), UseLibcxx(false), Verbose(false),
+        EnablePrebuiltImplicitModules(false), UseBuiltinIncludes(true),
+        UseStandardSystemIncludes(true), UseStandardCXXIncludes(true),
+        UseLibcxx(false), Verbose(false),
         ModulesValidateOncePerBuildSession(false),
         ModulesValidateSystemHeaders(false),
         ValidateASTInputFilesContent(false), UseDebugInfo(false),
-        ModulesValidateDiagnosticOptions(true),
-        ModulesSkipDiagnosticOptions(false), ModulesHashContent(false),
+        ModulesValidateDiagnosticOptions(true), ModulesHashContent(false),
         ModulesStrictContextHash(false) {}
 
   /// AddPath - Add the \p Path path to the specified \p Group list.
@@ -267,21 +256,9 @@ inline llvm::hash_code hash_value(const HeaderSearchOptions::Entry &E) {
   return llvm::hash_combine(E.Path, E.Group, E.IsFramework, E.IgnoreSysRoot);
 }
 
-template <typename HasherT, llvm::support::endianness Endianness>
-inline void addHash(llvm::HashBuilderImpl<HasherT, Endianness> &HBuilder,
-                    const HeaderSearchOptions::Entry &E) {
-  HBuilder.add(E.Path, E.Group, E.IsFramework, E.IgnoreSysRoot);
-}
-
 inline llvm::hash_code
 hash_value(const HeaderSearchOptions::SystemHeaderPrefix &SHP) {
   return llvm::hash_combine(SHP.Prefix, SHP.IsSystemHeader);
-}
-
-template <typename HasherT, llvm::support::endianness Endianness>
-inline void addHash(llvm::HashBuilderImpl<HasherT, Endianness> &HBuilder,
-                    const HeaderSearchOptions::SystemHeaderPrefix &SHP) {
-  HBuilder.add(SHP.Prefix, SHP.IsSystemHeader);
 }
 
 } // namespace clang

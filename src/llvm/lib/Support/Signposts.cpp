@@ -1,15 +1,16 @@
 //===-- Signposts.cpp - Interval debug annotations ------------------------===//
 //
-// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
-// See https://llvm.org/LICENSE.txt for license information.
-// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//                     The LLVM Compiler Infrastructure
+//
+// This file is distributed under the University of Illinois Open Source
+// License. See LICENSE.TXT for details.
 //
 //===----------------------------------------------------------------------===//
 
 #include "llvm/Support/Signposts.h"
-#include "llvm/ADT/StringRef.h"
-#include "llvm/Config/config.h"
+#include "llvm/Support/Timer.h"
 
+#include "llvm/Config/config.h"
 #if LLVM_SUPPORT_XCODE_SIGNPOSTS
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/Support/Mutex.h"
@@ -25,7 +26,7 @@ using namespace llvm;
 namespace {
 os_log_t *LogCreator() {
   os_log_t *X = new os_log_t;
-  *X = os_log_create("org.llvm.signposts", "toolchain");
+  *X = os_log_create("org.llvm.signposts", OS_LOG_CATEGORY_POINTS_OF_INTEREST);
   return X;
 }
 struct LogDeleter {

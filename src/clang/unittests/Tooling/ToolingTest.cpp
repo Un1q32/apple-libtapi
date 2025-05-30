@@ -6,7 +6,6 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "clang/Tooling/Tooling.h"
 #include "clang/AST/ASTConsumer.h"
 #include "clang/AST/DeclCXX.h"
 #include "clang/AST/DeclGroup.h"
@@ -19,11 +18,12 @@
 #include "clang/Frontend/TextDiagnosticBuffer.h"
 #include "clang/Tooling/ArgumentsAdjusters.h"
 #include "clang/Tooling/CompilationDatabase.h"
+#include "clang/Tooling/Tooling.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/StringRef.h"
-#include "llvm/MC/TargetRegistry.h"
 #include "llvm/Support/Host.h"
 #include "llvm/Support/Path.h"
+#include "llvm/Support/TargetRegistry.h"
 #include "llvm/Support/TargetSelect.h"
 #include "gtest/gtest.h"
 #include <algorithm>
@@ -324,46 +324,6 @@ TEST(ToolInvocation, DiagConsumerExpectingSourceManager) {
 
   EXPECT_TRUE(Invocation.run());
   EXPECT_TRUE(Consumer.SawSourceManager);
-}
-
-TEST(ToolInvocation, CC1Args) {
-  llvm::IntrusiveRefCntPtr<llvm::vfs::OverlayFileSystem> OverlayFileSystem(
-      new llvm::vfs::OverlayFileSystem(llvm::vfs::getRealFileSystem()));
-  llvm::IntrusiveRefCntPtr<llvm::vfs::InMemoryFileSystem> InMemoryFileSystem(
-      new llvm::vfs::InMemoryFileSystem);
-  OverlayFileSystem->pushOverlay(InMemoryFileSystem);
-  llvm::IntrusiveRefCntPtr<FileManager> Files(
-      new FileManager(FileSystemOptions(), OverlayFileSystem));
-  std::vector<std::string> Args;
-  Args.push_back("tool-executable");
-  Args.push_back("-cc1");
-  Args.push_back("-fsyntax-only");
-  Args.push_back("test.cpp");
-  clang::tooling::ToolInvocation Invocation(
-      Args, std::make_unique<SyntaxOnlyAction>(), Files.get());
-  InMemoryFileSystem->addFile(
-      "test.cpp", 0, llvm::MemoryBuffer::getMemBuffer("void foo(void);\n"));
-  EXPECT_TRUE(Invocation.run());
-}
-
-TEST(ToolInvocation, CC1ArgsInvalid) {
-  llvm::IntrusiveRefCntPtr<llvm::vfs::OverlayFileSystem> OverlayFileSystem(
-      new llvm::vfs::OverlayFileSystem(llvm::vfs::getRealFileSystem()));
-  llvm::IntrusiveRefCntPtr<llvm::vfs::InMemoryFileSystem> InMemoryFileSystem(
-      new llvm::vfs::InMemoryFileSystem);
-  OverlayFileSystem->pushOverlay(InMemoryFileSystem);
-  llvm::IntrusiveRefCntPtr<FileManager> Files(
-      new FileManager(FileSystemOptions(), OverlayFileSystem));
-  std::vector<std::string> Args;
-  Args.push_back("tool-executable");
-  Args.push_back("-cc1");
-  Args.push_back("-invalid-arg");
-  Args.push_back("test.cpp");
-  clang::tooling::ToolInvocation Invocation(
-      Args, std::make_unique<SyntaxOnlyAction>(), Files.get());
-  InMemoryFileSystem->addFile(
-      "test.cpp", 0, llvm::MemoryBuffer::getMemBuffer("void foo(void);\n"));
-  EXPECT_FALSE(Invocation.run());
 }
 
 namespace {

@@ -167,7 +167,6 @@ static bool IsStructurallyEquivalent(StructuralEquivalenceContext &Context,
     return false;
   switch (N1.getKind()) {
   case TemplateName::Template:
-  case TemplateName::UsingTemplate:
     return Context.checkStructurallyEquivalent(N1.getAsTemplateDecl(),
                                                N2.getAsTemplateDecl());
 
@@ -191,9 +190,8 @@ static bool IsStructurallyEquivalent(StructuralEquivalenceContext &Context,
   case TemplateName::QualifiedTemplate: {
     QualifiedTemplateName *QN1 = N1.getAsQualifiedTemplateName(),
                           *QN2 = N2.getAsQualifiedTemplateName();
-    return Context.checkStructurallyEquivalent(
-               QN1->getUnderlyingTemplate().getAsTemplateDecl(),
-               QN2->getUnderlyingTemplate().getAsTemplateDecl()) &&
+    return Context.checkStructurallyEquivalent(QN1->getDecl(),
+                                               QN2->getDecl()) &&
            IsStructurallyEquivalent(Context, QN1->getQualifier(),
                                     QN2->getQualifier());
   }
@@ -685,8 +683,8 @@ static bool IsStructurallyEquivalent(StructuralEquivalenceContext &Context,
 
   case Type::TypeOf:
     if (!Context.checkStructurallyEquivalent(
-            cast<TypeOfType>(T1)->getUnmodifiedType(),
-            cast<TypeOfType>(T2)->getUnmodifiedType()))
+            cast<TypeOfType>(T1)->getUnderlyingType(),
+            cast<TypeOfType>(T2)->getUnderlyingType()))
       return false;
     break;
 
@@ -864,9 +862,9 @@ static bool IsStructurallyEquivalent(StructuralEquivalenceContext &Context,
       return false;
     break;
 
-  case Type::BitInt: {
-    const auto *EIT1 = cast<BitIntType>(T1);
-    const auto *EIT2 = cast<BitIntType>(T2);
+  case Type::ExtInt: {
+    const auto *EIT1 = cast<ExtIntType>(T1);
+    const auto *EIT2 = cast<ExtIntType>(T2);
     if (EIT1->isUnsigned() != EIT2->isUnsigned())
       return false;
     if (EIT1->getNumBits() != EIT2->getNumBits())
@@ -874,9 +872,9 @@ static bool IsStructurallyEquivalent(StructuralEquivalenceContext &Context,
     break;
   }
 
-  case Type::DependentBitInt: {
-    const auto *EIT1 = cast<DependentBitIntType>(T1);
-    const auto *EIT2 = cast<DependentBitIntType>(T2);
+  case Type::DependentExtInt: {
+    const auto *EIT1 = cast<DependentExtIntType>(T1);
+    const auto *EIT2 = cast<DependentExtIntType>(T2);
     if (EIT1->isUnsigned() != EIT2->isUnsigned())
       return false;
     // FIXME: Check NumBitsExpr.
@@ -1909,7 +1907,7 @@ bool StructuralEquivalenceContext::shouldCheckDecls(const Decl *D1,
       return true;
 
     // If the location is not found, return false and skip.
-    return ctx->findAndRecordFile(file).has_value();
+    return ctx->findAndRecordFile(file).hasValue();
   };
 
   return shouldCheckDecl(D1, FromDiag, FromFrontendCtx) ||

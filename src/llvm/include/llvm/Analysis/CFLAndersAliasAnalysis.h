@@ -15,6 +15,7 @@
 #define LLVM_ANALYSIS_CFLANDERSALIASANALYSIS_H
 
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/Optional.h"
 #include "llvm/Analysis/AliasAnalysis.h"
 #include "llvm/Analysis/CFLAliasAnalysisUtils.h"
 #include "llvm/IR/PassManager.h"
@@ -24,7 +25,6 @@
 
 namespace llvm {
 
-template <typename T> class Optional;
 class Function;
 class MemoryLocation;
 class TargetLibraryInfo;
@@ -35,7 +35,9 @@ struct AliasSummary;
 
 } // end namespace cflaa
 
-class CFLAndersAAResult : public AAResultBase {
+class CFLAndersAAResult : public AAResultBase<CFLAndersAAResult> {
+  friend AAResultBase<CFLAndersAAResult>;
+
   class FunctionInfo;
 
 public:

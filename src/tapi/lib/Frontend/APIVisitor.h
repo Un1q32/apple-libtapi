@@ -14,7 +14,6 @@
 #define TAPI_FRONTEND_API_VISITOR_H
 
 #include "tapi/Core/API.h"
-#include "tapi/Core/APICommon.h"
 #include "tapi/Core/LLVM.h"
 #include "tapi/Defines.h"
 #include "tapi/Frontend/FrontendContext.h"
@@ -33,11 +32,12 @@
 using llvm::DataLayout;
 using TAPI_INTERNAL::API;
 using TAPI_INTERNAL::APIAccess;
-using TAPI_INTERNAL::APILoc;
 using TAPI_INTERNAL::AvailabilityInfo;
 using TAPI_INTERNAL::EnumRecord;
 using TAPI_INTERNAL::FrontendContext;
 using TAPI_INTERNAL::ObjCContainerRecord;
+using TAPI_INTERNAL::StructRecord;
+using TAPI_INTERNAL::SymbolInfo;
 
 namespace clang {
 
@@ -54,8 +54,15 @@ public:
   bool VisitObjCInterfaceDecl(const ObjCInterfaceDecl *decl);
   bool VisitObjCCategoryDecl(const ObjCCategoryDecl *decl);
   bool VisitObjCProtocolDecl(const ObjCProtocolDecl *decl);
+  bool VisitRecordDecl(const RecordDecl *decl);
   bool VisitCXXRecordDecl(const CXXRecordDecl *decl);
   bool VisitTypedefNameDecl(const TypedefNameDecl *decl);
+
+  static StringRef getSourceModule(const Decl *decl,
+                                   SourceManager &sourceManager);
+
+  static SymbolInfo getUnderlyingTypeInfo(const QualType, ASTContext &,
+                                          API * = nullptr);
 
 private:
   void recordEnumConstants(EnumRecord *record,
@@ -66,16 +73,18 @@ private:
   void recordObjCProperties(ObjCContainerRecord *record,
                             const ObjCContainerDecl::prop_range properties);
   void recordObjCInstanceVariables(
-      ObjCContainerRecord *record, StringRef superClassName,
+      ObjCContainerRecord *record,
       const llvm::iterator_range<
           DeclContext::specific_decl_iterator<ObjCIvarDecl>>
           ivars);
   void recordObjCProtocols(ObjCContainerRecord *record,
                            ObjCInterfaceDecl::protocol_range protocols);
-  void emitVTableSymbols(const CXXRecordDecl *decl, APILoc loc,
+  void recordStructFields(StructRecord *record,
+                          const RecordDecl::field_range fields);
+  void emitVTableSymbols(const CXXRecordDecl *decl, PresumedLoc loc,
                          AvailabilityInfo avail, APIAccess access,
                          bool emittedVTable = false);
-  llvm::Optional<std::pair<APIAccess, APILoc>>
+  llvm::Optional<std::pair<APIAccess, PresumedLoc>>
   getFileAttributesForDecl(const NamedDecl *decl) const;
   std::string getMangledName(const NamedDecl *decl) const;
   std::string getBackendMangledName(Twine name) const;
@@ -96,6 +105,15 @@ private:
   StringRef dataLayout;
 };
 
+class MacroCallback final : public PPCallbacks {
+  FrontendContext &context;
+
+public:
+  MacroCallback(FrontendContext &context) : context(context) {}
+  void MacroDefined(const Token &macroNameToken,
+                    const MacroDirective *md) override;
+};
+
 class APIVisitorAction : public ASTFrontendAction {
 public:
   explicit APIVisitorAction(FrontendContext &context) : context(context) {}
@@ -105,6 +123,7 @@ public:
     context.ast = &compiler.getASTContext();
     context.sourceMgr = &compiler.getSourceManager();
     context.pp = compiler.getPreprocessorPtr();
+    context.pp->addPPCallbacks(std::make_unique<MacroCallback>(context));
     return std::make_unique<APIVisitor>(context);
   }
 

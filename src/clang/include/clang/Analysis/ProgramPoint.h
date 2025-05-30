@@ -30,6 +30,7 @@
 namespace clang {
 
 class AnalysisDeclContext;
+class FunctionDecl;
 class LocationContext;
 
 /// ProgramPoints can be "tagged" as representing points specific to a given
@@ -149,7 +150,7 @@ public:
   template<typename T>
   Optional<T> getAs() const {
     if (!T::isKind(*this))
-      return std::nullopt;
+      return None;
     T t;
     ProgramPoint& PP = t;
     PP = *this;

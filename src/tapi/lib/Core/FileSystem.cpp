@@ -37,7 +37,7 @@ std::error_code realpath(SmallVectorImpl<char> &path) {
     return {errno, std::generic_category()};
 
   assert(ptr == result.data() && "Unexpected pointer");
-  result.resize_for_overwrite(strlen(result.data()));
+  result.set_size(strlen(result.data()));
   path.swap(result);
   return {};
 }
@@ -51,7 +51,7 @@ std::error_code read_link(const Twine &path, SmallVectorImpl<char> &linkPath) {
   if ((len = ::readlink(p.data(), result.data(), PATH_MAX)) == -1)
     return {errno, std::generic_category()};
 
-  result.resize_for_overwrite(len);
+  result.set_size(len);
   linkPath.swap(result);
 
   return {};

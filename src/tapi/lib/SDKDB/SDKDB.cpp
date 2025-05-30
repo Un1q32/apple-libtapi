@@ -12,7 +12,6 @@
 //===----------------------------------------------------------------------===//
 
 #include "tapi/SDKDB/SDKDB.h"
-#include "tapi/SDKDB/CompareConfigFileReader.h"
 
 #include "tapi/Core/APIJSONSerializer.h"
 #include "tapi/Core/APIVisitor.h"
@@ -72,17 +71,8 @@ public:
     sdkdb.annotateObjCCategory(&record);
   }
   void visitObjCProtocol(const ObjCProtocolRecord &record) override {
-    if (sdkdb.findObjCProtocol(record.name)) {
-      sdkdb.annotateObjCProtocol(&record);
-      return;
-    }
-
-    // Make a copy of the record in frontendAPI, because the protocol only
-    // exists in the HeaderAPI.
-    auto *copy = sdkdb.addObjCProtocol(record);
-    sdkdb.insertObjCProtocol(copy, nullptr, project);
+    sdkdb.annotateObjCProtocol(&record);
   }
-
   void visitEnum(const EnumRecord &record) override {
     // Make a copy of the record in frontendAPI.
     // enums are in the HeaderAPIs which we do not preserve in SDKDB.
@@ -116,16 +106,6 @@ bool SDKDB::areCompatibleTargets(const Triple &lhs, const Triple &rhs) {
 API &SDKDB::recordAPI(API &&api) {
   auto name = api.getProjectName().str();
   apiCache[name].emplace_back(std::move(api));
-
-  auto installName = api.getInstallName();
-  if (!installName.value_or("").empty()) {
-    auto [it, inserted] =
-        installNames.try_emplace(installName.value(), api.getProjectName());
-    if (!inserted)
-      builder->report(diag::warn_sdkdb_conflict_install_name)
-          << installName.value() << it->getValue() << api.getProjectName();
-  }
-
   return apiCache[name].back();
 }
 
@@ -176,7 +156,7 @@ void SDKDB::insertObjCInterface(ObjCInterfaceRecord *record,
 
 void SDKDB::insertObjCCategory(ObjCCategoryRecord *record,
                                const BinaryInfo *binInfo, StringRef project) {
-  auto &catMap = categoryMap[record->interface];
+  auto &catMap = categoryMap[record->interface.name];
   auto result = catMap.try_emplace(record->name, record, binInfo, project);
   // If emplace successful.
   if (result.second)
@@ -184,7 +164,7 @@ void SDKDB::insertObjCCategory(ObjCCategoryRecord *record,
 
   auto entry = result.first;
   builder->report(diag::warn_sdkdb_duplicated_objc_category)
-      << record->interface << record->name;
+      << record->interface.name << record->name;
 
   // If entires are "equal", set the entry to poison since we don't know which
   // to pick so we pick neither.
@@ -200,38 +180,24 @@ void SDKDB::insertObjCCategory(ObjCCategoryRecord *record,
 }
 
 EnumRecord *SDKDB::addEnum(const EnumRecord &record) {
-  auto *copy =
-      frontendAPI.addEnum(record.name, record.usr, record.loc,
-                          record.availability, record.access, record.decl);
+  auto *copy = frontendAPI.addEnum(
+      record.name, record.declName, record.usr, record.loc, record.availability,
+      record.access, record.docComment, record.declarationFragments,
+      record.subHeading, record.decl);
   for (auto *constant : record.constants)
-    frontendAPI.addEnumConstant(copy, constant->name, constant->loc,
-                                constant->availability, constant->access,
-                                constant->decl);
+    frontendAPI.addEnumConstant(
+        copy, constant->name, constant->declName, constant->usr, constant->loc,
+        constant->availability, constant->access, constant->docComment,
+        constant->declarationFragments, constant->subHeading, constant->decl);
 
   return copy;
 }
 
 TypedefRecord *SDKDB::addTypeDef(const TypedefRecord &record) {
-  return frontendAPI.addTypeDef(record.name, record.loc, record.availability,
-                                record.access, record.decl);
-}
-
-ObjCProtocolRecord *SDKDB::addObjCProtocol(const ObjCProtocolRecord &record) {
-  auto *copy = frontendAPI.addObjCProtocol(
-      record.name, record.loc, record.availability, record.access, record.decl);
-  for (auto *method : record.methods)
-    frontendAPI.addObjCMethod(copy, method->name, method->loc,
-                              method->availability, method->access,
-                              method->isInstanceMethod, method->isOptional,
-                              method->isDynamic, method->decl);
-
-  for (auto *property : record.properties)
-    frontendAPI.addObjCProperty(
-        copy, property->name, property->getterName, property->setterName,
-        property->loc, property->availability, property->access,
-        property->attributes, property->isOptional, property->decl);
-
-  return copy;
+  return frontendAPI.addTypeDef(
+      record.name, record.usr, record.loc, record.availability, record.access,
+      record.underlyingType, record.docComment, record.declarationFragments,
+      record.subHeading, record.decl);
 }
 
 void SDKDB::insertEnum(EnumRecord *record, const BinaryInfo *binInfo,
@@ -399,8 +365,9 @@ void SDKDB::insertObjCProtocol(ObjCProtocolRecord *record,
   // no additional protocol conformance.
   for (auto protocol : record->protocols) {
     if (find_if(base->protocols.begin(), base->protocols.end(),
-                [&](auto baseProtocol) { return protocol == baseProtocol; }) ==
-        std::end(base->protocols))
+                [&](auto baseProtocol) {
+                  return protocol.name == baseProtocol.name;
+                }) == std::end(base->protocols))
       builder->report(diag::warn_sdkdb_conflict_objc_protocol) << key;
   }
 
@@ -477,17 +444,17 @@ void SDKDB::annotateObjCProtocol(const ObjCProtocolRecord *record) {
 }
 
 void SDKDB::annotateObjCCategory(const ObjCCategoryRecord *record) {
-  if (auto *base = findObjCCategory(record->name, record->interface))
+  if (auto *base = findObjCCategory(record->name, record->interface.name))
     // For categories, search for category in the binary first.
     builder->updateObjCCategory(*this, *base, *record);
-  else if (auto *cls = findObjCInterface(record->interface))
+  else if (auto *cls = findObjCInterface(record->interface.name))
     // If the category is not found from mapping, annotate the base class
     // because linker might merge the category into the base class already.
     builder->updateObjCContainer(*this, *cls, *record, SDKDB::ObjCClass);
   else {
     if (!record->availability._unavailable)
       builder->report(diag::warn_sdkdb_missing_objc_category)
-          << record->interface << record->name;
+          << record->interface.name << record->name;
     return;
   }
 
@@ -500,7 +467,7 @@ void SDKDB::annotateObjCCategory(const ObjCCategoryRecord *record) {
          ivar->accessControl ==
              ObjCInstanceVariableRecord::AccessControl::Protected))
       findAndUpdateGlobal(
-          "_OBJC_IVAR_$_" + record->interface + "." + ivar->name, *record);
+          "_OBJC_IVAR_$_" + record->interface.name + "." + ivar->name, *record);
   }
 }
 
@@ -603,9 +570,9 @@ bool isPublicDylibEntry(const MapEntryIter &entry) {
 
 Error SDKDB::finalize() {
   // Finalize SDKDB.
-  // Update the access of methods and properties to public if there exists super
-  // class/protocol which declares the method/property to be public.
-  // 1. Update Protocol methods and properties.
+  // Update the access of methods to public if there exists super class/protocol
+  // which declares the method to be public.
+  // 1. Update Protocol methods.
   for (auto &entry : protocolMap) {
     auto *protocol = entry.getValue().getRecord();
     if (entry.getValue().isPoison()) {
@@ -613,28 +580,17 @@ Error SDKDB::finalize() {
           << ObjCContainerKind::ObjCProtocol << protocol->name;
       continue;
     }
-
-    // Skip private records. Methods in private protocols are also private.
-    if (protocol->access != APIAccess::Public)
+    if (!isPublicDylibEntry(entry))
       continue;
-
     for (auto *method : protocol->methods) {
       if (method->access != APIAccess::Public &&
           builder->isMaybePublicSelector(method->name))
         method->access = getAccessForObjCMethod(
             method->access, method->name, method->isInstanceMethod, protocol);
     }
-
-    for (auto *property : protocol->properties) {
-      if (property->access != APIAccess::Public &&
-          builder->isMaybePublicProperty(property->name))
-        property->access =
-            getAccessForObjCProperty(property->access, property->name,
-                                     property->isClassProperty(), protocol);
-    }
   }
 
-  // 2. Update Interface methods and properties.
+  // 2. Update Interface method.
   for (auto &entry : interfaceMap) {
     auto *interface = entry.getValue().getRecord();
     if (entry.getValue().isPoison()) {
@@ -643,8 +599,7 @@ Error SDKDB::finalize() {
       continue;
     }
 
-    // Skip private records. Methods in private interfaces are also private.
-    if (interface->access != APIAccess::Public)
+    if (!isPublicDylibEntry(entry))
       continue;
 
     for (auto *method : interface->methods) {
@@ -653,17 +608,9 @@ Error SDKDB::finalize() {
         method->access = getAccessForObjCMethod(
             method->access, method->name, method->isInstanceMethod, interface);
     }
-
-    for (auto *property : interface->properties) {
-      if (property->access != APIAccess::Public &&
-          builder->isMaybePublicProperty(property->name))
-        property->access =
-            getAccessForObjCProperty(property->access, property->name,
-                                     property->isClassProperty(), interface);
-    }
   }
 
-  // 3. Update Category methods and properties.
+  // 3. Update Category method.
   for (auto &catEntry : categoryMap) {
     auto categories = catEntry.getValue();
     ObjCInterfaceRecord *interface = findObjCInterface(catEntry.getKey());
@@ -671,16 +618,13 @@ Error SDKDB::finalize() {
       auto *category = entry.getValue().getRecord();
       if (entry.getValue().isPoison()) {
         std::string diagName =
-            category->interface.str() + "(" + category->name.str() + ")";
+            category->interface.name.str() + "(" + category->name.str() + ")";
         builder->report(diag::warn_sdkdb_poison_entry)
             << ObjCContainerKind::ObjCCategory << diagName;
         continue;
       }
-
-      // Skip private records. Methods in private categories are also private.
-      if (category->access != APIAccess::Public)
+      if (!isPublicDylibEntry(entry))
         continue;
-
       for (auto *method : category->methods) {
         if (method->access != APIAccess::Public &&
           builder->isMaybePublicSelector(method->name)) {
@@ -694,20 +638,6 @@ Error SDKDB::finalize() {
                                        method->isInstanceMethod, interface);
         }
       }
-
-      for (auto *property : category->properties) {
-        if (property->access != APIAccess::Public &&
-            builder->isMaybePublicProperty(property->name)) {
-          property->access =
-              getAccessForObjCProperty(property->access, property->name,
-                                       property->isClassProperty(), category);
-          // Look at base class if exists.
-          if (property->access != APIAccess::Public && interface)
-            property->access = getAccessForObjCProperty(
-                property->access, property->name, property->isClassProperty(),
-                interface);
-        }
-      }
     }
   }
 
@@ -719,6 +649,9 @@ Error SDKDB::finalize() {
         api->getBinaryInfo().fileType == FileType::MachO_Bundle)
       continue;
 
+    if (!isPublicDylib(api->getBinaryInfo().installName))
+      continue;
+
     APIFinalizer updater(*builder, *this);
     api->visit(updater);
   }
@@ -727,31 +660,26 @@ Error SDKDB::finalize() {
 }
 
 ObjCInterfaceRecord *SDKDB::getSuperclass(const ObjCInterfaceRecord *record) {
-  if (record->superClass.empty())
+  if (record->superClass.name.empty())
     return nullptr;
 
-  return findObjCInterface(record->superClass);
+  return findObjCInterface(record->superClass.name);
 }
 
 APIAccess SDKDB::getAccessForObjCMethod(APIAccess access, StringRef name,
                                         bool isInstanceMethod,
                                         ObjCContainerRecord *container) {
   // check current container for the access.
-  const auto methodIt =
-      find_if(container->methods,
-              [name, isInstanceMethod](const ObjCMethodRecord *method) {
-                return method->name == name &&
-                       method->isInstanceMethod == isInstanceMethod;
-              });
-  if (methodIt != container->methods.end() && (*methodIt)->access > access)
-    access = (*methodIt)->access;
-
+  for (auto *method : container->methods) {
+    if (method->name == name && method->isInstanceMethod == isInstanceMethod)
+      access = method->access > access ? method->access : access;
+  }
   if (access == APIAccess::Public)
     return access; // return since it is already public.
 
   // walk protocol hierarchy.
   for (auto protocolSymbol : container->protocols) {
-    if (auto *protocol = findObjCProtocol(protocolSymbol))
+    if (auto *protocol = findObjCProtocol(protocolSymbol.name))
       access = getAccessForObjCMethod(access, name, isInstanceMethod, protocol);
     if (access == APIAccess::Public)
       return access;
@@ -775,68 +703,13 @@ APIAccess SDKDB::getAccessForObjCMethod(APIAccess access, StringRef name,
   if (access == APIAccess::Public)
     return access; // return since it is already public.
 
-  // check categories.
-  for (auto &category : findObjCCategoryForClass(interface->name)) {
-    // recursively iterate protocols and methods of the category.
-    access = getAccessForObjCMethod(access, name, isInstanceMethod, category);
-    if (access == APIAccess::Public)
-      return access;
-  }
-
-  return access;
-}
-
-APIAccess SDKDB::getAccessForObjCProperty(APIAccess access, StringRef name,
-                                          bool isClassProperty,
-                                          ObjCContainerRecord *container) {
-  // check current container for the access.
-  const auto propertyIt =
-      find_if(container->properties,
-              [name, isClassProperty](const ObjCPropertyRecord *property) {
-                return property->name == name &&
-                       property->isClassProperty() == isClassProperty;
-              });
-  if (propertyIt != container->properties.end() &&
-      (*propertyIt)->access > access)
-    access = (*propertyIt)->access;
-
-  if (access == APIAccess::Public)
-    return access; // return since it is already public.
-
-  // walk protocol hierarchy.
-  for (auto protocolSymbol : container->protocols) {
-    if (auto *protocol = findObjCProtocol(protocolSymbol))
-      access =
-          getAccessForObjCProperty(access, name, isClassProperty, protocol);
-    if (access == APIAccess::Public)
-      return access;
-  }
-
-  return access;
-}
-
-APIAccess SDKDB::getAccessForObjCProperty(APIAccess access, StringRef name,
-                                          bool isClassProperty,
-                                          ObjCInterfaceRecord *interface) {
-  // walk the common container part first.
-  access = getAccessForObjCProperty(access, name, isClassProperty,
-                                    (ObjCContainerRecord *)interface);
-  if (access == APIAccess::Public)
-    return access; // return since it is already public.
-
-  // check super class.
-  if (auto *super = getSuperclass(interface))
-    access = getAccessForObjCProperty(access, name, isClassProperty, super);
-  if (access == APIAccess::Public)
-    return access; // return since it is already public.
-
-  // check category. category should not overwrite the properties from interface
+  // check category. category should not overwrite the methods from interface
   // but it can introduce new procotol conformance.
   for (auto &category : findObjCCategoryForClass(interface->name)) {
     for (auto protocolSymbol : category->protocols) {
-      if (auto *protocol = findObjCProtocol(protocolSymbol))
+      if (auto *protocol = findObjCProtocol(protocolSymbol.name))
         access =
-            getAccessForObjCProperty(access, name, isClassProperty, protocol);
+            getAccessForObjCMethod(access, name, isInstanceMethod, protocol);
       if (access == APIAccess::Public)
         return access;
     }
@@ -879,7 +752,7 @@ ObjCMethodRecord *SDKDB::findMethod(StringRef name, bool isInstanceMethod,
 }
 
 Error SDKDBBuilder::addBinaryAPI(API &&api) {
-  auto &db = getSDKDBForTarget(api.getTriple());
+  auto &db = getSDKDBForTarget(api.getTarget());
   auto &current = db.recordAPI(std::move(api));
 
   // No need to put bundle into lookup map.
@@ -894,7 +767,7 @@ Error SDKDBBuilder::addBinaryAPI(API &&api) {
 }
 
 Error SDKDBBuilder::addHeaderAPI(const API &api) {
-  auto &db = getSDKDBForTarget(api.getTriple());
+  auto &db = getSDKDBForTarget(api.getTarget());
   APIAnnotator annotator(db, api.getProjectName());
   api.visit(annotator);
 
@@ -933,8 +806,10 @@ void SDKDBBuilder::updateObjCContainer(SDKDB &sdkdb, ObjCContainerRecord &base,
   updateAPIRecord(base, record);
 
   auto handleMissingMethod = [&](StringRef selectorName,
-                                 APIRecord &selectorInfo, bool isInstanceMethod,
-                                 bool isOptional, bool isDynamic) {
+                                 APIRecord &selectorInfo,
+                                 FunctionSignature signature,
+                                 bool isInstanceMethod, bool isOptional,
+                                 bool isDynamic) {
     diag.report(diag::warn_sdkdb_missing_objc_method)
         << selectorName << kind << record.name;
 
@@ -942,9 +817,11 @@ void SDKDBBuilder::updateObjCContainer(SDKDB &sdkdb, ObjCContainerRecord &base,
     if (preserveLocation())
       location = selectorInfo.loc;
     auto *m = ObjCMethodRecord::create(
-        sdkdb.danglingAPIAllocator, selectorName, location,
+        sdkdb.danglingAPIAllocator, selectorName, selectorInfo.usr, location,
         selectorInfo.availability, selectorInfo.access, isInstanceMethod,
-        isOptional, isDynamic, selectorInfo.decl);
+        isOptional, isDynamic, selectorInfo.docComment,
+        selectorInfo.declarationFragments, selectorInfo.subHeading, signature,
+        selectorInfo.decl);
     base.methods.push_back(m);
   };
 
@@ -954,8 +831,9 @@ void SDKDBBuilder::updateObjCContainer(SDKDB &sdkdb, ObjCContainerRecord &base,
                              fallbackInterfaceName))
       updateAPIRecord(*baseMethod, *method);
     else if (!method->availability._unavailable)
-      handleMissingMethod(method->name, *method, method->isInstanceMethod,
-                          method->isOptional, method->isDynamic);
+      handleMissingMethod(method->name, *method, method->signature,
+                          method->isInstanceMethod, method->isOptional,
+                          method->isDynamic);
 
     if (method->access == APIAccess::Public)
       maybePublicSelector.insert(method->name);
@@ -976,16 +854,16 @@ void SDKDBBuilder::updateObjCContainer(SDKDB &sdkdb, ObjCContainerRecord &base,
       diag.report(diag::warn_sdkdb_missing_objc_property)
           << prop->name << kind << base.name;
 
-    if (prop->access == APIAccess::Public)
-      maybePublicProperty.insert(prop->name);
+    // dynamic property doesn't have synthesized methods in class.
+    if (isDynamic)
+      continue;
 
     if (auto *baseMethod = sdkdb.findMethod(prop->getterName,
                                             /*instanceMethod*/ !isClassProperty,
                                             base, kind, fallbackInterfaceName))
       updateAPIRecord(*baseMethod, *prop);
-    // ignore missing getter for optional, unavailable or dynamic properties
-    else if (!prop->isOptional && available && !isDynamic)
-      handleMissingMethod(prop->getterName, *prop,
+    else if (!prop->isOptional && available)
+      handleMissingMethod(prop->getterName, *prop, /* signature */ {},
                           /* isInstanceMethod */ !isClassProperty,
                           /* isOptional */ false, /* isDynamic */ false);
 
@@ -999,9 +877,8 @@ void SDKDBBuilder::updateObjCContainer(SDKDB &sdkdb, ObjCContainerRecord &base,
                                             /*instanceMethod*/ !isClassProperty,
                                             base, kind, fallbackInterfaceName))
       updateAPIRecord(*baseMethod, *prop);
-    // ignore missing setter for optional, unavailable or dynamic properties
-    else if (!prop->isOptional && available && !isDynamic)
-      handleMissingMethod(prop->setterName, *prop,
+    else if (!prop->isOptional && available)
+      handleMissingMethod(prop->setterName, *prop, /* signature */ {},
                           /* isInstanceMethod */ !isClassProperty,
                           /* isOptional */ false, /* isDynamic */ false);
 
@@ -1013,8 +890,9 @@ void SDKDBBuilder::updateObjCContainer(SDKDB &sdkdb, ObjCContainerRecord &base,
   // Need to teach MachOReader to read them from binary in the future.
   for (auto protocol : record.protocols) {
     if (find_if(base.protocols.begin(), base.protocols.end(),
-                [&](auto baseProtocol) { return protocol == baseProtocol; }) ==
-        std::end(base.protocols))
+                [&](auto baseProtocol) {
+                  return protocol.name == baseProtocol.name;
+                }) == std::end(base.protocols))
       base.protocols.push_back(protocol);
   };
 }
@@ -1032,16 +910,16 @@ void SDKDBBuilder::updateGlobal(GlobalRecord &base,
 void SDKDBBuilder::updateObjCInterface(SDKDB &sdkdb, ObjCInterfaceRecord &base,
                                        const ObjCInterfaceRecord &record) {
   updateObjCContainer(sdkdb, base, record, SDKDB::ObjCClass);
-  if (base.superClass != record.superClass)
+  if (base.superClass.name != record.superClass.name)
     diag.report(diag::warn_sdkdb_conflict_superclass)
-        << base.name << base.superClass << record.superClass;
+        << base.name << base.superClass.name << record.superClass.name;
   base.hasExceptionAttribute |= record.hasExceptionAttribute;
 }
 
 void SDKDBBuilder::updateObjCCategory(SDKDB &sdkdb, ObjCCategoryRecord &base,
                                       const ObjCCategoryRecord &record) {
   updateObjCContainer(sdkdb, base, record, SDKDB::ObjCCategory,
-                      record.interface);
+                      record.interface.name);
 }
 
 void SDKDBBuilder::updateObjCProtocol(SDKDB &sdkdb, ObjCProtocolRecord &base,
@@ -1084,10 +962,7 @@ llvm::Error SDKDBBuilder::parse(StringRef JSON) {
     return make_error<APIJSONError>("SDKDB is not a JSON Object");
 
   for (auto &target : *root) {
-    const StringRef key = target.first;
-    if (key == "public")
-      continue;
-    auto triple = Triple(key);
+    auto triple = Triple(target.first.str());
     auto payload = target.second.getAsArray();
     if (!payload)
       return make_error<APIJSONError>("Target Payload is not a JSON Array");
@@ -1137,13 +1012,20 @@ void SDKDBBuilder::serialize(raw_ostream &os, bool compact) const {
       /*external only*/ true,
       isPublicOnly(),
       /*ignore line and col*/ true,
+      /*no USR*/ true,
+      /*no docComment*/ true,
+      /*noDeprecationInfo*/ true,
+      /*noStruct*/ true,
+      /*noDeclName*/ true,
+      /*no declFragments*/ true,
+      /*noElaboratedSymbolInfo*/ true,
+      /*noMacroDefinitions*/ true,
+      /*noUnifiedTypedefEntries*/ true,
   };
   for (auto *entry : getDatabases()) {
     auto target = entry->getTargetTriple();
     json::Array apiList;
     for (auto *api : entry->api()) {
-      if (api->isEmpty())
-        continue;
       APIJSONSerializer serializer(*api, serializeOpts);
       apiList.emplace_back(serializer.getJSONObject());
     }
@@ -1289,25 +1171,18 @@ void SDKDB::buildLookupTables() {
 }
 
 template <typename MapEntryIter>
-bool shouldDiagnoseEntry(const MapEntryIter &entry,
-                         const ArrayRef<std::string> errorProjects) {
-  // Skip all symbols that have public access but are not in an SDK location
-  // (public or private).
-  // FIXME: This is a workaround to make diffs less noisy.
-  // Fix this by properly setting symbol APIAccess.
+bool shouldDiagnoseEntry(const MapEntryIter &entry) {
+  // Skip all the references in PrivateFrameworks.
+  // FIXME: This is a workaround to make diffs less noisy. It would be good to
+  // reduce those cases by only proprogate or compare the private framework
+  // that are re-exported.
   if (entry.getRecord()->access != APIAccess::Public)
-    return false;
-
-  // Skip diffs for failed projects.
-  // Projects with scanning errors are already reported for investigation.
-  // Diffing failed projects does not provide valuable information, only noise.
-  if (llvm::is_contained(errorProjects, entry.getProjectName()))
     return false;
 
   if (auto *binInfo = entry.getBinaryInfo()) {
     if (binInfo->fileType == FileType::MachO_Bundle)
       return false;
-    return isSDKDylib(binInfo->installName);
+    return isWithinPublicLocation(binInfo->installName);
   }
 
   return true;
@@ -1316,45 +1191,6 @@ bool shouldDiagnoseEntry(const MapEntryIter &entry,
 void SDKDB::diagnoseDifferences(const SDKDB &baseline) const {
   // Diff APIs by diffing the global lookup table to see if there are
   // changes to the APIs.
-  // 0. check install name differences.
-  StringSet<> missingLibraries, newLibraries;
-
-  for (auto installName :
-       allKeysFromMaps(baseline.installNames, installNames)) {
-    auto base = baseline.installNames.find(installName);
-    auto test = installNames.find(installName);
-
-    if (test == installNames.end()) {
-      assert(base != baseline.installNames.end() && "baseline should exist");
-      // Skip install names that are not part of the public SDK.
-      // But still record the install name to check for moved libraries.
-      missingLibraries.insert(installName);
-      if (!isPublicDylib(installName) ||
-          isExpectedChange(
-              {ChangeType::Remove, EntryType::Library, installName}))
-        continue;
-
-      builder->report(diag::err_sdkdb_missing_api)
-          << /*{frontend API|library}*/ 1
-          << baseline.installNames.lookup(installName) << installName
-          << getTargetTriple().str();
-    }
-
-    if (base == baseline.installNames.end()) {
-      assert(test != installNames.end() && "test version should exist");
-      // Skip install names that are not part of the public SDK.
-      // But still record the install name to check for moved libraries.
-      newLibraries.insert(installName);
-      if (!isPublicDylib(installName) ||
-          isExpectedChange({ChangeType::Add, EntryType::Library, installName}))
-        continue;
-
-      builder->report(diag::warn_sdkdb_new_api)
-          << /*{frontend API|library}*/ 1 << installNames.lookup(installName)
-          << installName << getTargetTriple().str();
-    }
-  }
-
   // 1. check globals.
   for (auto name : allKeysFromMaps(baseline.globalMap, globalMap)) {
     auto base = baseline.globalMap.find(name);
@@ -1364,16 +1200,13 @@ void SDKDB::diagnoseDifferences(const SDKDB &baseline) const {
     if (test == globalMap.end()) {
       assert(base != baseline.globalMap.end() && "baseline should exist");
       for (auto missing : base->second) {
-        // ignore the private APIs and missing libraries.
-        if (!shouldDiagnoseEntry(missing, builder->getProjectWithError()) ||
-            missingLibraries.contains(missing.getInstallName()) ||
-            isExpectedChange({ChangeType::Remove, EntryType::Global, name,
-                              missing.getInstallName()}))
+        // ignore the private APIs.
+        if (!shouldDiagnoseEntry(missing))
           continue;
 
         builder->report(diag::err_sdkdb_missing_global)
             << (unsigned)missing.getRecord()->kind << name
-            << missing.getInstallName() << getTargetTriple().str();
+            << missing.getBinaryInfo()->installName << getTargetTriple().str();
       }
       continue;
     }
@@ -1382,157 +1215,82 @@ void SDKDB::diagnoseDifferences(const SDKDB &baseline) const {
     if (base == baseline.globalMap.end()) {
       assert(test != globalMap.end() && "test version should exist");
       for (auto missing : test->second) {
-        // ignore the private APIs and new libraries.
-        if (!shouldDiagnoseEntry(missing, builder->getProjectWithError()) ||
-            newLibraries.contains(missing.getInstallName()) ||
-            isExpectedChange({ChangeType::Add, EntryType::Global, name,
-                              missing.getInstallName()}))
+        if (!shouldDiagnoseEntry(missing))
           continue;
-
         builder->report(diag::warn_sdkdb_new_global)
             << (unsigned)missing.getRecord()->kind << name
-            << missing.getInstallName() << getTargetTriple().str();
+            << missing.getBinaryInfo()->installName << getTargetTriple().str();
       }
       continue;
     }
-
-    auto checkMatchingGlobalEntry = [&](const auto &baseEntry,
-                                        const auto &testEntry) {
-      // First, check if this is a newly added API.
-      if (baseEntry.getRecord()->access != APIAccess::Public &&
-          shouldDiagnoseEntry(testEntry, builder->getProjectWithError()) &&
-          !isExpectedChange({ChangeType::Add, EntryType::Global, name,
-                             testEntry.getInstallName()})) {
-        builder->report(diag::warn_sdkdb_new_global)
-            << (unsigned)testEntry.getRecord()->kind << name
-            << testEntry.getInstallName() << getTargetTriple().str();
-      } else if (shouldDiagnoseEntry(baseEntry,
-                                     builder->getProjectWithError())) {
-        // Second, check annotation on the matching entries.
-        auto *record = baseEntry.getRecord();
-        auto installName = baseEntry.getInstallName();
-        checkAPIRecord(*testEntry.getRecord(), *record, [&](StringRef error) {
-          if (!isExpectedChange({ChangeType::UpdateAccess, EntryType::Global,
-                                 name, installName}))
-            builder->report(diag::err_sdkdb_global_regression)
-                << name << installName << getTargetTriple().str() << error;
-        });
-      }
-    };
 
     // Compare entries. All entries are sorted.
     unsigned baseIdx = 0, testIdx = 0;
     while (baseIdx < base->second.size()) {
       auto baseEntry = base->second[baseIdx];
-      bool matchFound = false;
       // Advance testIdx if testEntry is smaller.
       while (testIdx < test->second.size() &&
              test->second[testIdx] < baseEntry) {
-        // Two entries with the same binary info but from different projects
-        // are considered the same symbol moved from one project to another.
-        // Diagnose as matching entries.
-        if (*baseEntry.getBinaryInfo() ==
-            *test->second[testIdx].getBinaryInfo()) {
-          checkMatchingGlobalEntry(baseEntry, test->second[testIdx]);
-          // We've found a matching pair, which means there won't be any other
-          // global record with the same name and install name in either base
-          // or test. Advance both pointers and break as we are done here.
-          matchFound = true;
-          ++baseIdx;
-          ++testIdx;
-          break;
-        }
-
-        if (shouldDiagnoseEntry(test->second[testIdx],
-                                builder->getProjectWithError()) &&
-            !newLibraries.contains(test->second[testIdx].getInstallName()) &&
-            !isExpectedChange({ChangeType::Add, EntryType::Global, name,
-                               baseEntry.getInstallName()})) {
-          // new APIs case 2.
+        // new APIs case 2.
+        if (shouldDiagnoseEntry(test->second[testIdx])) {
           builder->report(diag::warn_sdkdb_new_global)
               << (unsigned)baseEntry.getRecord()->kind << name
-              << baseEntry.getInstallName() << getTargetTriple().str();
+              << baseEntry.getBinaryInfo()->installName
+              << getTargetTriple().str();
         }
         ++testIdx;
       }
 
-      // If we've found a match at this point, we are done with this base
-      // entry. Continue to the next.
-      if (matchFound)
-        continue;
-
-      // If there isn't a matching entry in test, report regressions.
+      // If there isn't a matching entry for base, report regressions.
       if (testIdx >= test->second.size() ||
           baseEntry != test->second[testIdx]) {
-        if (testIdx < test->second.size() &&
-            *baseEntry.getBinaryInfo() ==
-                *test->second[testIdx].getBinaryInfo()) {
-          checkMatchingGlobalEntry(baseEntry, test->second[testIdx]);
-          // We've found a matching pair, which means there won't be any other
-          // global record with the same name and install name in either base
-          // or test. Advance both pointers and continue as we are done here.
-          ++testIdx;
-          ++baseIdx;
-          continue;
-        }
-
-        if (shouldDiagnoseEntry(baseEntry, builder->getProjectWithError()) &&
-            !missingLibraries.contains(baseEntry.getInstallName()) &&
-            !isExpectedChange({ChangeType::Remove, EntryType::Global, name,
-                               baseEntry.getInstallName()})) {
+        if (shouldDiagnoseEntry(baseEntry)) {
           builder->report(diag::err_sdkdb_missing_global)
               << (unsigned)baseEntry.getRecord()->kind << name
-              << baseEntry.getInstallName() << getTargetTriple().str();
+              << baseEntry.getBinaryInfo()->installName
+              << getTargetTriple().str();
         }
         ++baseIdx;
         continue;
       }
 
-      // Diff two matching entries (same binary info, same project).
+      // Diff two matching entries.
       auto &testEntry = test->second[testIdx];
-      checkMatchingGlobalEntry(baseEntry, testEntry);
+      // First, check if this is a newly added API.
+      if (baseEntry.getRecord()->access != APIAccess::Public &&
+          shouldDiagnoseEntry(testEntry)) {
+        builder->report(diag::warn_sdkdb_new_global)
+            << (unsigned)testEntry.getRecord()->kind << name
+            << testEntry.getBinaryInfo()->installName
+            << getTargetTriple().str();
+        ++baseIdx;
+        ++testIdx;
+        continue;
+      }
+
+      // Second, check annotation on the matching entries.
+      auto *record = baseEntry.getRecord();
+      auto installName = baseEntry.getBinaryInfo()->installName;
+      checkAPIRecord(*testEntry.getRecord(), *record, [&](StringRef error) {
+        builder->report(diag::err_sdkdb_global_regression)
+            << name << installName << getTargetTriple().str() << error;
+      });
       ++baseIdx;
       ++testIdx;
     }
 
-    // Check remaining test entries.
-    auto &lastBaseEntry = base->second.back();
+    // Check remaining test entries for new APIs.
     while (testIdx < test->second.size()) {
       auto &testEntry = test->second[testIdx];
-      // Two entries with the same binary info but from different projects
-      // are considered the same symbol moved from one project to another.
-      // Diagnose as matching entries.
-      if (*lastBaseEntry.getBinaryInfo() == *testEntry.getBinaryInfo()) {
-        checkMatchingGlobalEntry(lastBaseEntry, testEntry);
-      } else if (shouldDiagnoseEntry(testEntry,
-                                     builder->getProjectWithError()) &&
-                 !newLibraries.contains(testEntry.getInstallName()) &&
-                 !isExpectedChange({ChangeType::Add, EntryType::Global, name,
-                                    testEntry.getInstallName()})) {
-        // new API.
+      if (shouldDiagnoseEntry(testEntry)) {
         builder->report(diag::warn_sdkdb_new_global)
             << (unsigned)testEntry.getRecord()->kind << name
-            << testEntry.getInstallName() << getTargetTriple().str();
+            << testEntry.getBinaryInfo()->installName
+            << getTargetTriple().str();
       }
       ++testIdx;
     }
   }
-
-  auto isMovedLibrary = [&](const auto &base, const auto &test) -> bool {
-    // If the base symbol comes from a missing library *and* the test symbol
-    // comes from a new one, it's a moved library and we've already emitted
-    // at least one library-level diagnostic if it was/is a public dylib.
-    // Skip individual symbol diagnostics.
-    //
-    // Otherwise, the symbol is either:
-    //   1. staying within the same library (install name), or
-    //   2. splited from an existing library to a new one, or
-    //   3. merged from a removed libary into an existing one, or
-    //   4. moved from one existing library into another.
-    // For these cases, diagnose the symbol as usual.
-    return (missingLibraries.contains(base.getInstallName()) &&
-            newLibraries.contains(test.getInstallName()));
-  };
 
   // 2. check objc classes.
   for (auto name : allKeysFromMaps(baseline.interfaceMap, interfaceMap)) {
@@ -1541,16 +1299,14 @@ void SDKDB::diagnoseDifferences(const SDKDB &baseline) const {
     // regression.
     if (test == interfaceMap.end()) {
       assert(base != baseline.interfaceMap.end() && "baseline should exist");
-      // ignore the private APIs and missing libraries.
+      // ignore the private APIs.
       auto missing = base->second;
-      if (!shouldDiagnoseEntry(missing, builder->getProjectWithError()) ||
-          missingLibraries.contains(missing.getInstallName()) ||
-          isExpectedChange({ChangeType::Remove, EntryType::Interface, name,
-                            missing.getInstallName()}))
+      if (!shouldDiagnoseEntry(missing))
         continue;
 
       builder->report(diag::err_sdkdb_missing_objc)
-          << 0 << name << missing.getInstallName() << getTargetTriple().str();
+          << 0 << name << missing.getBinaryInfo()->installName
+          << getTargetTriple().str();
       continue;
     }
 
@@ -1558,58 +1314,42 @@ void SDKDB::diagnoseDifferences(const SDKDB &baseline) const {
     if (base == baseline.interfaceMap.end()) {
       assert(test != interfaceMap.end() && "test version should exist");
       auto missing = test->second;
-      // ignore the private APIs and new libraries.
-      if (!shouldDiagnoseEntry(missing, builder->getProjectWithError()) ||
-          newLibraries.contains(missing.getInstallName()) ||
-          isExpectedChange({ChangeType::Add, EntryType::Interface, name,
-                            missing.getInstallName()}))
+      if (!shouldDiagnoseEntry(missing))
         continue;
       builder->report(diag::warn_sdkdb_new_objc)
-          << 0 << name << missing.getInstallName() << getTargetTriple().str();
-      continue;
-    }
-
-    // We have a matching pair of Objective-C classes in base and test.
-
-    if (isMovedLibrary(base->second, test->second))
-      continue;
-
-    // new API case 2. Promoted from existing class.
-    if (base->second.getRecord()->access != APIAccess::Public &&
-        shouldDiagnoseEntry(test->second, builder->getProjectWithError()) &&
-        !isExpectedChange({ChangeType::Add, EntryType::Interface, name,
-                           test->second.getInstallName()})) {
-      builder->report(diag::warn_sdkdb_new_objc)
-          << 0 << name << test->second.getInstallName()
+          << 0 << name << missing.getBinaryInfo()->installName
           << getTargetTriple().str();
       continue;
     }
 
-    if (!shouldDiagnoseEntry(base->second, builder->getProjectWithError()))
+    // new API case 2. Promoted from existing class.
+    if (base->second.getRecord()->access != APIAccess::Public &&
+        shouldDiagnoseEntry(test->second)) {
+      builder->report(diag::warn_sdkdb_new_objc)
+          << 0 << name << test->second.getBinaryInfo()->installName
+          << getTargetTriple().str();
+      continue;
+    }
+
+    if (!shouldDiagnoseEntry(base->second))
       continue;
 
-    auto installName = base->second.getInstallName();
+    auto installName = base->second.getBinaryInfo()->installName;
     checkObjCContainer(
         *test->second.getRecord(), *base->second.getRecord(),
         [&](StringRef error) {
-          if (!isExpectedChange({ChangeType::UpdateAccess, EntryType::Interface,
-                                 name, installName}))
-            builder->report(diag::err_sdkdb_objc_container_regression)
-                << 0 << name << installName << getTargetTriple().str() << error;
+          builder->report(diag::err_sdkdb_objc_container_regression)
+              << 0 << name << installName << getTargetTriple().str() << error;
         },
         [&](StringRef selector) {
-          if (!isExpectedChange({ChangeType::Add, EntryType::Selector, selector,
-                                 installName, name}))
-            builder->report(diag::warn_sdkdb_new_objc_selector)
-                << selector << 0 << name << installName
-                << getTargetTriple().str();
+          builder->report(diag::warn_sdkdb_new_objc_selector)
+              << selector << 0 << name << installName
+              << getTargetTriple().str();
         },
         [&](StringRef selector, StringRef error) {
-          if (!isExpectedChange({ChangeType::UpdateAccess, EntryType::Selector,
-                                 selector, installName, name}))
-            builder->report(diag::err_sdkdb_objc_selector_regression)
-                << selector << 0 << name << installName
-                << getTargetTriple().str() << error;
+          builder->report(diag::err_sdkdb_objc_selector_regression)
+              << selector << 0 << name << installName << getTargetTriple().str()
+              << error;
         });
   }
 
@@ -1629,24 +1369,20 @@ void SDKDB::diagnoseDifferences(const SDKDB &baseline) const {
       return res->second;
     };
 
-    std::string categoryName = (names.second + "(" + names.first + ")").str();
-
     auto base = findCategory(baseline.categoryMap);
     auto test = findCategory(categoryMap);
+    std::string name = names.second.str() + "(" + names.first.str() + ")";
 
     // regression.
     if (!test) {
       assert(base && "baseline should exist");
-      // ignore the private APIs and missing libraries.
+      // ignore the private APIs.
       auto missing = *base;
-      if (!shouldDiagnoseEntry(missing, builder->getProjectWithError()) ||
-          missingLibraries.contains(missing.getInstallName()) ||
-          isExpectedChange({ChangeType::Remove, EntryType::Category,
-                            categoryName, missing.getInstallName()}))
+      if (!shouldDiagnoseEntry(missing))
         continue;
 
       builder->report(diag::err_sdkdb_missing_objc)
-          << 1 << categoryName << missing.getInstallName()
+          << 1 << name << missing.getBinaryInfo()->installName
           << getTargetTriple().str();
       continue;
     }
@@ -1655,61 +1391,44 @@ void SDKDB::diagnoseDifferences(const SDKDB &baseline) const {
     if (!base) {
       assert(test && "test version should exist");
       auto missing = *test;
-      // ignore the private APIs and new libraries.
-      if (!shouldDiagnoseEntry(missing, builder->getProjectWithError()) ||
-          newLibraries.contains(missing.getInstallName()) ||
-          isExpectedChange({ChangeType::Add, EntryType::Category, categoryName,
-                            missing.getInstallName()}))
+      if (!shouldDiagnoseEntry(missing))
         continue;
       builder->report(diag::warn_sdkdb_new_objc)
-          << 1 << categoryName << missing.getInstallName()
+          << 1 << name << missing.getBinaryInfo()->installName
           << getTargetTriple().str();
       continue;
     }
-
-    // We have a matching pair of Objective-C categories in base and test.
-
-    if (isMovedLibrary(*base, *test))
-      continue;
 
     // new API case 2. Promoted from existing categories.
     if (base->getRecord()->access != APIAccess::Public &&
-        shouldDiagnoseEntry(*test, builder->getProjectWithError()) &&
-        !isExpectedChange({ChangeType::Add, EntryType::Category, categoryName,
-                           test->getInstallName()})) {
+        shouldDiagnoseEntry(*test)) {
       builder->report(diag::warn_sdkdb_new_objc)
-          << 1 << categoryName << test->getInstallName()
+          << 1 << name << test->getBinaryInfo()->installName
           << getTargetTriple().str();
       continue;
     }
 
-    if (!shouldDiagnoseEntry(*base, builder->getProjectWithError()))
+    if (!shouldDiagnoseEntry(*base))
       continue;
 
+    auto installName = base->getBinaryInfo()->installName;
     checkObjCContainer(
         *test->getRecord(), *base->getRecord(),
         [&](StringRef error) {
-          if (!isExpectedChange({ChangeType::UpdateAccess, EntryType::Category,
-                                 categoryName, base->getInstallName()}))
-            builder->report(diag::err_sdkdb_objc_container_regression)
-                << 1 << categoryName << base->getInstallName()
-                << getTargetTriple().str() << error;
+          builder->report(diag::err_sdkdb_objc_container_regression)
+              << 1 << name << installName << getTargetTriple().str() << error;
         },
         [&](StringRef selector) {
-          if (!isExpectedChange({ChangeType::Add, EntryType::Selector, selector,
-                                 base->getInstallName(), categoryName}))
-            builder->report(diag::warn_sdkdb_new_objc_selector)
-                << selector << 1 << categoryName << base->getInstallName()
-                << getTargetTriple().str();
+          builder->report(diag::warn_sdkdb_new_objc_selector)
+              << selector << 1 << name << installName
+              << getTargetTriple().str();
         },
         [&](StringRef selector, StringRef error) {
-          if (!isExpectedChange({ChangeType::UpdateAccess, EntryType::Selector,
-                                 selector, base->getInstallName(),
-                                 categoryName}))
-            builder->report(diag::err_sdkdb_objc_selector_regression)
-                << selector << 1 << categoryName << base->getInstallName()
-                << getTargetTriple().str() << error;
+          builder->report(diag::err_sdkdb_objc_selector_regression)
+              << selector << 1 << name << installName << getTargetTriple().str()
+              << error;
         });
+
   }
 
   // 4. check objc protocols.
@@ -1719,16 +1438,14 @@ void SDKDB::diagnoseDifferences(const SDKDB &baseline) const {
     // regression.
     if (test == protocolMap.end()) {
       assert(base != baseline.protocolMap.end() && "baseline should exist");
-      // ignore the private APIs and missing libraries.
+      // ignore the private APIs.
       auto missing = base->second;
-      if (!shouldDiagnoseEntry(missing, builder->getProjectWithError()) ||
-          missingLibraries.contains(missing.getInstallName()) ||
-          isExpectedChange({ChangeType::Remove, EntryType::Protocol, name,
-                            missing.getInstallName()}))
+      if (!shouldDiagnoseEntry(missing))
         continue;
 
       builder->report(diag::err_sdkdb_missing_objc)
-          << 2 << name << missing.getInstallName() << getTargetTriple().str();
+          << 2 << name << missing.getBinaryInfo()->installName
+          << getTargetTriple().str();
       continue;
     }
 
@@ -1736,66 +1453,44 @@ void SDKDB::diagnoseDifferences(const SDKDB &baseline) const {
     if (base == baseline.protocolMap.end()) {
       assert(test != protocolMap.end() && "test version should exist");
       auto missing = test->second;
-      // ignore the private APIs and new libraries.
-      if (!shouldDiagnoseEntry(missing, builder->getProjectWithError()) ||
-          newLibraries.contains(missing.getInstallName()) ||
-          isExpectedChange({ChangeType::Add, EntryType::Protocol, name,
-                            missing.getInstallName()}))
+      if (!shouldDiagnoseEntry(missing))
         continue;
-
       builder->report(diag::warn_sdkdb_new_objc)
-          << 2 << name << missing.getInstallName() << getTargetTriple().str();
-      continue;
-    }
-
-    // We have a matching pair of Objective-C protocols in base and test.
-
-    if (isMovedLibrary(base->second, test->second))
-      continue;
-
-    // new API case 2. Promoted from existing protocol.
-    if (base->second.getRecord()->access != APIAccess::Public &&
-        shouldDiagnoseEntry(test->second, builder->getProjectWithError()) &&
-        !isExpectedChange({ChangeType::Add, EntryType::Protocol, name,
-                           test->second.getInstallName()})) {
-      builder->report(diag::warn_sdkdb_new_objc)
-          << 2 << name << test->second.getInstallName()
+          << 2 << name << missing.getBinaryInfo()->installName
           << getTargetTriple().str();
       continue;
     }
 
-    if (!shouldDiagnoseEntry(base->second, builder->getProjectWithError()))
+    // new API case 2. Promoted from existing protocol.
+    if (base->second.getRecord()->access != APIAccess::Public &&
+        shouldDiagnoseEntry(test->second)) {
+      builder->report(diag::warn_sdkdb_new_objc)
+          << 2 << name << test->second.getBinaryInfo()->installName
+          << getTargetTriple().str();
+      continue;
+    }
+
+    if (!shouldDiagnoseEntry(base->second))
       continue;
 
+    auto installName = base->second.getBinaryInfo()->installName;
     checkObjCContainer(
         *test->second.getRecord(), *base->second.getRecord(),
         [&](StringRef error) {
-          if (!isExpectedChange({ChangeType::UpdateAccess, EntryType::Protocol,
-                                 name, base->second.getInstallName()}))
-            builder->report(diag::err_sdkdb_objc_container_regression)
-                << 2 << name << base->second.getInstallName()
-                << getTargetTriple().str() << error;
+          builder->report(diag::err_sdkdb_objc_container_regression)
+              << 2 << name << installName << getTargetTriple().str() << error;
         },
         [&](StringRef selector) {
-          if (!isExpectedChange({ChangeType::Add, EntryType::Selector, selector,
-                                 base->second.getInstallName(), name}))
-            builder->report(diag::warn_sdkdb_new_objc_selector)
-                << selector << 2 << name << base->second.getInstallName()
-                << getTargetTriple().str();
+          builder->report(diag::warn_sdkdb_new_objc_selector)
+              << selector << 2 << name << installName
+              << getTargetTriple().str();
         },
         [&](StringRef selector, StringRef error) {
-          if (!isExpectedChange({ChangeType::UpdateAccess, EntryType::Selector,
-                                 selector, base->second.getInstallName(),
-                                 name}))
-            builder->report(diag::err_sdkdb_objc_selector_regression)
-                << selector << 2 << name << base->second.getInstallName()
-                << getTargetTriple().str() << error;
+          builder->report(diag::err_sdkdb_objc_selector_regression)
+              << selector << 2 << name << installName << getTargetTriple().str()
+              << error;
         });
   }
-
-  // Skip comparing enums and typedefs.
-  if (!builder->diagnoseFrontendAPI())
-    return;
 
   // 5. check enums.
   for (auto name : allKeysFromMaps(baseline.enumMap, enumMap)) {
@@ -1958,10 +1653,6 @@ bool SDKDBBuilder::diagnoseDifferences(SDKDBBuilder &baseline) {
       continue;
     }
 
-    if (compareConfigFileReader)
-      db->expectedChanges =
-          &compareConfigFileReader->getExpectedChanges(db->triple);
-
     db->diagnoseDifferences(base);
   }
 
@@ -1972,15 +1663,5 @@ void SDKDBBuilder::setReportNewAPIasError(bool val) {
   diag.setWarningsAsErrors(val);
 }
 
-void SDKDBBuilder::setNoNewAPI(bool val) {
-  if (val) {
-    // TODO: Properly support diagnostic groups in tapi.
-    diag.ignoreDiagnotic(diag::warn_sdkdb_new_api);
-    diag.ignoreDiagnotic(diag::warn_sdkdb_new_global);
-    diag.ignoreDiagnotic(diag::warn_sdkdb_new_objc);
-    diag.ignoreDiagnotic(diag::warn_sdkdb_new_objc_selector);
-    diag.ignoreDiagnotic(diag::warn_sdkdb_new_frontend_api);
-  }
-}
 
 TAPI_NAMESPACE_INTERNAL_END

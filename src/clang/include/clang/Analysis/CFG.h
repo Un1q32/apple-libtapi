@@ -108,7 +108,7 @@ public:
   template<typename T>
   Optional<T> getAs() const {
     if (!T::isKind(*this))
-      return std::nullopt;
+      return None;
     T t;
     CFGElement& e = t;
     e = *this;
@@ -131,7 +131,7 @@ public:
 
 class CFGStmt : public CFGElement {
 public:
-  explicit CFGStmt(const Stmt *S, Kind K = Statement) : CFGElement(K, S) {
+  explicit CFGStmt(Stmt *S, Kind K = Statement) : CFGElement(K, S) {
     assert(isKind(*this));
   }
 
@@ -155,8 +155,7 @@ protected:
 /// this is only used by the analyzer's CFG.
 class CFGConstructor : public CFGStmt {
 public:
-  explicit CFGConstructor(const CXXConstructExpr *CE,
-                          const ConstructionContext *C)
+  explicit CFGConstructor(CXXConstructExpr *CE, const ConstructionContext *C)
       : CFGStmt(CE, Constructor) {
     assert(C);
     Data2.setPointer(const_cast<ConstructionContext *>(C));
@@ -186,7 +185,7 @@ class CFGCXXRecordTypedCall : public CFGStmt {
 public:
   /// Returns true when call expression \p CE needs to be represented
   /// by CFGCXXRecordTypedCall, as opposed to a regular CFGStmt.
-  static bool isCXXRecordTypedCall(const Expr *E) {
+  static bool isCXXRecordTypedCall(Expr *E) {
     assert(isa<CallExpr>(E) || isa<ObjCMessageExpr>(E));
     // There is no such thing as reference-type expression. If the function
     // returns a reference, it'll return the respective lvalue or xvalue
@@ -195,7 +194,7 @@ public:
            E->getType().getCanonicalType()->getAsCXXRecordDecl();
   }
 
-  explicit CFGCXXRecordTypedCall(const Expr *E, const ConstructionContext *C)
+  explicit CFGCXXRecordTypedCall(Expr *E, const ConstructionContext *C)
       : CFGStmt(E, CXXRecordTypedCall) {
     assert(isCXXRecordTypedCall(E));
     assert(C && (isa<TemporaryObjectConstructionContext>(C) ||
@@ -203,8 +202,7 @@ public:
                  isa<ReturnedValueConstructionContext>(C) ||
                  isa<VariableConstructionContext>(C) ||
                  isa<ConstructorInitializerConstructionContext>(C) ||
-                 isa<ArgumentConstructionContext>(C) ||
-                 isa<LambdaCaptureConstructionContext>(C)));
+                 isa<ArgumentConstructionContext>(C)));
     Data2.setPointer(const_cast<ConstructionContext *>(C));
   }
 
@@ -226,7 +224,7 @@ private:
 /// list.
 class CFGInitializer : public CFGElement {
 public:
-  explicit CFGInitializer(const CXXCtorInitializer *initializer)
+  explicit CFGInitializer(CXXCtorInitializer *initializer)
       : CFGElement(Initializer, initializer) {}
 
   CXXCtorInitializer* getInitializer() const {
@@ -483,7 +481,7 @@ private:
 /// expression for temporary object.
 class CFGTemporaryDtor : public CFGImplicitDtor {
 public:
-  CFGTemporaryDtor(const CXXBindTemporaryExpr *expr)
+  CFGTemporaryDtor(CXXBindTemporaryExpr *expr)
       : CFGImplicitDtor(TemporaryDtor, expr, nullptr) {}
 
   const CXXBindTemporaryExpr *getBindTemporaryExpr() const {
@@ -517,7 +515,7 @@ public:
     /// of the most derived class while we're in the base class.
     VirtualBaseBranch,
 
-    /// Number of different kinds, for assertions. We subtract 1 so that
+    /// Number of different kinds, for sanity checks. We subtract 1 so that
     /// to keep receiving compiler warnings when we don't cover all enum values
     /// in a switch.
     NumKindsMinusOne = VirtualBaseBranch
@@ -709,7 +707,7 @@ class CFGBlock {
 
     template <bool IsOtherConst>
     ElementRefIterator(ElementRefIterator<true, IsOtherConst> E)
-        : ElementRefIterator(E.Parent, std::make_reverse_iterator(E.Pos)) {}
+        : ElementRefIterator(E.Parent, llvm::make_reverse_iterator(E.Pos)) {}
 
     bool operator<(ElementRefIterator Other) const {
       assert(Parent == Other.Parent);
@@ -1339,7 +1337,6 @@ public:
   const CFGBlock * getIndirectGotoBlock() const { return IndirectGotoBlock; }
 
   using try_block_iterator = std::vector<const CFGBlock *>::const_iterator;
-  using try_block_range = llvm::iterator_range<try_block_iterator>;
 
   try_block_iterator try_blocks_begin() const {
     return TryDispatchBlocks.begin();
@@ -1347,10 +1344,6 @@ public:
 
   try_block_iterator try_blocks_end() const {
     return TryDispatchBlocks.end();
-  }
-
-  try_block_range try_blocks() const {
-    return try_block_range(try_blocks_begin(), try_blocks_end());
   }
 
   void addTryDispatchBlock(const CFGBlock *block) {
@@ -1467,8 +1460,6 @@ private:
   llvm::DenseMap<const DeclStmt *, const DeclStmt *> SyntheticDeclStmts;
 };
 
-Expr *extractElementInitializerFromNestedAILE(const ArrayInitLoopExpr *AILE);
-
 } // namespace clang
 
 //===----------------------------------------------------------------------===//
@@ -1498,6 +1489,9 @@ template <> struct GraphTraits< ::clang::CFGBlock *> {
   static ChildIteratorType child_end(NodeRef N) { return N->succ_end(); }
 };
 
+template <> struct GraphTraits<clang::CFGBlock>
+    : GraphTraits<clang::CFGBlock *> {};
+
 template <> struct GraphTraits< const ::clang::CFGBlock *> {
   using NodeRef = const ::clang::CFGBlock *;
   using ChildIteratorType = ::clang::CFGBlock::const_succ_iterator;
@@ -1506,6 +1500,9 @@ template <> struct GraphTraits< const ::clang::CFGBlock *> {
   static ChildIteratorType child_begin(NodeRef N) { return N->succ_begin(); }
   static ChildIteratorType child_end(NodeRef N) { return N->succ_end(); }
 };
+
+template <> struct GraphTraits<const clang::CFGBlock>
+    : GraphTraits<clang::CFGBlock *> {};
 
 template <> struct GraphTraits<Inverse< ::clang::CFGBlock *>> {
   using NodeRef = ::clang::CFGBlock *;
@@ -1519,6 +1516,9 @@ template <> struct GraphTraits<Inverse< ::clang::CFGBlock *>> {
   static ChildIteratorType child_end(NodeRef N) { return N->pred_end(); }
 };
 
+template <> struct GraphTraits<Inverse<clang::CFGBlock>>
+    : GraphTraits<clang::CFGBlock *> {};
+
 template <> struct GraphTraits<Inverse<const ::clang::CFGBlock *>> {
   using NodeRef = const ::clang::CFGBlock *;
   using ChildIteratorType = ::clang::CFGBlock::const_pred_iterator;
@@ -1530,6 +1530,9 @@ template <> struct GraphTraits<Inverse<const ::clang::CFGBlock *>> {
   static ChildIteratorType child_begin(NodeRef N) { return N->pred_begin(); }
   static ChildIteratorType child_end(NodeRef N) { return N->pred_end(); }
 };
+
+template <> struct GraphTraits<const Inverse<clang::CFGBlock>>
+    : GraphTraits<clang::CFGBlock *> {};
 
 // Traits for: CFG
 

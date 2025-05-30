@@ -20,13 +20,11 @@ clang_target_link_libraries(ClangAnalysisTests
   clangFrontend
   clangLex
   clangSerialization
+  clangTesting
   clangTooling
   )
 
 target_link_libraries(ClangAnalysisTests
   PRIVATE
-  clangTesting
   LLVMTestingSupport
   )
-
-add_subdirectory(FlowSensitive)

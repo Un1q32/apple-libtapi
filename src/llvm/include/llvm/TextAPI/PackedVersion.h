@@ -10,11 +10,10 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef LLVM_TEXTAPI_PACKEDVERSION_H
-#define LLVM_TEXTAPI_PACKEDVERSION_H
+#ifndef LLVM_TEXTAPI_MACHO_PACKEDVERSION_H
+#define LLVM_TEXTAPI_MACHO_PACKEDVERSION_H
 
 #include <cstdint>
-#include <string>
 #include <utility>
 
 namespace llvm {
@@ -54,8 +53,6 @@ public:
 
   uint32_t rawValue() const { return Version; }
 
-  operator std::string() const;
-
   void print(raw_ostream &OS) const;
 };
 
@@ -67,4 +64,4 @@ inline raw_ostream &operator<<(raw_ostream &OS, const PackedVersion &Version) {
 } // end namespace MachO.
 } // end namespace llvm.
 
-#endif // LLVM_TEXTAPI_PACKEDVERSION_H
+#endif // LLVM_TEXTAPI_MACHO_PACKEDVERSION_H

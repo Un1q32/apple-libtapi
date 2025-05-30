@@ -54,12 +54,11 @@ public:
       // occasionally hand out null pointers for pruned edges, so we catch those
       // here.
       if (!Block)
-        return std::make_pair(std::nullopt,
-                              false); // if an edge is trivially false.
+        return std::make_pair(None, false); // if an edge is trivially false.
       if (VisitedBlockIDs.test(Block->getBlockID()))
-        return std::make_pair(std::nullopt, false);
+        return std::make_pair(None, false);
       VisitedBlockIDs.set(Block->getBlockID());
-      return std::make_pair(std::nullopt, true);
+      return std::make_pair(None, true);
     }
 
     /// Check if the bit for a CFGBlock has been already set.

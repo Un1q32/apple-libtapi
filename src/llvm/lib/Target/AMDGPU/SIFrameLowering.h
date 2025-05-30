@@ -13,6 +13,11 @@
 
 namespace llvm {
 
+class SIInstrInfo;
+class SIMachineFunctionInfo;
+class SIRegisterInfo;
+class GCNSubtarget;
+
 class SIFrameLowering final : public AMDGPUFrameLowering {
 public:
   SIFrameLowering(StackDirection D, Align StackAl, int LAO,
@@ -38,17 +43,11 @@ public:
                               const TargetRegisterInfo *TRI,
                               std::vector<CalleeSavedInfo> &CSI) const override;
 
-  bool allocateScavengingFrameIndexesNearIncomingSP(
-    const MachineFunction &MF) const override;
-
   bool isSupportedStackID(TargetStackID::Value ID) const override;
 
   void processFunctionBeforeFrameFinalized(
     MachineFunction &MF,
     RegScavenger *RS = nullptr) const override;
-
-  void processFunctionBeforeFrameIndicesReplaced(
-      MachineFunction &MF, RegScavenger *RS = nullptr) const override;
 
   MachineBasicBlock::iterator
   eliminateCallFramePseudoInstr(MachineFunction &MF,

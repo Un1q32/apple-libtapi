@@ -61,7 +61,6 @@ class Diagnostic<string text, DiagClass DC, Severity defaultmapping> {
   bit            AccessControl = 0;
   bit            WarningNoWerror = 0;
   bit            ShowInSystemHeader = 0;
-  bit            ShowInSystemMacro = 1;
   bit            Deferrable = 0;
   Severity       DefaultSeverity = defaultmapping;
   DiagGroup      Group;
@@ -113,20 +112,14 @@ def err_reexported_libraries_missing : Error<"re-exported library missing from %
 def err_reexported_libraries_mismatch : Error<"re-exported libraries do not match: '%0' (provided) vs '%1' (found)">;
 def err_allowable_clients_missing : Error<"allowable client missing from %0: '%1'">;
 def err_allowable_clients_mismatch : Error<"allowable clients do not match: '%0' (provided) vs '%1' (found)">;
-def err_parent_umbrella_missing: Error<"parent umbrella missing from %0: '%1'">;
 def err_parent_umbrella_mismatch : Error<"parent umbrella does not match: '%0' (provided) vs '%1' (found)">;
-def warn_rpaths_missing : Warning<"runpath search paths missing from %0: '%1'">;
-def warn_rpaths_mismatch : Warning<"runpath search paths do not match: '%0' (provided) vs '%1' (found)">;
 def err_no_twolevel_namespace : Error<"flat namespace libraries are not supported">;
-def err_library_missing_symbol : Error<"declaration has external linkage, but dynamic library doesn't have symbol '%0'">;
-def err_header_hidden_symbol : Error<"symbol exported in dynamic library, but marked hidden in declaration '%0'">;
-def err_header_availability_mismatch : Error<"declaration '%0' is marked %select{available|unavailable}1,"
-  " but symbol is %select{not |}2exported in dynamic library">;
-def err_dylib_symbol_flags_mismatch : Error<"dynamic library symbol '%0' is "
-  "%select{weak defined|thread local}1, but it's declaration is not">;
-def err_header_symbol_flags_mismatch : Error<"declaration '%0' is "
-  "%select{weak defined|thread local}1, but symbol is not in dynamic library">;
-def err_library_hidden_symbol : Error<"declaration has external linkage, but symbol has internal linkage in dynamic library '%0'">;
+def err_library_missing_symbol : Error<"library doesn't have symbol '%0'">;
+def err_header_symbol_tlv_mismatch : Error<"header symbol '%0' is thread local, but dynamic library symbol '%1' is not">;
+def err_dylib_symbol_tlv_mismatch : Error<"dynamic library symbol '%0' is thread local, but header symbol '%1' is not">;
+def err_header_symbol_weak_mismatch : Error<"header symbol '%0' is weak defined, but dynamic library symbol '%1' is not">;
+def err_dylib_symbol_weak_mismatch : Error<"dynamic library symbol '%0' is weak defined, but header symbol '%1' is not">;
+def err_availability_mismatch : Error<"symbol '%0' doesn't have the same availability information: '%1' (header) vs '%2' (found)">;
 def err_parsing_disabled : Error<"parsing of all headers disabled">;
 def err_no_directory : Error<"input '%0' is not a directory">;
 def err_not_a_dylib : Error<"input '%0' is not a dynamic library">;
@@ -139,9 +132,7 @@ def err_expected_one_input_file: Error<"expected only one input file">;
 def err_expected_option: Error<"cannot infer '%0', please specify with option '%1'">;
 def err_unsupported_file_type: Error<"unsupported file type">;
 def err_no_output_file: Error<"no output file specified">;
-def err_header_symbol_missing : Error<"no declaration found for exported symbol '%0' in dynamic library">;
-def err_swift_dylib_symbol_missing : Error<"dynamic library doesn't have symbol '%0', but found in swift interface">;
-def err_swift_interface_symbol_missing : Error<"swift generated text based file doesn't have symbol '%0', but found in dynamic library">;
+def err_header_symbol_missing : Error<"headers don't have symbol '%0'">;
 def err_cannot_generate_sdkdb : Error<"cannot generate SDKDB: '%0'">;
 def err_cannot_find_header_dir: Error<"cannot find any public (usr/include) or private (usr/local/include) header directory: '%0'">;
 def err_missing_vfs_overlay_file : Error<"virtual filesystem overlay file '%0' not found">;
@@ -154,10 +145,9 @@ def err_invalid_platform_name: Error<"invalid platform name '%0'">;
 def warn : Warning<"%0">;
 def warn_truncating_current_version : Warning<
     "truncating current version '%0' to fit in 32-bit space used by old mach-o format">;
+def warn_symbol_unavailable : Warning<"header marked symbol '%0' as unavailable">;
 def warn_broken_symlink : Warning<"ignoring broken symlink '%0'">;
-def warn_header_symbol_missing : Warning<"no declaration was found for exported symbol '%0' in dynamic library">;
-def warn_header_hidden_symbol : Warning<"symbol exported in dynamic library, but marked hidden in declaration '%0'">;
-def warn_swift_interface_symbol_missing : Warning<"swift generated text based file doesn't have symbol '%0', but found in dynamic library">;
+def warn_header_symbol_missing : Warning<"headers don't have symbol '%0'">;
 def warn_sdkdb_skip_file : Warning<"skipping file '%0': %1">;
 def warn_sdkdb_skip_framework : Warning<"skipping framework '%0': %1">;
 def warn_sdkdb_mismatch_local_info : Warning<"updating '%0': %1 in %2">;
@@ -171,17 +161,6 @@ def warn_generate_path_32bit: Warning<"could not generate information about '%0'
 def warn_auto_zippered : Warning<"Auto zippering was requested, output will be zippered">;
 def warn_reexport_install_name : Warning<"reexport_install_name is deprecated, use reexport_framework reexport_l or reexport_library">;
 def warn_platform_specific_deployment_target : Warning<"platform specific option for deployment target '%0' is deprecated, use -mtargetos.">;
-def warn_installapi_flag : Warning<"set-installapi-flag is deprecated and will be ignored.">;
-def warn_no_uuids: Warning<"no-uuids is deprecated and will be ignored.">;
-def warn_snapshot : Warning<"snapshot options are deprecated and will be ignored.">;
-def warn_target: Warning<"violations found for %0">;
-def warn_header_availability_mismatch : Warning<"declaration '%0' is marked %select{available|unavailable}1,"
-  " but symbol is %select{not |}2exported in dynamic library">;
-def warn_dylib_symbol_flags_mismatch : Warning<"dynamic library symbol '%0' is "
-  "%select{weak defined|thread local}1, but it's declaration is not">;
-def warn_header_symbol_flags_mismatch : Warning<"declaration '%0' is "
-  "%select{weak defined|thread local}1, but symbol is not in dynamic library">;
-
 
 } // end of command line category.
 
@@ -220,6 +199,7 @@ def note_api_base_class_num : Note<"%0 has %1 base class(es) here">;
 def note_api_base_class_virtual : Note<"base class %0 %select{is not|is}1 virtual here">;
 def note_api_base_class_access : Note<"base class %0 has access specifier '%select{public|protected|private|none}1' here">;
 def note_api_decl_name : Note<"declaration has name %0 here">;
+
 def note_api_target_note : Note<"for target %0">;
 
 def warn_api_incomplete : Warning<"%0 is missing from target %1 but required for target %2">;
@@ -243,12 +223,11 @@ def warn_sdkdb_conflict_availability : Warning<"conflicting availability info fo
 def warn_sdkdb_conflict_gvkind : Warning<"conflicting declaration for exported symbol '%0'">;
 def warn_sdkdb_conflict_superclass : Warning<"conflicting superclass for objc class '%0': '%1' is not the same as '%2'">;
 def warn_sdkdb_conflict_objc_protocol : Warning<"conflict ObjC protocol definition '%0' inside SDKDB">;
-def warn_sdkdb_conflict_install_name : Warning<"conflicting install name '%0' from project '%1' and '%2'">;
 def warn_sdkdb_poison_entry : Warning<"SDKDB map has poison entry for %select{class|category|protocol}0 '%1'">;
 
 def err_sdkdb_missing_target : Error<"missing target '%0'">;
 def err_sdkdb_missing_binary_info : Error<"API info missing binary info for target '%0'">;
-def err_sdkdb_missing_api : Error<"missing %select{frontend API|library '%2'}0 from project '%1' for target '%3'">;
+def err_sdkdb_missing_dylib : Error<"missing dylib '%0' for target '%1'">;
 def err_sdkdb_missing_global : Error<"missing %select{symbol|global variable|function}0 '%1' in '%2' for target '%3'">;
 def err_sdkdb_missing_frontend_api: Error<"missing %select{enum|enum constant|typedef}0 '%1' for target '%2'">;
 def err_sdkdb_global_regression : Error<"regression for API '%0' in '%1' for target '%2': %3">;
@@ -261,7 +240,6 @@ def warn_sdkdb_new_global : Warning<"new API %select{symbol|global variable|func
 def warn_sdkdb_new_objc : Warning<"new API objc %select{class|category|protocol}0 '%1' in '%2' for target '%3'">;
 def warn_sdkdb_new_frontend_api : Warning<"new API %select{enum|enum constant|typedef}0 '%1' for target '%2'">;
 def warn_sdkdb_new_objc_selector : Warning<"new API ObjC selector '%0' in %select{class|category|protocol}1 '%2' in '%3' for target '%4'">;
-def warn_sdkdb_new_api : Warning<"new %select{frontend API|library '%2'}0 from project '%1' for target '%3'">;
 
 } // end of SDKDB category.
 

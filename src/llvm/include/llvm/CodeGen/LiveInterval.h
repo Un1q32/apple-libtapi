@@ -227,14 +227,6 @@ namespace llvm {
     const_vni_iterator vni_begin() const { return valnos.begin(); }
     const_vni_iterator vni_end() const   { return valnos.end(); }
 
-    iterator_range<vni_iterator> vnis() {
-      return make_range(vni_begin(), vni_end());
-    }
-
-    iterator_range<const_vni_iterator> vnis() const {
-      return make_range(vni_begin(), vni_end());
-    }
-
     /// Constructs a new LiveRange object.
     LiveRange(bool UseSegmentSet = false)
         : segmentSet(UseSegmentSet ? std::make_unique<SegmentSet>()
@@ -529,11 +521,11 @@ namespace llvm {
       removeSegment(S.start, S.end, RemoveDeadValNo);
     }
 
-    /// Remove segment pointed to by iterator @p I from this range.
-    iterator removeSegment(iterator I, bool RemoveDeadValNo = false);
-
-    /// Mark \p ValNo for deletion if no segments in this range use it.
-    void removeValNoIfDead(VNInfo *ValNo);
+    /// Remove segment pointed to by iterator @p I from this range.  This does
+    /// not remove dead value numbers.
+    iterator removeSegment(iterator I) {
+      return segments.erase(I);
+    }
 
     /// Query Liveness at Idx.
     /// The sub-instruction slot of Idx doesn't matter, only the instruction
@@ -633,8 +625,10 @@ namespace llvm {
         // if the Seg is lower find first segment that is above Idx using binary
         // search
         if (Seg->end <= *Idx) {
-          Seg =
-              std::upper_bound(++Seg, EndSeg, *Idx, [=](auto V, const auto &S) {
+          Seg = std::upper_bound(
+              ++Seg, EndSeg, *Idx,
+              [=](std::remove_reference_t<decltype(*Idx)> V,
+                  const std::remove_reference_t<decltype(*Seg)> &S) {
                 return V < S.end;
               });
           if (Seg == EndSeg)
@@ -730,7 +724,7 @@ namespace llvm {
       T *P;
 
     public:
-      SingleLinkedListIterator(T *P) : P(P) {}
+      SingleLinkedListIterator<T>(T *P) : P(P) {}
 
       SingleLinkedListIterator<T> &operator++() {
         P = P->Next;

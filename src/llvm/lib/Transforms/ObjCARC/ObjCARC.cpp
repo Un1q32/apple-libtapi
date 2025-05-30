@@ -16,6 +16,7 @@
 #include "llvm-c/Initialization.h"
 #include "llvm/Analysis/ObjCARCUtil.h"
 #include "llvm/IR/IRBuilder.h"
+#include "llvm/IR/InlineAsm.h"
 #include "llvm/IR/Instructions.h"
 #include "llvm/InitializePasses.h"
 #include "llvm/Transforms/Utils/BasicBlockUtils.h"
@@ -35,6 +36,7 @@ void llvm::initializeObjCARCOpts(PassRegistry &Registry) {
   initializeObjCARCExpandPass(Registry);
   initializeObjCARCContractLegacyPassPass(Registry);
   initializeObjCARCOptLegacyPassPass(Registry);
+  initializePAEvalPass(Registry);
 }
 
 void LLVMInitializeObjCARCOpts(LLVMPassRegistryRef R) {
@@ -101,8 +103,9 @@ CallInst *BundledRetainClaimRVs::insertRVCallWithColors(
     Instruction *InsertPt, CallBase *AnnotatedCall,
     const DenseMap<BasicBlock *, ColorVector> &BlockColors) {
   IRBuilder<> Builder(InsertPt);
-  Function *Func = *objcarc::getAttachedARCFunction(AnnotatedCall);
-  assert(Func && "operand isn't a Function");
+  bool IsRetainRV = objcarc::hasAttachedCallOpBundle(AnnotatedCall, true);
+  Function *Func = EP.get(IsRetainRV ? ARCRuntimeEntryPointKind::RetainRV
+                                     : ARCRuntimeEntryPointKind::ClaimRV);
   Type *ParamTy = Func->getArg(0)->getType();
   Value *CallArg = Builder.CreateBitCast(AnnotatedCall, ParamTy);
   auto *Call =
@@ -112,18 +115,17 @@ CallInst *BundledRetainClaimRVs::insertRVCallWithColors(
 }
 
 BundledRetainClaimRVs::~BundledRetainClaimRVs() {
-  for (auto P : RVCalls) {
-    if (ContractPass) {
-      CallBase *CB = P.second;
-      // At this point, we know that the annotated calls can't be tail calls
-      // as they are followed by marker instructions and retainRV/claimRV
-      // calls. Mark them as notail so that the backend knows these calls
-      // can't be tail calls.
-      if (auto *CI = dyn_cast<CallInst>(CB))
+  if (ContractPass) {
+    // At this point, we know that the annotated calls can't be tail calls as
+    // they are followed by marker instructions and retainRV/claimRV calls. Mark
+    // them as notail, so that the backend knows these calls can't be tail
+    // calls.
+    for (auto P : RVCalls)
+      if (auto *CI = dyn_cast<CallInst>(P.second))
         CI->setTailCallKind(CallInst::TCK_NoTail);
-    }
-
-    EraseInstruction(P.first);
+  } else {
+    for (auto P : RVCalls)
+      EraseInstruction(P.first);
   }
 
   RVCalls.clear();

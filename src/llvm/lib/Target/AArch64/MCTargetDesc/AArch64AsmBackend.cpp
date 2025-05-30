@@ -22,11 +22,11 @@
 #include "llvm/MC/MCRegisterInfo.h"
 #include "llvm/MC/MCSectionELF.h"
 #include "llvm/MC/MCSectionMachO.h"
-#include "llvm/MC/MCSubtargetInfo.h"
 #include "llvm/MC/MCTargetOptions.h"
 #include "llvm/MC/MCValue.h"
-#include "llvm/MC/TargetRegistry.h"
+#include "llvm/Support/EndianStream.h"
 #include "llvm/Support/ErrorHandling.h"
+#include "llvm/Support/TargetRegistry.h"
 using namespace llvm;
 
 namespace {
@@ -92,8 +92,7 @@ public:
                             const MCAsmLayout &Layout) const override;
   void relaxInstruction(MCInst &Inst,
                         const MCSubtargetInfo &STI) const override;
-  bool writeNopData(raw_ostream &OS, uint64_t Count,
-                    const MCSubtargetInfo *STI) const override;
+  bool writeNopData(raw_ostream &OS, uint64_t Count) const override;
 
   unsigned getFixupKindContainereSizeInBytes(unsigned Kind) const;
 
@@ -160,11 +159,8 @@ static uint64_t adjustFixupValue(const MCFixup &Fixup, const MCValue &Target,
     return AdrImmBits(Value & 0x1fffffULL);
   case AArch64::fixup_aarch64_pcrel_adrp_imm21:
     assert(!IsResolved);
-    if (TheTriple.isOSBinFormatCOFF()) {
-      if (!isInt<21>(SignedValue))
-        Ctx.reportError(Fixup.getLoc(), "fixup value out of range");
+    if (TheTriple.isOSBinFormatCOFF())
       return AdrImmBits(Value & 0x1fffffULL);
-    }
     return AdrImmBits((Value & 0x1fffff000ULL) >> 12);
   case AArch64::fixup_aarch64_ldr_pcrel_imm19:
   case AArch64::fixup_aarch64_pcrel_branch19:
@@ -313,13 +309,6 @@ static uint64_t adjustFixupValue(const MCFixup &Fixup, const MCValue &Target,
     return (Value >> 2) & 0x3fff;
   case AArch64::fixup_aarch64_pcrel_branch26:
   case AArch64::fixup_aarch64_pcrel_call26:
-    if (TheTriple.isOSBinFormatCOFF() && !IsResolved && SignedValue != 0) {
-      // MSVC link.exe and lld do not support this relocation type
-      // with a non-zero offset
-      Ctx.reportError(Fixup.getLoc(),
-                      "cannot perform a PC-relative fixup with a non-zero "
-                      "symbol offset");
-    }
     // Signed 28-bit immediate
     if (SignedValue > 134217727 || SignedValue < -134217728)
       Ctx.reportError(Fixup.getLoc(), "fixup value out of range");
@@ -467,8 +456,7 @@ void AArch64AsmBackend::relaxInstruction(MCInst &Inst,
   llvm_unreachable("AArch64AsmBackend::relaxInstruction() unimplemented");
 }
 
-bool AArch64AsmBackend::writeNopData(raw_ostream &OS, uint64_t Count,
-                                     const MCSubtargetInfo *STI) const {
+bool AArch64AsmBackend::writeNopData(raw_ostream &OS, uint64_t Count) const {
   // If the count is not 4-byte aligned, we must be writing data into the text
   // section (otherwise we have unaligned instructions, and thus have far
   // bigger problems), so just write zeros instead.
@@ -477,7 +465,7 @@ bool AArch64AsmBackend::writeNopData(raw_ostream &OS, uint64_t Count,
   // We are properly aligned, so write NOPs as requested.
   Count /= 4;
   for (uint64_t i = 0; i != Count; ++i)
-    OS.write("\x1f\x20\x03\xd5", 4);
+    support::endian::write<uint32_t>(OS, 0xd503201f, Endian);
   return true;
 }
 
@@ -599,18 +587,17 @@ public:
         if (XReg != AArch64::FP)
           return CU::UNWIND_ARM64_MODE_DWARF;
 
-        if (i + 2 >= e)
-          return CU::UNWIND_ARM64_MODE_DWARF;
+        assert(XReg == AArch64::FP && "Invalid frame pointer!");
+        assert(i + 2 < e && "Insufficient CFI instructions to define a frame!");
 
         const MCCFIInstruction &LRPush = Instrs[++i];
-        if (LRPush.getOperation() != MCCFIInstruction::OpOffset)
-          return CU::UNWIND_ARM64_MODE_DWARF;
+        assert(LRPush.getOperation() == MCCFIInstruction::OpOffset &&
+               "Link register not pushed!");
         const MCCFIInstruction &FPPush = Instrs[++i];
-        if (FPPush.getOperation() != MCCFIInstruction::OpOffset)
-          return CU::UNWIND_ARM64_MODE_DWARF;
+        assert(FPPush.getOperation() == MCCFIInstruction::OpOffset &&
+               "Frame pointer not pushed!");
 
-        if (FPPush.getOffset() + 8 != LRPush.getOffset())
-          return CU::UNWIND_ARM64_MODE_DWARF;
+        assert(FPPush.getOffset() + 8 == LRPush.getOffset());
         CurOffset = FPPush.getOffset();
 
         unsigned LRReg = *MRI.getLLVMRegNum(LRPush.getRegister(), true);
@@ -619,8 +606,8 @@ public:
         LRReg = getXRegFromWReg(LRReg);
         FPReg = getXRegFromWReg(FPReg);
 
-        if (LRReg != AArch64::LR || FPReg != AArch64::FP)
-          return CU::UNWIND_ARM64_MODE_DWARF;
+        assert(LRReg == AArch64::LR && FPReg == AArch64::FP &&
+               "Pushing invalid registers for frame!");
 
         // Indicate that the function has a frame.
         CompactUnwindEncoding |= CU::UNWIND_ARM64_MODE_FRAME;
@@ -628,8 +615,7 @@ public:
         break;
       }
       case MCCFIInstruction::OpDefCfaOffset: {
-        if (StackSize != 0)
-          return CU::UNWIND_ARM64_MODE_DWARF;
+        assert(StackSize == 0 && "We already have the CFA offset!");
         StackSize = std::abs(Inst.getOffset());
         break;
       }
@@ -752,7 +738,7 @@ public:
 
   std::unique_ptr<MCObjectTargetWriter>
   createObjectTargetWriter() const override {
-    return createAArch64WinCOFFObjectWriter(TheTriple);
+    return createAArch64WinCOFFObjectWriter();
   }
 };
 }

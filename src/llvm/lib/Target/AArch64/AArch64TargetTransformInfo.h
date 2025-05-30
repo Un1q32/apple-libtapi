@@ -59,14 +59,6 @@ class AArch64TTIImpl : public BasicTTIImplBase<AArch64TTIImpl> {
   bool isWideningInstruction(Type *Ty, unsigned Opcode,
                              ArrayRef<const Value *> Args);
 
-  // A helper function called by 'getVectorInstrCost'.
-  //
-  // 'Val' and 'Index' are forwarded from 'getVectorInstrCost'; 'HasRealUse'
-  // indicates whether the vector instruction is available in the input IR or
-  // just imaginary in vectorizer passes.
-  InstructionCost getVectorInstrCostHelper(Type *Val, unsigned Index,
-                                           bool HasRealUse);
-
 public:
   explicit AArch64TTIImpl(const AArch64TargetMachine *TM, const Function &F)
       : BaseT(TM, F.getParent()->getDataLayout()), ST(TM->getSubtargetImpl(F)),
@@ -114,12 +106,6 @@ public:
   Optional<Instruction *> instCombineIntrinsic(InstCombiner &IC,
                                                IntrinsicInst &II) const;
 
-  Optional<Value *> simplifyDemandedVectorEltsIntrinsic(
-      InstCombiner &IC, IntrinsicInst &II, APInt DemandedElts, APInt &UndefElts,
-      APInt &UndefElts2, APInt &UndefElts3,
-      std::function<void(Instruction *, unsigned, APInt, APInt &)>
-          SimplifyAndSetOp) const;
-
   TypeSize getRegisterBitWidth(TargetTransformInfo::RegisterKind K) const {
     switch (K) {
     case TargetTransformInfo::RGK_Scalar:
@@ -139,11 +125,11 @@ public:
     return ST->getMinVectorRegisterBitWidth();
   }
 
-  Optional<unsigned> getVScaleForTuning() const {
-    return ST->getVScaleForTuning();
+  Optional<unsigned> getMaxVScale() const {
+    if (ST->hasSVE())
+      return AArch64::SVEMaxBitsPerVector / AArch64::SVEBitsPerBlock;
+    return BaseT::getMaxVScale();
   }
-
-  bool shouldMaximizeVectorBandwidth(TargetTransformInfo::RegisterKind K) const;
 
   /// Try to return an estimate cost factor that can be used as a multiplier
   /// when scalarizing an operation for a vector with ElementCount \p VF.
@@ -152,13 +138,12 @@ public:
   unsigned getMaxNumElements(ElementCount VF) const {
     if (!VF.isScalable())
       return VF.getFixedValue();
-
-    return VF.getKnownMinValue() * ST->getVScaleForTuning();
+    Optional<unsigned> MaxNumVScale = getMaxVScale();
+    assert(MaxNumVScale && "Expected valid max vscale value");
+    return *MaxNumVScale * VF.getKnownMinValue();
   }
 
   unsigned getMaxInterleaveFactor(unsigned VF);
-
-  bool prefersVectorizedAddressing() const;
 
   InstructionCost getMaskedMemoryOpCost(unsigned Opcode, Type *Src,
                                         Align Alignment, unsigned AddressSpace,
@@ -183,8 +168,6 @@ public:
 
   InstructionCost getVectorInstrCost(unsigned Opcode, Type *Val,
                                      unsigned Index);
-  InstructionCost getVectorInstrCost(const Instruction &I, Type *Val,
-                                     unsigned Index);
 
   InstructionCost getMinMaxReductionCost(VectorType *Ty, VectorType *CondTy,
                                          bool IsUnsigned,
@@ -197,9 +180,12 @@ public:
   InstructionCost getSpliceCost(VectorType *Tp, int Index);
 
   InstructionCost getArithmeticInstrCost(
-      unsigned Opcode, Type *Ty, TTI::TargetCostKind CostKind,
-      TTI::OperandValueInfo Op1Info = {TTI::OK_AnyValue, TTI::OP_None},
-      TTI::OperandValueInfo Op2Info = {TTI::OK_AnyValue, TTI::OP_None},
+      unsigned Opcode, Type *Ty,
+      TTI::TargetCostKind CostKind = TTI::TCK_RecipThroughput,
+      TTI::OperandValueKind Opd1Info = TTI::OK_AnyValue,
+      TTI::OperandValueKind Opd2Info = TTI::OK_AnyValue,
+      TTI::OperandValueProperties Opd1PropInfo = TTI::OP_None,
+      TTI::OperandValueProperties Opd2PropInfo = TTI::OP_None,
       ArrayRef<const Value *> Args = ArrayRef<const Value *>(),
       const Instruction *CxtI = nullptr);
 
@@ -215,17 +201,15 @@ public:
                                                     bool IsZeroCmp) const;
   bool useNeonVector(const Type *Ty) const;
 
-  InstructionCost
-  getMemoryOpCost(unsigned Opcode, Type *Src, MaybeAlign Alignment,
-                  unsigned AddressSpace, TTI::TargetCostKind CostKind,
-                  TTI::OperandValueInfo OpInfo = {TTI::OK_AnyValue, TTI::OP_None},
-                  const Instruction *I = nullptr);
+  InstructionCost getMemoryOpCost(unsigned Opcode, Type *Src,
+                                  MaybeAlign Alignment, unsigned AddressSpace,
+                                  TTI::TargetCostKind CostKind,
+                                  const Instruction *I = nullptr);
 
   InstructionCost getCostOfKeepingLiveOverCall(ArrayRef<Type *> Tys);
 
   void getUnrollingPreferences(Loop *L, ScalarEvolution &SE,
-                               TTI::UnrollingPreferences &UP,
-                               OptimizationRemarkEmitter *ORE);
+                               TTI::UnrollingPreferences &UP);
 
   void getPeelingPreferences(Loop *L, ScalarEvolution &SE,
                              TTI::PeelingPreferences &PP);
@@ -245,7 +229,7 @@ public:
     if (Ty->isHalfTy() || Ty->isFloatTy() || Ty->isDoubleTy())
       return true;
 
-    if (Ty->isIntegerTy(8) || Ty->isIntegerTy(16) ||
+    if (Ty->isIntegerTy(1) || Ty->isIntegerTy(8) || Ty->isIntegerTy(16) ||
         Ty->isIntegerTy(32) || Ty->isIntegerTy(64))
       return true;
 
@@ -260,7 +244,8 @@ public:
     if (isa<FixedVectorType>(DataType) && !ST->useSVEForFixedLengthVectors())
       return false; // Fall back to scalarization of masked operations.
 
-    return isElementTypeLegalForScalableVector(DataType->getScalarType());
+    return !DataType->getScalarType()->isIntegerTy(1) &&
+           isElementTypeLegalForScalableVector(DataType->getScalarType());
   }
 
   bool isLegalMaskedLoad(Type *DataType, Align Alignment) {
@@ -281,7 +266,8 @@ public:
                          DataTypeFVTy->getNumElements() < 2))
       return false;
 
-    return isElementTypeLegalForScalableVector(DataType->getScalarType());
+    return !DataType->getScalarType()->isIntegerTy(1) &&
+           isElementTypeLegalForScalableVector(DataType->getScalarType());
   }
 
   bool isLegalMaskedGather(Type *DataType, Align Alignment) const {
@@ -291,56 +277,28 @@ public:
     return isLegalMaskedGatherScatter(DataType);
   }
 
-  bool isLegalBroadcastLoad(Type *ElementTy, ElementCount NumElements) const {
-    // Return true if we can generate a `ld1r` splat load instruction.
-    if (!ST->hasNEON() || NumElements.isScalable())
-      return false;
-    switch (unsigned ElementBits = ElementTy->getScalarSizeInBits()) {
-    case 8:
-    case 16:
-    case 32:
-    case 64: {
-      // We accept bit-widths >= 64bits and elements {8,16,32,64} bits.
-      unsigned VectorBits = NumElements.getFixedValue() * ElementBits;
-      return VectorBits >= 64;
-    }
-    }
-    return false;
-  }
-
-  bool isLegalNTStoreLoad(Type *DataType, Align Alignment) {
+  bool isLegalNTStore(Type *DataType, Align Alignment) {
     // NOTE: The logic below is mostly geared towards LV, which calls it with
     //       vectors with 2 elements. We might want to improve that, if other
     //       users show up.
-    // Nontemporal vector loads/stores can be directly lowered to LDNP/STNP, if
-    // the vector can be halved so that each half fits into a register. That's
-    // the case if the element type fits into a register and the number of
-    // elements is a power of 2 > 1.
-    if (auto *DataTypeTy = dyn_cast<FixedVectorType>(DataType)) {
-      unsigned NumElements = DataTypeTy->getNumElements();
-      unsigned EltSize = DataTypeTy->getElementType()->getScalarSizeInBits();
+    // Nontemporal vector stores can be directly lowered to STNP, if the vector
+    // can be halved so that each half fits into a register. That's the case if
+    // the element type fits into a register and the number of elements is a
+    // power of 2 > 1.
+    if (auto *DataTypeVTy = dyn_cast<VectorType>(DataType)) {
+      unsigned NumElements =
+          cast<FixedVectorType>(DataTypeVTy)->getNumElements();
+      unsigned EltSize = DataTypeVTy->getElementType()->getScalarSizeInBits();
       return NumElements > 1 && isPowerOf2_64(NumElements) && EltSize >= 8 &&
              EltSize <= 128 && isPowerOf2_64(EltSize);
     }
     return BaseT::isLegalNTStore(DataType, Alignment);
   }
 
-  bool isLegalNTStore(Type *DataType, Align Alignment) {
-    return isLegalNTStoreLoad(DataType, Alignment);
-  }
-
-  bool isLegalNTLoad(Type *DataType, Align Alignment) {
-    // Only supports little-endian targets.
-    if (ST->isLittleEndian())
-      return isLegalNTStoreLoad(DataType, Alignment);
-    return BaseT::isLegalNTLoad(DataType, Alignment);
-  }
-
-  bool enableOrderedReductions() const { return true; }
-
   InstructionCost getInterleavedMemoryOpCost(
       unsigned Opcode, Type *VecTy, unsigned Factor, ArrayRef<unsigned> Indices,
-      Align Alignment, unsigned AddressSpace, TTI::TargetCostKind CostKind,
+      Align Alignment, unsigned AddressSpace,
+      TTI::TargetCostKind CostKind = TTI::TCK_SizeAndLatency,
       bool UseMaskForCond = false, bool UseMaskForGaps = false);
 
   bool
@@ -353,52 +311,18 @@ public:
     return 2;
   }
 
-  unsigned getMinTripCountTailFoldingThreshold() const {
-    return ST->hasSVE() ? 5 : 0;
-  }
-
-  PredicationStyle emitGetActiveLaneMask() const {
-    if (ST->hasSVE())
-      return PredicationStyle::DataAndControlFlow;
-    return PredicationStyle::None;
-  }
-
-  bool preferPredicateOverEpilogue(Loop *L, LoopInfo *LI, ScalarEvolution &SE,
-                                   AssumptionCache &AC, TargetLibraryInfo *TLI,
-                                   DominatorTree *DT,
-                                   LoopVectorizationLegality *LVL,
-                                   InterleavedAccessInfo *IAI);
-
   bool supportsScalableVectors() const { return ST->hasSVE(); }
-
-  bool enableScalableVectorization() const { return ST->hasSVE(); }
 
   bool isLegalToVectorizeReduction(const RecurrenceDescriptor &RdxDesc,
                                    ElementCount VF) const;
 
-  bool preferPredicatedReductionSelect(unsigned Opcode, Type *Ty,
-                                       TTI::ReductionFlags Flags) const {
-    return ST->hasSVE();
-  }
-
-  InstructionCost getArithmeticReductionCost(unsigned Opcode, VectorType *Ty,
-                                             Optional<FastMathFlags> FMF,
-                                             TTI::TargetCostKind CostKind);
+  InstructionCost getArithmeticReductionCost(
+      unsigned Opcode, VectorType *Ty, Optional<FastMathFlags> FMF,
+      TTI::TargetCostKind CostKind = TTI::TCK_RecipThroughput);
 
   InstructionCost getShuffleCost(TTI::ShuffleKind Kind, VectorType *Tp,
-                                 ArrayRef<int> Mask,
-                                 TTI::TargetCostKind CostKind, int Index,
-                                 VectorType *SubTp,
-                                 ArrayRef<const Value *> Args = None);
-
-  /// Return the cost of the scaling factor used in the addressing
-  /// mode represented by AM for this target, for a load/store
-  /// of the specified type.
-  /// If the AM is supported, the return value must be >= 0.
-  /// If the AM is not supported, it returns a negative value.
-  InstructionCost getScalingFactorCost(Type *Ty, GlobalValue *BaseGV,
-                                       int64_t BaseOffset, bool HasBaseReg,
-                                       int64_t Scale, unsigned AddrSpace) const;
+                                 ArrayRef<int> Mask, int Index,
+                                 VectorType *SubTp);
   /// @}
 };
 

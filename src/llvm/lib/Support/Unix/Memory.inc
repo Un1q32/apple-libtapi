@@ -16,7 +16,6 @@
 #include "llvm/Support/DataTypes.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/Process.h"
-#include "llvm/Support/Valgrind.h"
 
 #ifdef HAVE_SYS_MMAN_H
 #include <sys/mman.h>
@@ -28,6 +27,14 @@
 
 #ifdef __Fuchsia__
 #include <zircon/syscalls.h>
+#endif
+
+#if defined(__mips__)
+#  if defined(__OpenBSD__)
+#    include <mips64/sysarch.h>
+#  elif !defined(__FreeBSD__)
+#    include <sys/cachectl.h>
+#  endif
 #endif
 
 #if defined(__APPLE__)

@@ -38,32 +38,20 @@ class ABIInfo;
 class CallArgList;
 class CodeGenFunction;
 class CGBlockInfo;
-class SwiftABIInfo;
+class CGFunctionInfo;
 
 /// TargetCodeGenInfo - This class organizes various target-specific
 /// codegeneration issues, like target-specific attributes, builtins and so
 /// on.
 class TargetCodeGenInfo {
-  std::unique_ptr<ABIInfo> Info;
-
-protected:
-  // Target hooks supporting Swift calling conventions. The target must
-  // initialize this field if it claims to support these calling conventions
-  // by returning true from TargetInfo::checkCallingConvention for them.
-  std::unique_ptr<SwiftABIInfo> SwiftInfo;
+  std::unique_ptr<ABIInfo> Info = nullptr;
 
 public:
-  TargetCodeGenInfo(std::unique_ptr<ABIInfo> Info);
+  TargetCodeGenInfo(std::unique_ptr<ABIInfo> Info) : Info(std::move(Info)) {}
   virtual ~TargetCodeGenInfo();
 
   /// getABIInfo() - Returns ABI info helper for the target.
   const ABIInfo &getABIInfo() const { return *Info; }
-
-  /// Returns Swift ABI info helper for the target.
-  const SwiftABIInfo &getSwiftABIInfo() const {
-    assert(SwiftInfo && "Swift ABI info has not been initialized");
-    return *SwiftInfo;
-  }
 
   /// setTargetAttributes - Provides a convenient hook to handle extra
   /// target-specific attributes for the given global.
@@ -158,13 +146,6 @@ public:
                                           StringRef Constraint,
                                           llvm::Type *Ty) const {
     return Ty;
-  }
-
-  /// Target hook to decide whether an inline asm operand can be passed
-  /// by value.
-  virtual bool isScalarizableAsmOperand(CodeGen::CodeGenFunction &CGF,
-                                        llvm::Type *Ty) const {
-    return false;
   }
 
   /// Adds constraints and types for result registers.
@@ -342,7 +323,7 @@ public:
   virtual llvm::Function *
   createEnqueuedBlockKernel(CodeGenFunction &CGF,
                             llvm::Function *BlockInvokeFunc,
-                            llvm::Type *BlockTy) const;
+                            llvm::Value *BlockLiteral) const;
 
   /// \return true if the target supports alias from the unmangled name to the
   /// mangled name of functions declared within an extern "C" region and marked

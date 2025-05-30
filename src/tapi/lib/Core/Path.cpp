@@ -76,11 +76,11 @@ Expected<PathSeq> enumerateHeaderFiles(FileManager &fm, StringRef path) {
 }
 
 PathSeq getPathsForPlatform(const PathToPlatformSeq &paths,
-                            PlatformType platform) {
+                            PlatformKind platform) {
   PathSeq result;
 
   for (const auto &path : paths) {
-    if (!path.second.has_value() || path.second.value() == platform)
+    if (!path.second.hasValue() || path.second.getValue() == platform)
       result.push_back(path.first);
   }
 

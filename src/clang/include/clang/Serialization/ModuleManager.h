@@ -105,6 +105,10 @@ class ModuleManager {
       Stack.reserve(N);
     }
 
+    ~VisitState() {
+      delete NextState;
+    }
+
     /// The stack used when marking the imports of a particular module
     /// as not-to-be-visited.
     SmallVector<ModuleFile *, 4> Stack;
@@ -117,14 +121,14 @@ class ModuleManager {
     unsigned NextVisitNumber = 1;
 
     /// The next visit state.
-    std::unique_ptr<VisitState> NextState;
+    VisitState *NextState = nullptr;
   };
 
   /// The first visit() state in the chain.
-  std::unique_ptr<VisitState> FirstVisitState;
+  VisitState *FirstVisitState = nullptr;
 
-  std::unique_ptr<VisitState> allocateVisitState();
-  void returnVisitState(std::unique_ptr<VisitState> State);
+  VisitState *allocateVisitState();
+  void returnVisitState(VisitState *State);
 
 public:
   using ModuleIterator = llvm::pointee_iterator<
@@ -138,6 +142,7 @@ public:
   explicit ModuleManager(FileManager &FileMgr, InMemoryModuleCache &ModuleCache,
                          const PCHContainerReader &PCHContainerRdr,
                          const HeaderSearch &HeaderSearchInfo);
+  ~ModuleManager();
 
   /// Forward iterator to traverse all loaded modules.
   ModuleIterator begin() { return Chain.begin(); }
@@ -250,7 +255,7 @@ public:
                             std::string &ErrorStr);
 
   /// Remove the modules starting from First (to the end).
-  void removeModules(ModuleIterator First);
+  void removeModules(ModuleIterator First, ModuleMap *modMap);
 
   /// Add an in-memory buffer the list of known buffers
   void addInMemoryBuffer(StringRef FileName,

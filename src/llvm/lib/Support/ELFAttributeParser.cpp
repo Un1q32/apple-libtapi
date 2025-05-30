@@ -7,8 +7,10 @@
 //===----------------------------------------------------------------------===//
 
 #include "llvm/Support/ELFAttributeParser.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/Support/Errc.h"
+#include "llvm/Support/LEB128.h"
 #include "llvm/Support/ScopedPrinter.h"
 
 using namespace llvm;
@@ -53,7 +55,7 @@ Error ELFAttributeParser::stringAttribute(unsigned tag) {
   StringRef tagName =
       ELFAttrs::attrTypeAsString(tag, tagToStringMap, /*hasTagPrefix=*/false);
   StringRef desc = de.getCStrRef(cursor);
-  setAttributeString(tag, desc);
+  attributesStr.insert(std::make_pair(tag, desc));
 
   if (sw) {
     DictScope scope(*sw, "Attribute");

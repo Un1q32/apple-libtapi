@@ -128,7 +128,7 @@ class LogicalErrorHandler : public CFGCallback {
   Sema &S;
 
 public:
-  LogicalErrorHandler(Sema &S) : S(S) {}
+  LogicalErrorHandler(Sema &S) : CFGCallback(), S(S) {}
 
   static bool HasMacroID(const Expr *E) {
     if (E->getExprLoc().isMacroID())
@@ -464,7 +464,7 @@ static ControlFlowKind CheckFallThrough(AnalysisDeclContext &AC) {
     // No more CFGElements in the block?
     if (ri == re) {
       const Stmt *Term = B.getTerminatorStmt();
-      if (Term && (isa<CXXTryStmt>(Term) || isa<ObjCAtTryStmt>(Term))) {
+      if (Term && isa<CXXTryStmt>(Term)) {
         HasAbnormalEdge = true;
         continue;
       }
@@ -497,7 +497,8 @@ static ControlFlowKind CheckFallThrough(AnalysisDeclContext &AC) {
       HasAbnormalEdge = true;
       continue;
     }
-    if (!llvm::is_contained(B.succs(), &cfg->getExit())) {
+    if (std::find(B.succ_begin(), B.succ_end(), &cfg->getExit())
+        == B.succ_end()) {
       HasAbnormalEdge = true;
       continue;
     }
@@ -1079,9 +1080,11 @@ namespace {
       while (!BlockQueue.empty()) {
         const CFGBlock *P = BlockQueue.front();
         BlockQueue.pop_front();
-        for (const CFGBlock *B : P->succs()) {
-          if (B && ReachableBlocks.insert(B).second)
-            BlockQueue.push_back(B);
+        for (CFGBlock::const_succ_iterator I = P->succ_begin(),
+                                           E = P->succ_end();
+             I != E; ++I) {
+          if (*I && ReachableBlocks.insert(*I).second)
+            BlockQueue.push_back(*I);
         }
       }
     }
@@ -1112,15 +1115,17 @@ namespace {
           continue; // Case label is preceded with a normal label, good.
 
         if (!ReachableBlocks.count(P)) {
-          for (const CFGElement &Elem : llvm::reverse(*P)) {
-            if (Optional<CFGStmt> CS = Elem.getAs<CFGStmt>()) {
+          for (CFGBlock::const_reverse_iterator ElemIt = P->rbegin(),
+                                                ElemEnd = P->rend();
+               ElemIt != ElemEnd; ++ElemIt) {
+            if (Optional<CFGStmt> CS = ElemIt->getAs<CFGStmt>()) {
               if (const AttributedStmt *AS = asFallThroughAttr(CS->getStmt())) {
                 // Don't issue a warning for an unreachable fallthrough
                 // attribute in template instantiations as it may not be
                 // unreachable in all instantiations of the template.
                 if (!IsTemplateInstantiation)
                   S.Diag(AS->getBeginLoc(),
-                         diag::warn_unreachable_fallthrough_attr);
+                         diag::warn_fallthrough_attr_unreachable);
                 markFallthroughVisited(AS);
                 ++AnnotatedCnt;
                 break;
@@ -1197,9 +1202,12 @@ namespace {
     static const Stmt *getLastStmt(const CFGBlock &B) {
       if (const Stmt *Term = B.getTerminatorStmt())
         return Term;
-      for (const CFGElement &Elem : llvm::reverse(B))
-        if (Optional<CFGStmt> CS = Elem.getAs<CFGStmt>())
+      for (CFGBlock::const_reverse_iterator ElemIt = B.rbegin(),
+                                            ElemEnd = B.rend();
+                                            ElemIt != ElemEnd; ++ElemIt) {
+        if (Optional<CFGStmt> CS = ElemIt->getAs<CFGStmt>())
           return CS->getStmt();
+      }
       // Workaround to detect a statement thrown out by CFGBuilder:
       //   case X: {} case Y:
       //   case X: ; case Y:
@@ -1272,7 +1280,7 @@ static void DiagnoseSwitchLabelsFallthrough(Sema &S, AnalysisDeclContext &AC,
   for (const CFGBlock *B : llvm::reverse(*Cfg)) {
     const Stmt *Label = B->getLabel();
 
-    if (!isa_and_nonnull<SwitchCase>(Label))
+    if (!Label || !isa<SwitchCase>(Label))
       continue;
 
     int AnnotatedCnt;
@@ -1575,7 +1583,8 @@ public:
         // Sort the uses by their SourceLocations.  While not strictly
         // guaranteed to produce them in line/column order, this will provide
         // a stable ordering.
-        llvm::sort(*vec, [](const UninitUse &a, const UninitUse &b) {
+        llvm::sort(vec->begin(), vec->end(),
+                   [](const UninitUse &a, const UninitUse &b) {
           // Prefer a more confident report over a less confident one.
           if (a.getKind() != b.getKind())
             return a.getKind() > b.getKind();
@@ -1628,7 +1637,7 @@ public:
 
 private:
   static bool hasAlwaysUninitializedUse(const UsesVec* vec) {
-    return llvm::any_of(*vec, [](const UninitUse &U) {
+    return std::any_of(vec->begin(), vec->end(), [](const UninitUse &U) {
       return U.getKind() == UninitUse::Always ||
              U.getKind() == UninitUse::AfterCall ||
              U.getKind() == UninitUse::AfterDecl;
@@ -1843,7 +1852,7 @@ class ThreadSafetyReporter : public clang::threadSafety::ThreadSafetyHandler {
     }
   }
 
-  void handleInvalidLockExp(SourceLocation Loc) override {
+  void handleInvalidLockExp(StringRef Kind, SourceLocation Loc) override {
     PartialDiagnosticAt Warning(Loc, S.PDiag(diag::warn_cannot_resolve_lock)
                                          << Loc);
     Warnings.emplace_back(std::move(Warning), getNotes());
@@ -1921,8 +1930,9 @@ class ThreadSafetyReporter : public clang::threadSafety::ThreadSafetyHandler {
     Warnings.emplace_back(std::move(Warning), getNotes(Note));
   }
 
-  void handleNoMutexHeld(const NamedDecl *D, ProtectedOperationKind POK,
-                         AccessKind AK, SourceLocation Loc) override {
+  void handleNoMutexHeld(StringRef Kind, const NamedDecl *D,
+                         ProtectedOperationKind POK, AccessKind AK,
+                         SourceLocation Loc) override {
     assert((POK == POK_VarAccess || POK == POK_VarDereference) &&
            "Only works for variables");
     unsigned DiagID = POK == POK_VarAccess?
@@ -2265,7 +2275,8 @@ void clang::sema::AnalysisBasedWarnings::IssueWarnings(
       .setAlwaysAdd(Stmt::CStyleCastExprClass)
       .setAlwaysAdd(Stmt::DeclRefExprClass)
       .setAlwaysAdd(Stmt::ImplicitCastExprClass)
-      .setAlwaysAdd(Stmt::UnaryOperatorClass);
+      .setAlwaysAdd(Stmt::UnaryOperatorClass)
+      .setAlwaysAdd(Stmt::AttributedStmtClass);
   }
 
   // Install the logical handler.

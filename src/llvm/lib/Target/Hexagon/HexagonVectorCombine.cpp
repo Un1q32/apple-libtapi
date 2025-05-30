@@ -24,7 +24,6 @@
 #include "llvm/Analysis/ValueTracking.h"
 #include "llvm/Analysis/VectorUtils.h"
 #include "llvm/CodeGen/TargetPassConfig.h"
-#include "llvm/CodeGen/ValueTypes.h"
 #include "llvm/IR/Dominators.h"
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/IntrinsicInst.h"
@@ -44,7 +43,6 @@
 #include <algorithm>
 #include <deque>
 #include <map>
-#include <optional>
 #include <set>
 #include <utility>
 #include <vector>
@@ -66,7 +64,7 @@ public:
   bool run();
 
   // Common integer type.
-  IntegerType *getIntTy(unsigned Width = 32) const;
+  IntegerType *getIntTy() const;
   // Byte type: either scalar (when Length = 0), or vector with given
   // element count.
   Type *getByteTy(int ElemCount = 0) const;
@@ -76,24 +74,17 @@ public:
   // Create a ConstantInt of type returned by getIntTy with the value Val.
   ConstantInt *getConstInt(int Val) const;
   // Get the integer value of V, if it exists.
-  std::optional<APInt> getIntValue(const Value *Val) const;
+  Optional<APInt> getIntValue(const Value *Val) const;
   // Is V a constant 0, or a vector of 0s?
   bool isZero(const Value *Val) const;
   // Is V an undef value?
   bool isUndef(const Value *Val) const;
 
-  // Get HVX vector type with the given element type.
-  VectorType *getHvxTy(Type *ElemTy, bool Pair = false) const;
-
-  enum SizeKind {
-    Store,  // Store size
-    Alloc,  // Alloc size
-  };
-  int getSizeOf(const Value *Val, SizeKind Kind = Store) const;
-  int getSizeOf(const Type *Ty, SizeKind Kind = Store) const;
+  int getSizeOf(const Value *Val) const;
+  int getSizeOf(const Type *Ty) const;
   int getTypeAlignment(Type *Ty) const;
-  size_t length(Type *Ty) const;
 
+  VectorType *getByteVectorTy(int ScLen) const;
   Constant *getNullValue(Type *Ty) const;
   Constant *getFullValue(Type *Ty) const;
 
@@ -112,15 +103,12 @@ public:
   Value *createHvxIntrinsic(IRBuilder<> &Builder, Intrinsic::ID IntID,
                             Type *RetTy, ArrayRef<Value *> Args) const;
 
-  std::optional<int> calculatePointerDifference(Value *Ptr0, Value *Ptr1) const;
+  Optional<int> calculatePointerDifference(Value *Ptr0, Value *Ptr1) const;
 
   template <typename T = std::vector<Instruction *>>
   bool isSafeToMoveBeforeInBB(const Instruction &In,
                               BasicBlock::const_iterator To,
                               const T &Ignore = {}) const;
-
-  // This function is only used for assertions at the moment.
-  [[maybe_unused]] bool isByteVecTy(Type *Ty) const;
 
   Function &F;
   const DataLayout &DL;
@@ -131,13 +119,18 @@ public:
   const HexagonSubtarget &HST;
 
 private:
+#ifndef NDEBUG
+  // These two functions are only used for assertions at the moment.
+  bool isByteVecTy(Type *Ty) const;
+  bool isSectorTy(Type *Ty) const;
+#endif
   Value *getElementRange(IRBuilder<> &Builder, Value *Lo, Value *Hi, int Start,
                          int Length) const;
 };
 
 class AlignVectors {
 public:
-  AlignVectors(const HexagonVectorCombine &HVC_) : HVC(HVC_) {}
+  AlignVectors(HexagonVectorCombine &HVC_) : HVC(HVC_) {}
 
   bool run();
 
@@ -156,7 +149,6 @@ private:
              Align H)
         : Inst(I), Addr(A), ValTy(T), HaveAlign(H),
           NeedAlign(HVC.getTypeAlignment(ValTy)) {}
-    AddrInfo &operator=(const AddrInfo &) = default;
 
     // XXX: add Size member?
     Instruction *Inst;
@@ -193,7 +185,6 @@ private:
       Segment(Value *Val, int Begin, int Len)
           : Val(Val), Start(Begin), Size(Len) {}
       Segment(const Segment &Seg) = default;
-      Segment &operator=(const Segment &Seg) = default;
       Value *Val; // Value representable as a sequence of bytes.
       int Start;  // First byte of the value that belongs to the segment.
       int Size;   // Number of bytes in the segment.
@@ -204,7 +195,6 @@ private:
       Block(Value *Val, int Off, int Len, int Pos)
           : Seg(Val, Off, Len), Pos(Pos) {}
       Block(const Block &Blk) = default;
-      Block &operator=(const Block &Blk) = default;
       Segment Seg; // Value segment.
       int Pos;     // Position (offset) of the segment in the Block.
     };
@@ -228,11 +218,9 @@ private:
   };
 
   Align getAlignFromValue(const Value *V) const;
-  std::optional<MemoryLocation> getLocation(const Instruction &In) const;
-  std::optional<AddrInfo> getAddrInfo(Instruction &In) const;
+  Optional<MemoryLocation> getLocation(const Instruction &In) const;
+  Optional<AddrInfo> getAddrInfo(Instruction &In) const;
   bool isHvx(const AddrInfo &AI) const;
-  // This function is only used for assertions at the moment.
-  [[maybe_unused]] bool isSectorTy(Type *Ty) const;
 
   Value *getPayload(Value *Val) const;
   Value *getMask(Value *Val) const;
@@ -258,7 +246,7 @@ private:
   friend raw_ostream &operator<<(raw_ostream &OS, const ByteSpan &BS);
 
   std::map<Instruction *, AddrList> AddrGroups;
-  const HexagonVectorCombine &HVC;
+  HexagonVectorCombine &HVC;
 };
 
 LLVM_ATTRIBUTE_UNUSED
@@ -384,8 +372,7 @@ auto AlignVectors::getAlignFromValue(const Value *V) const -> Align {
   return C->getAlignValue();
 }
 
-auto AlignVectors::getAddrInfo(Instruction &In) const
-    -> std::optional<AddrInfo> {
+auto AlignVectors::getAddrInfo(Instruction &In) const -> Optional<AddrInfo> {
   if (auto *L = isCandidate<LoadInst>(&In))
     return AddrInfo(HVC, L, L->getPointerOperand(), L->getType(),
                     L->getAlign());
@@ -404,7 +391,7 @@ auto AlignVectors::getAddrInfo(Instruction &In) const
                       getAlignFromValue(II->getArgOperand(2)));
     }
   }
-  return std::nullopt;
+  return Optional<AddrInfo>();
 }
 
 auto AlignVectors::isHvx(const AddrInfo &AI) const -> bool {
@@ -433,8 +420,10 @@ auto AlignVectors::getMask(Value *Val) const -> Value * {
   }
 
   Type *ValTy = getPayload(Val)->getType();
-  if (auto *VecTy = dyn_cast<VectorType>(ValTy))
-    return HVC.getFullValue(HVC.getBoolTy(HVC.length(VecTy)));
+  if (auto *VecTy = dyn_cast<VectorType>(ValTy)) {
+    int ElemCount = VecTy->getElementCount().getFixedValue();
+    return HVC.getFullValue(HVC.getBoolTy(ElemCount));
+  }
   return HVC.getFullValue(HVC.getBoolTy());
 }
 
@@ -453,9 +442,9 @@ auto AlignVectors::createAdjustedPointer(IRBuilder<> &Builder, Value *Ptr,
   // we don't need to do pointer casts.
   auto *PtrTy = cast<PointerType>(Ptr->getType());
   if (!PtrTy->isOpaque()) {
-    Type *ElemTy = PtrTy->getNonOpaquePointerElementType();
-    int ElemSize = HVC.getSizeOf(ElemTy, HVC.Alloc);
-    if (Adjust % ElemSize == 0 && Adjust != 0) {
+    Type *ElemTy = PtrTy->getElementType();
+    int ElemSize = HVC.getSizeOf(ElemTy);
+    if (Adjust % ElemSize == 0) {
       Value *Tmp0 =
           Builder.CreateGEP(ElemTy, Ptr, HVC.getConstInt(Adjust / ElemSize));
       return Builder.CreatePointerCast(Tmp0, ValTy->getPointerTo());
@@ -546,7 +535,7 @@ auto AlignVectors::createAddressGroups() -> bool {
   erase_if(AddrGroups, [](auto &G) { return G.second.size() == 1; });
   // Remove groups that don't use HVX types.
   erase_if(AddrGroups, [&](auto &G) {
-    return llvm::none_of(
+    return !llvm::any_of(
         G.second, [&](auto &I) { return HVC.HST.isTypeForHVX(I.ValTy); });
   });
 
@@ -728,7 +717,7 @@ auto AlignVectors::realignGroup(const MoveGroup &Move) const -> bool {
 
   // Maximum alignment present in the whole address group.
   const AddrInfo &WithMaxAlign =
-      getMaxOf(MoveInfos, [](const AddrInfo &AI) { return AI.HaveAlign; });
+      getMaxOf(BaseInfos, [](const AddrInfo &AI) { return AI.HaveAlign; });
   Align MaxGiven = WithMaxAlign.HaveAlign;
 
   // Minimum alignment present in the move address group.
@@ -759,6 +748,7 @@ auto AlignVectors::realignGroup(const MoveGroup &Move) const -> bool {
                                       WithMaxAlign.ValTy, Adjust);
     int Diff = Start - (OffAtMax + Adjust);
     AlignVal = HVC.getConstInt(Diff);
+    // Sanity.
     assert(Diff >= 0);
     assert(static_cast<decltype(MinNeeded.value())>(Diff) < MinNeeded.value());
   } else {
@@ -812,7 +802,6 @@ auto AlignVectors::realignGroup(const MoveGroup &Move) const -> bool {
 
     if (DoAlign) {
       for (int j = 0; j != NumSectors; ++j) {
-        assert(isSectorTy(ASpan[j].Seg.Val->getType()));
         ASpan[j].Seg.Val = HVC.vralignb(Builder, ASpan[j].Seg.Val,
                                         ASpan[j + 1].Seg.Val, AlignVal);
       }
@@ -848,7 +837,7 @@ auto AlignVectors::realignGroup(const MoveGroup &Move) const -> bool {
       Type *Ty = Val->getType();
       if (Ty->isVectorTy())
         return Val;
-      auto *VecTy = VectorType::get(Ty, 1, /*Scalable=*/false);
+      auto *VecTy = VectorType::get(Ty, 1, /*Scalable*/ false);
       return Builder.CreateBitCast(Val, VecTy);
     };
 
@@ -876,11 +865,10 @@ auto AlignVectors::realignGroup(const MoveGroup &Move) const -> bool {
     // vlalign
     if (DoAlign) {
       for (int j = 1; j != NumSectors + 2; ++j) {
-        Value *PrevV = ASpanV[j - 1].Seg.Val, *ThisV = ASpanV[j].Seg.Val;
-        Value *PrevM = ASpanM[j - 1].Seg.Val, *ThisM = ASpanM[j].Seg.Val;
-        assert(isSectorTy(PrevV->getType()) && isSectorTy(PrevM->getType()));
-        ASpanV[j - 1].Seg.Val = HVC.vlalignb(Builder, PrevV, ThisV, AlignVal);
-        ASpanM[j - 1].Seg.Val = HVC.vlalignb(Builder, PrevM, ThisM, AlignVal);
+        ASpanV[j - 1].Seg.Val = HVC.vlalignb(Builder, ASpanV[j - 1].Seg.Val,
+                                             ASpanV[j].Seg.Val, AlignVal);
+        ASpanM[j - 1].Seg.Val = HVC.vlalignb(Builder, ASpanM[j - 1].Seg.Val,
+                                             ASpanM[j].Seg.Val, AlignVal);
       }
     }
 
@@ -905,15 +893,6 @@ auto AlignVectors::realignGroup(const MoveGroup &Move) const -> bool {
     Inst->eraseFromParent();
 
   return true;
-}
-
-auto AlignVectors::isSectorTy(Type *Ty) const -> bool {
-  if (!HVC.isByteVecTy(Ty))
-    return false;
-  int Size = HVC.getSizeOf(Ty);
-  if (HVC.HST.isTypeForHVX(Ty))
-    return Size == static_cast<int>(HVC.HST.getVectorLength());
-  return Size == 4 || Size == 8;
 }
 
 auto AlignVectors::run() -> bool {
@@ -951,8 +930,8 @@ auto HexagonVectorCombine::run() -> bool {
   return Changed;
 }
 
-auto HexagonVectorCombine::getIntTy(unsigned Width) const -> IntegerType * {
-  return IntegerType::get(F.getContext(), Width);
+auto HexagonVectorCombine::getIntTy() const -> IntegerType * {
+  return Type::getInt32Ty(F.getContext());
 }
 
 auto HexagonVectorCombine::getByteTy(int ElemCount) const -> Type * {
@@ -960,7 +939,7 @@ auto HexagonVectorCombine::getByteTy(int ElemCount) const -> Type * {
   IntegerType *ByteTy = Type::getInt8Ty(F.getContext());
   if (ElemCount == 0)
     return ByteTy;
-  return VectorType::get(ByteTy, ElemCount, /*Scalable=*/false);
+  return VectorType::get(ByteTy, ElemCount, /*Scalable*/ false);
 }
 
 auto HexagonVectorCombine::getBoolTy(int ElemCount) const -> Type * {
@@ -968,7 +947,7 @@ auto HexagonVectorCombine::getBoolTy(int ElemCount) const -> Type * {
   IntegerType *BoolTy = Type::getInt1Ty(F.getContext());
   if (ElemCount == 0)
     return BoolTy;
-  return VectorType::get(BoolTy, ElemCount, /*Scalable=*/false);
+  return VectorType::get(BoolTy, ElemCount, /*Scalable*/ false);
 }
 
 auto HexagonVectorCombine::getConstInt(int Val) const -> ConstantInt * {
@@ -982,44 +961,22 @@ auto HexagonVectorCombine::isZero(const Value *Val) const -> bool {
 }
 
 auto HexagonVectorCombine::getIntValue(const Value *Val) const
-    -> std::optional<APInt> {
+    -> Optional<APInt> {
   if (auto *CI = dyn_cast<ConstantInt>(Val))
     return CI->getValue();
-  return std::nullopt;
+  return None;
 }
 
 auto HexagonVectorCombine::isUndef(const Value *Val) const -> bool {
   return isa<UndefValue>(Val);
 }
 
-auto HexagonVectorCombine::getHvxTy(Type *ElemTy, bool Pair) const
-    -> VectorType * {
-  EVT ETy = EVT::getEVT(ElemTy, false);
-  assert(ETy.isSimple() && "Invalid HVX element type");
-  // Do not allow boolean types here: they don't have a fixed length.
-  assert(HST.isHVXElementType(ETy.getSimpleVT(), /*IncludeBool=*/false) &&
-         "Invalid HVX element type");
-  unsigned HwLen = HST.getVectorLength();
-  unsigned NumElems = (8 * HwLen) / ETy.getSizeInBits();
-  return VectorType::get(ElemTy, Pair ? 2 * NumElems : NumElems,
-                         /*Scalable=*/false);
+auto HexagonVectorCombine::getSizeOf(const Value *Val) const -> int {
+  return getSizeOf(Val->getType());
 }
 
-auto HexagonVectorCombine::getSizeOf(const Value *Val, SizeKind Kind) const
-    -> int {
-  return getSizeOf(Val->getType(), Kind);
-}
-
-auto HexagonVectorCombine::getSizeOf(const Type *Ty, SizeKind Kind) const
-    -> int {
-  auto *NcTy = const_cast<Type *>(Ty);
-  switch (Kind) {
-  case Store:
-    return DL.getTypeStoreSize(NcTy).getFixedValue();
-  case Alloc:
-    return DL.getTypeAllocSize(NcTy).getFixedValue();
-  }
-  llvm_unreachable("Unhandled SizeKind enum");
+auto HexagonVectorCombine::getSizeOf(const Type *Ty) const -> int {
+  return DL.getTypeStoreSize(const_cast<Type *>(Ty)).getFixedValue();
 }
 
 auto HexagonVectorCombine::getTypeAlignment(Type *Ty) const -> int {
@@ -1028,12 +985,6 @@ auto HexagonVectorCombine::getTypeAlignment(Type *Ty) const -> int {
   if (HST.isTypeForHVX(Ty))
     return HST.getVectorLength();
   return DL.getABITypeAlign(Ty).value();
-}
-
-auto HexagonVectorCombine::length(Type *Ty) const -> size_t {
-  auto *VecTy = dyn_cast<VectorType>(Ty);
-  assert(VecTy && "Must be a vector type");
-  return VecTy->getElementCount().getFixedValue();
 }
 
 auto HexagonVectorCombine::getNullValue(Type *Ty) const -> Constant * {
@@ -1082,6 +1033,7 @@ auto HexagonVectorCombine::insertb(IRBuilder<> &Builder, Value *Dst, Value *Src,
 auto HexagonVectorCombine::vlalignb(IRBuilder<> &Builder, Value *Lo, Value *Hi,
                                     Value *Amt) const -> Value * {
   assert(Lo->getType() == Hi->getType() && "Argument type mismatch");
+  assert(isSectorTy(Hi->getType()));
   if (isZero(Amt))
     return Hi;
   int VecLen = getSizeOf(Hi);
@@ -1090,10 +1042,13 @@ auto HexagonVectorCombine::vlalignb(IRBuilder<> &Builder, Value *Lo, Value *Hi,
                            VecLen);
 
   if (HST.isTypeForHVX(Hi->getType())) {
-    assert(static_cast<unsigned>(VecLen) == HST.getVectorLength() &&
-           "Expecting an exact HVX type");
-    return createHvxIntrinsic(Builder, HST.getIntrinsicId(Hexagon::V6_vlalignb),
-                              Hi->getType(), {Hi, Lo, Amt});
+    int HwLen = HST.getVectorLength();
+    assert(VecLen == HwLen && "Expecting an exact HVX type");
+    Intrinsic::ID V6_vlalignb = HwLen == 64
+                                    ? Intrinsic::hexagon_V6_vlalignb
+                                    : Intrinsic::hexagon_V6_vlalignb_128B;
+    return createHvxIntrinsic(Builder, V6_vlalignb, Hi->getType(),
+                              {Hi, Lo, Amt});
   }
 
   if (VecLen == 4) {
@@ -1112,6 +1067,7 @@ auto HexagonVectorCombine::vlalignb(IRBuilder<> &Builder, Value *Lo, Value *Hi,
 auto HexagonVectorCombine::vralignb(IRBuilder<> &Builder, Value *Lo, Value *Hi,
                                     Value *Amt) const -> Value * {
   assert(Lo->getType() == Hi->getType() && "Argument type mismatch");
+  assert(isSectorTy(Lo->getType()));
   if (isZero(Amt))
     return Lo;
   int VecLen = getSizeOf(Lo);
@@ -1119,10 +1075,12 @@ auto HexagonVectorCombine::vralignb(IRBuilder<> &Builder, Value *Lo, Value *Hi,
     return getElementRange(Builder, Lo, Hi, IntAmt->getSExtValue(), VecLen);
 
   if (HST.isTypeForHVX(Lo->getType())) {
-    assert(static_cast<unsigned>(VecLen) == HST.getVectorLength() &&
-           "Expecting an exact HVX type");
-    return createHvxIntrinsic(Builder, HST.getIntrinsicId(Hexagon::V6_valignb),
-                              Lo->getType(), {Hi, Lo, Amt});
+    int HwLen = HST.getVectorLength();
+    assert(VecLen == HwLen && "Expecting an exact HVX type");
+    Intrinsic::ID V6_valignb = HwLen == 64 ? Intrinsic::hexagon_V6_valignb
+                                           : Intrinsic::hexagon_V6_valignb_128B;
+    return createHvxIntrinsic(Builder, V6_valignb, Lo->getType(),
+                              {Hi, Lo, Amt});
   }
 
   if (VecLen == 4) {
@@ -1154,7 +1112,8 @@ auto HexagonVectorCombine::concat(IRBuilder<> &Builder,
   Work[ThisW].assign(Vecs.begin(), Vecs.end());
   while (Work[ThisW].size() > 1) {
     auto *Ty = cast<VectorType>(Work[ThisW].front()->getType());
-    SMask.resize(length(Ty) * 2);
+    int ElemCount = Ty->getElementCount().getFixedValue();
+    SMask.resize(ElemCount * 2);
     std::iota(SMask.begin(), SMask.end(), 0);
 
     Work[OtherW].clear();
@@ -1183,12 +1142,12 @@ auto HexagonVectorCombine::vresize(IRBuilder<> &Builder, Value *Val,
   auto *ValTy = cast<VectorType>(Val->getType());
   assert(ValTy->getElementType() == Pad->getType());
 
-  int CurSize = length(ValTy);
+  int CurSize = ValTy->getElementCount().getFixedValue();
   if (CurSize == NewSize)
     return Val;
   // Truncate?
   if (CurSize > NewSize)
-    return getElementRange(Builder, Val, /*Ignored*/ Val, 0, NewSize);
+    return getElementRange(Builder, Val, /*Unused*/ Val, 0, NewSize);
   // Extend.
   SmallVector<int, 128> SMask(NewSize);
   std::iota(SMask.begin(), SMask.begin() + CurSize, 0);
@@ -1214,21 +1173,18 @@ auto HexagonVectorCombine::rescale(IRBuilder<> &Builder, Value *Mask,
   assert(FromSize % ToSize == 0 || ToSize % FromSize == 0);
 
   auto *MaskTy = cast<VectorType>(Mask->getType());
-  int FromCount = length(MaskTy);
+  int FromCount = MaskTy->getElementCount().getFixedValue();
   int ToCount = (FromCount * FromSize) / ToSize;
   assert((FromCount * FromSize) % ToSize == 0);
-
-  auto *FromITy = getIntTy(FromSize * 8);
-  auto *ToITy = getIntTy(ToSize * 8);
 
   // Mask <N x i1> -> sext to <N x FromTy> -> bitcast to <M x ToTy> ->
   // -> trunc to <M x i1>.
   Value *Ext = Builder.CreateSExt(
-      Mask, VectorType::get(FromITy, FromCount, /*Scalable=*/false));
+      Mask, VectorType::get(FromSTy, FromCount, /*Scalable*/ false));
   Value *Cast = Builder.CreateBitCast(
-      Ext, VectorType::get(ToITy, ToCount, /*Scalable=*/false));
+      Ext, VectorType::get(ToSTy, ToCount, /*Scalable*/ false));
   return Builder.CreateTrunc(
-      Cast, VectorType::get(getBoolTy(), ToCount, /*Scalable=*/false));
+      Cast, VectorType::get(getBoolTy(), ToCount, /*Scalable*/ false));
 }
 
 // Bitcast to bytes, and return least significant bits.
@@ -1271,13 +1227,13 @@ auto HexagonVectorCombine::createHvxIntrinsic(IRBuilder<> &Builder,
   // HVX vector -> v16i32/v32i32
   // HVX vector predicate -> v512i1/v1024i1
   auto getTypeForIntrin = [&](Type *Ty) -> Type * {
-    if (HST.isTypeForHVX(Ty, /*IncludeBool=*/true)) {
+    if (HST.isTypeForHVX(Ty, /*IncludeBool*/ true)) {
       Type *ElemTy = cast<VectorType>(Ty)->getElementType();
       if (ElemTy == Int32Ty)
         return Ty;
       if (ElemTy == BoolTy)
         return VectorType::get(BoolTy, 8 * HwLen, /*Scalable*/ false);
-      return getHvxTy(Int32Ty);
+      return VectorType::get(Int32Ty, HwLen / 4, /*Scalable*/ false);
     }
     // Non-HVX type. It should be a scalar.
     assert(Ty == Int32Ty || Ty->isIntegerTy(64));
@@ -1289,7 +1245,7 @@ auto HexagonVectorCombine::createHvxIntrinsic(IRBuilder<> &Builder,
     Type *SrcTy = Val->getType();
     if (SrcTy == DestTy)
       return Val;
-    if (HST.isTypeForHVX(SrcTy, /*IncludeBool=*/true)) {
+    if (HST.isTypeForHVX(SrcTy, /*IncludeBool*/ true)) {
       if (cast<VectorType>(SrcTy)->getElementType() == BoolTy) {
         // This should take care of casts the other way too, for example
         // v1024i1 -> v32i1.
@@ -1318,7 +1274,7 @@ auto HexagonVectorCombine::createHvxIntrinsic(IRBuilder<> &Builder,
   if (CallTy == RetTy)
     return Call;
   // Scalar types should have RetTy matching the call return type.
-  assert(HST.isTypeForHVX(CallTy, /*IncludeBool=*/true));
+  assert(HST.isTypeForHVX(CallTy, /*IncludeBool*/ true));
   if (cast<VectorType>(CallTy)->getElementType() == BoolTy)
     return getCast(Builder, Call, RetTy);
   return Builder.CreateBitCast(Call, RetTy);
@@ -1326,7 +1282,7 @@ auto HexagonVectorCombine::createHvxIntrinsic(IRBuilder<> &Builder,
 
 auto HexagonVectorCombine::calculatePointerDifference(Value *Ptr0,
                                                       Value *Ptr1) const
-    -> std::optional<int> {
+    -> Optional<int> {
   struct Builder : IRBuilder<> {
     Builder(BasicBlock *B) : IRBuilder<>(B) {}
     ~Builder() {
@@ -1347,7 +1303,7 @@ auto HexagonVectorCombine::calculatePointerDifference(Value *Ptr0,
   auto Simplify = [&](Value *V) {
     if (auto *I = dyn_cast<Instruction>(V)) {
       SimplifyQuery Q(DL, &TLI, &DT, &AC, I);
-      if (Value *S = simplifyInstruction(I, Q))
+      if (Value *S = SimplifyInstruction(I, Q))
         return S;
     }
     return V;
@@ -1362,19 +1318,19 @@ auto HexagonVectorCombine::calculatePointerDifference(Value *Ptr0,
   Ptr0 = StripBitCast(Ptr0);
   Ptr1 = StripBitCast(Ptr1);
   if (!isa<GetElementPtrInst>(Ptr0) || !isa<GetElementPtrInst>(Ptr1))
-    return std::nullopt;
+    return None;
 
   auto *Gep0 = cast<GetElementPtrInst>(Ptr0);
   auto *Gep1 = cast<GetElementPtrInst>(Ptr1);
   if (Gep0->getPointerOperand() != Gep1->getPointerOperand())
-    return std::nullopt;
+    return None;
 
   Builder B(Gep0->getParent());
-  int Scale = getSizeOf(Gep0->getSourceElementType(), Alloc);
+  int Scale = DL.getTypeStoreSize(Gep0->getSourceElementType());
 
   // FIXME: for now only check GEPs with a single index.
   if (Gep0->getNumOperands() != 2 || Gep1->getNumOperands() != 2)
-    return std::nullopt;
+    return None;
 
   Value *Idx0 = Gep0->getOperand(1);
   Value *Idx1 = Gep1->getOperand(1);
@@ -1387,8 +1343,8 @@ auto HexagonVectorCombine::calculatePointerDifference(Value *Ptr0,
   KnownBits Known0 = computeKnownBits(Idx0, DL, 0, &AC, Gep0, &DT);
   KnownBits Known1 = computeKnownBits(Idx1, DL, 0, &AC, Gep1, &DT);
   APInt Unknown = ~(Known0.Zero | Known0.One) | ~(Known1.Zero | Known1.One);
-  if (Unknown.isAllOnes())
-    return std::nullopt;
+  if (Unknown.isAllOnesValue())
+    return None;
 
   Value *MaskU = ConstantInt::get(Idx0->getType(), Unknown);
   Value *AndU0 = Simplify(CallBuilder(B, CreateAnd(Idx0, MaskU)));
@@ -1398,7 +1354,7 @@ auto HexagonVectorCombine::calculatePointerDifference(Value *Ptr0,
   if (auto *C = dyn_cast<ConstantInt>(SubU)) {
     Diff0 = C->getSExtValue();
   } else {
-    return std::nullopt;
+    return None;
   }
 
   Value *MaskK = ConstantInt::get(MaskU->getType(), ~Unknown);
@@ -1409,7 +1365,7 @@ auto HexagonVectorCombine::calculatePointerDifference(Value *Ptr0,
   if (auto *C = dyn_cast<ConstantInt>(SubK)) {
     Diff1 = C->getSExtValue();
   } else {
-    return std::nullopt;
+    return None;
   }
 
   return (Diff0 + Diff1) * Scale;
@@ -1441,7 +1397,7 @@ auto HexagonVectorCombine::isSafeToMoveBeforeInBB(const Instruction &In,
   if (isa<PHINode>(In) || (To != Block.end() && isa<PHINode>(*To)))
     return false;
 
-  if (!mayHaveNonDefUseDependency(In))
+  if (!mayBeMemoryDependent(In))
     return true;
   bool MayWrite = In.mayWriteToMemory();
   auto MaybeLoc = getLocOrNone(In);
@@ -1483,11 +1439,22 @@ auto HexagonVectorCombine::isSafeToMoveBeforeInBB(const Instruction &In,
   return true;
 }
 
+#ifndef NDEBUG
 auto HexagonVectorCombine::isByteVecTy(Type *Ty) const -> bool {
   if (auto *VecTy = dyn_cast<VectorType>(Ty))
     return VecTy->getElementType() == getByteTy();
   return false;
 }
+
+auto HexagonVectorCombine::isSectorTy(Type *Ty) const -> bool {
+  if (!isByteVecTy(Ty))
+    return false;
+  int Size = getSizeOf(Ty);
+  if (HST.isTypeForHVX(Ty))
+    return Size == static_cast<int>(HST.getVectorLength());
+  return Size == 4 || Size == 8;
+}
+#endif
 
 auto HexagonVectorCombine::getElementRange(IRBuilder<> &Builder, Value *Lo,
                                            Value *Hi, int Start,

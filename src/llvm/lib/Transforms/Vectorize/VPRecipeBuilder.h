@@ -59,7 +59,7 @@ class VPRecipeBuilder {
   /// Cross-iteration reduction & first-order recurrence phis for which we need
   /// to add the incoming value from the backedge after all recipes have been
   /// created.
-  SmallVector<VPHeaderPHIRecipe *, 4> PhisToFix;
+  SmallVector<VPWidenPHIRecipe *, 4> PhisToFix;
 
   /// Check if \p I can be widened at the start of \p Range and possibly
   /// decrease the range such that the returned value holds for the entire \p
@@ -72,17 +72,16 @@ class VPRecipeBuilder {
   VPRecipeBase *tryToWidenMemory(Instruction *I, ArrayRef<VPValue *> Operands,
                                  VFRange &Range, VPlanPtr &Plan);
 
-  /// Check if an induction recipe should be constructed for \p Phi. If so build
-  /// and return it. If not, return null.
-  VPRecipeBase *tryToOptimizeInductionPHI(PHINode *Phi,
-                                          ArrayRef<VPValue *> Operands,
-                                          VPlan &Plan, VFRange &Range);
+  /// Check if an induction recipe should be constructed for \I. If so build and
+  /// return it. If not, return null.
+  VPWidenIntOrFpInductionRecipe *
+  tryToOptimizeInductionPHI(PHINode *Phi, ArrayRef<VPValue *> Operands) const;
 
   /// Optimize the special case where the operand of \p I is a constant integer
   /// induction variable.
   VPWidenIntOrFpInductionRecipe *
   tryToOptimizeInductionTruncate(TruncInst *I, ArrayRef<VPValue *> Operands,
-                                 VFRange &Range, VPlan &Plan);
+                                 VFRange &Range, VPlan &Plan) const;
 
   /// Handle non-loop phi nodes. Return a VPValue, if all incoming values match
   /// or a new VPBlendRecipe otherwise. Currently all such phi nodes are turned
@@ -100,8 +99,7 @@ class VPRecipeBuilder {
   /// Check if \p I has an opcode that can be widened and return a VPWidenRecipe
   /// if it can. The function should only be called if the cost-model indicates
   /// that widening should be performed.
-  VPRecipeBase *tryToWiden(Instruction *I, ArrayRef<VPValue *> Operands,
-                           VPBasicBlock *VPBB, VPlanPtr &Plan);
+  VPWidenRecipe *tryToWiden(Instruction *I, ArrayRef<VPValue *> Operands) const;
 
   /// Return a VPRecipeOrValueTy with VPRecipeBase * being set. This can be used to force the use as VPRecipeBase* for recipe sub-types that also inherit from VPValue.
   VPRecipeOrVPValueTy toVPRecipeResult(VPRecipeBase *R) const { return R; }
@@ -120,8 +118,7 @@ public:
   /// VPRecipeOrVPValueTy with nullptr.
   VPRecipeOrVPValueTy tryToCreateWidenRecipe(Instruction *Instr,
                                              ArrayRef<VPValue *> Operands,
-                                             VFRange &Range, VPBasicBlock *VPBB,
-                                             VPlanPtr &Plan);
+                                             VFRange &Range, VPlanPtr &Plan);
 
   /// Set the recipe created for given ingredient. This operation is a no-op for
   /// ingredients that were not marked using a nullptr entry in the map.
@@ -159,8 +156,9 @@ public:
     return Ingredient2Recipe[I];
   }
 
-  /// Create a replicating region for \p PredRecipe.
-  VPRegionBlock *createReplicateRegion(VPReplicateRecipe *PredRecipe,
+  /// Create a replicating region for instruction \p I that requires
+  /// predication. \p PredRecipe is a VPReplicateRecipe holding \p I.
+  VPRegionBlock *createReplicateRegion(Instruction *I, VPRecipeBase *PredRecipe,
                                        VPlanPtr &Plan);
 
   /// Build a VPReplicationRecipe for \p I and enclose it within a Region if it

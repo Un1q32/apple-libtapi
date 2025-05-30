@@ -12,12 +12,10 @@
 #include "LinkUtils.h"
 #include "llvm/CodeGen/NonRelocatableStringpool.h"
 #include "llvm/MC/MCAsmLayout.h"
-#include "llvm/MC/MCAssembler.h"
 #include "llvm/MC/MCMachObjectWriter.h"
 #include "llvm/MC/MCObjectStreamer.h"
 #include "llvm/MC/MCSectionMachO.h"
 #include "llvm/MC/MCStreamer.h"
-#include "llvm/MC/MCSubtargetInfo.h"
 #include "llvm/Object/MachO.h"
 #include "llvm/Support/FileUtilities.h"
 #include "llvm/Support/Program.h"
@@ -77,8 +75,7 @@ static bool runLipo(StringRef SDKPath, SmallVectorImpl<StringRef> &Args) {
 
 bool generateUniversalBinary(SmallVectorImpl<ArchAndFile> &ArchFiles,
                              StringRef OutputFileName,
-                             const LinkOptions &Options, StringRef SDKPath,
-                             bool Fat64) {
+                             const LinkOptions &Options, StringRef SDKPath) {
   // No need to merge one file into a universal fat binary.
   if (ArchFiles.size() == 1) {
     if (auto E = ArchFiles.front().File->keep(OutputFileName)) {
@@ -97,17 +94,13 @@ bool generateUniversalBinary(SmallVectorImpl<ArchAndFile> &ArchFiles,
   for (auto &Thin : ArchFiles)
     Args.push_back(Thin.path());
 
-  // Align segments to match dsymutil-classic alignment.
+  // Align segments to match dsymutil-classic alignment
   for (auto &Thin : ArchFiles) {
     Thin.Arch = getArchName(Thin.Arch);
     Args.push_back("-segalign");
     Args.push_back(Thin.Arch);
     Args.push_back("20");
   }
-
-  // Use a 64-bit fat header if requested.
-  if (Fat64)
-    Args.push_back("-fat64");
 
   Args.push_back("-output");
   Args.push_back(OutputFileName.data());
@@ -309,7 +302,7 @@ static void transferSegmentAndSections(
 }
 
 // Write the __DWARF segment load command to the output file.
-static bool createDwarfSegment(uint64_t VMAddr, uint64_t FileOffset,
+static void createDwarfSegment(uint64_t VMAddr, uint64_t FileOffset,
                                uint64_t FileSize, unsigned NumSections,
                                MCAsmLayout &Layout, MachObjectWriter &Writer) {
   Writer.writeSegmentLoadCommand("__DWARF", NumSections, VMAddr,
@@ -326,16 +319,12 @@ static bool createDwarfSegment(uint64_t VMAddr, uint64_t FileOffset,
     if (Align > 1) {
       VMAddr = alignTo(VMAddr, Align);
       FileOffset = alignTo(FileOffset, Align);
-      if (FileOffset > UINT32_MAX)
-        return error("section " + Sec->getName() + "'s file offset exceeds 4GB."
-            " Refusing to produce an invalid Mach-O file.");
     }
     Writer.writeSection(Layout, *Sec, VMAddr, FileOffset, 0, 0, 0);
 
     FileOffset += Layout.getSectionAddressSize(Sec);
     VMAddr += Layout.getSectionAddressSize(Sec);
   }
-  return true;
 }
 
 static bool isExecutable(const object::MachOObjectFile &Obj) {
@@ -343,6 +332,15 @@ static bool isExecutable(const object::MachOObjectFile &Obj) {
     return Obj.getHeader64().filetype != MachO::MH_OBJECT;
   else
     return Obj.getHeader().filetype != MachO::MH_OBJECT;
+}
+
+static bool hasLinkEditSegment(const object::MachOObjectFile &Obj) {
+  bool HasLinkEditSegment = false;
+  iterateOnSegments(Obj, [&](const MachO::segment_command_64 &Segment) {
+    if (StringRef("__LINKEDIT") == Segment.segname)
+      HasLinkEditSegment = true;
+  });
+  return HasLinkEditSegment;
 }
 
 static unsigned segmentLoadCommandSize(bool Is64Bit, unsigned NumSections) {
@@ -356,11 +354,9 @@ static unsigned segmentLoadCommandSize(bool Is64Bit, unsigned NumSections) {
 // Stream a dSYM companion binary file corresponding to the binary referenced
 // by \a DM to \a OutFile. The passed \a MS MCStreamer is setup to write to
 // \a OutFile and it must be using a MachObjectWriter object to do so.
-bool generateDsymCompanion(
-    llvm::IntrusiveRefCntPtr<llvm::vfs::FileSystem> VFS, const DebugMap &DM,
-    SymbolMapTranslator &Translator, MCStreamer &MS, raw_fd_ostream &OutFile,
-    const std::vector<MachOUtils::DwarfRelocationApplicationInfo>
-        &RelocationsToApply) {
+bool generateDsymCompanion(llvm::IntrusiveRefCntPtr<llvm::vfs::FileSystem> VFS,
+                           const DebugMap &DM, SymbolMapTranslator &Translator,
+                           MCStreamer &MS, raw_fd_ostream &OutFile) {
   auto &ObjectStreamer = static_cast<MCObjectStreamer &>(MS);
   MCAssembler &MCAsm = ObjectStreamer.getAssembler();
   auto &Writer = static_cast<MachObjectWriter &>(MCAsm.getWriter());
@@ -394,26 +390,11 @@ bool generateDsymCompanion(
   bool Is64Bit = Writer.is64Bit();
   MachO::symtab_command SymtabCmd = InputBinary.getSymtabLoadCommand();
 
-  // Get the ptrauth ABI version (for arm64 subtypes).
-  std::optional<unsigned> PtrAuthABIVersion;
-  bool PtrAuthKernelABIVersion = false;
-  unsigned CPUType = InputBinary.getHeader().cputype;
-  unsigned CPUSubTypeField = InputBinary.getHeader().cpusubtype;
-  if (CPUType == MachO::CPU_TYPE_ARM64 &&
-      MachO::CPU_SUBTYPE_ARM64E_IS_VERSIONED_PTRAUTH_ABI(CPUSubTypeField)) {
-    PtrAuthABIVersion =
-        MachO::CPU_SUBTYPE_ARM64E_PTRAUTH_VERSION(CPUSubTypeField);
-    PtrAuthKernelABIVersion =
-        MachO::CPU_SUBTYPE_ARM64E_IS_KERNEL_PTRAUTH_ABI(CPUSubTypeField);
-  }
-
   // Compute the number of load commands we will need.
   unsigned LoadCommandSize = 0;
   unsigned NumLoadCommands = 0;
 
-  bool HasSymtab = false;
-
-  // Check LC_SYMTAB and get LC_UUID and LC_BUILD_VERSION.
+  // Get LC_UUID and LC_BUILD_VERSION.
   MachO::uuid_command UUIDCmd;
   SmallVector<MachO::build_version_command, 2> BuildVersionCmd;
   memset(&UUIDCmd, 0, sizeof(UUIDCmd));
@@ -437,16 +418,14 @@ bool generateDsymCompanion(
       BuildVersionCmd.push_back(Cmd);
       break;
     }
-    case MachO::LC_SYMTAB:
-      HasSymtab = true;
-      break;
     default:
       break;
     }
   }
 
   // If we have a valid symtab to copy, do it.
-  bool ShouldEmitSymtab = HasSymtab && isExecutable(InputBinary);
+  bool ShouldEmitSymtab =
+      isExecutable(InputBinary) && hasLinkEditSegment(InputBinary);
   if (ShouldEmitSymtab) {
     LoadCommandSize += sizeof(MachO::symtab_command);
     ++NumLoadCommands;
@@ -527,9 +506,7 @@ bool generateDsymCompanion(
   SymtabStart = alignTo(SymtabStart, 0x1000);
 
   // We gathered all the information we need, start emitting the output file.
-  Writer.writeHeader(MachO::MH_DSYM, NumLoadCommands, LoadCommandSize,
-                     /*SubsectionsViaSymbols=*/false, PtrAuthABIVersion,
-                     PtrAuthKernelABIVersion);
+  Writer.writeHeader(MachO::MH_DSYM, NumLoadCommands, LoadCommandSize, false);
 
   // Write the load commands.
   assert(OutFile.tell() == HeaderSize);
@@ -590,9 +567,8 @@ bool generateDsymCompanion(
   }
 
   // Write the load command for the __DWARF segment.
-  if (!createDwarfSegment(DwarfVMAddr, DwarfSegmentStart, DwarfSegmentSize,
-                          NumDwarfSections, Layout, Writer))
-    return false;
+  createDwarfSegment(DwarfVMAddr, DwarfSegmentStart, DwarfSegmentSize,
+                     NumDwarfSections, Layout, Writer);
 
   assert(OutFile.tell() == LoadCommandSize + HeaderSize);
   OutFile.write_zeros(SymtabStart - (LoadCommandSize + HeaderSize));
@@ -639,25 +615,6 @@ bool generateDsymCompanion(
     uint64_t Pos = OutFile.tell();
     OutFile.write_zeros(alignTo(Pos, Sec.getAlignment()) - Pos);
     MCAsm.writeSectionData(OutFile, &Sec, Layout);
-  }
-
-  // Apply relocations to the contents of the DWARF segment.
-  // We do this here because the final value written depend on the DWARF vm
-  // addr, which is only calculated in this function.
-  if (!RelocationsToApply.empty()) {
-    if (!OutFile.supportsSeeking())
-      report_fatal_error(
-          "Cannot apply relocations to file that doesn't support seeking!");
-
-    uint64_t Pos = OutFile.tell();
-    for (auto &RelocationToApply : RelocationsToApply) {
-      OutFile.seek(DwarfSegmentStart + RelocationToApply.AddressFromDwarfStart);
-      int32_t Value = RelocationToApply.Value;
-      if (RelocationToApply.ShouldSubtractDwarfVM)
-        Value -= DwarfVMAddr;
-      OutFile.write((char *)&Value, sizeof(int32_t));
-    }
-    OutFile.seek(Pos);
   }
 
   return true;

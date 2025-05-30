@@ -15,7 +15,6 @@
 #include "RetainCountChecker.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
-#include <optional>
 
 using namespace clang;
 using namespace ento;
@@ -74,8 +73,11 @@ RefCountBug::RefCountBug(CheckerNameRef Checker, RefCountBugKind BT)
 
 static bool isNumericLiteralExpression(const Expr *E) {
   // FIXME: This set of cases was copied from SemaExprObjC.
-  return isa<IntegerLiteral, CharacterLiteral, FloatingLiteral,
-             ObjCBoolLiteralExpr, CXXBoolLiteralExpr>(E);
+  return isa<IntegerLiteral>(E) ||
+         isa<CharacterLiteral>(E) ||
+         isa<FloatingLiteral>(E) ||
+         isa<ObjCBoolLiteralExpr>(E) ||
+         isa<CXXBoolLiteralExpr>(E);
 }
 
 /// If type represents a pointer to CXXRecordDecl,
@@ -166,13 +168,13 @@ static bool shouldGenerateNote(llvm::raw_string_ostream &os,
 
 /// Finds argument index of the out paramter in the call @c S
 /// corresponding to the symbol @c Sym.
-/// If none found, returns std::nullopt.
-static std::optional<unsigned> findArgIdxOfSymbol(ProgramStateRef CurrSt,
-                                                  const LocationContext *LCtx,
-                                                  SymbolRef &Sym,
-                                                  Optional<CallEventRef<>> CE) {
+/// If none found, returns None.
+static Optional<unsigned> findArgIdxOfSymbol(ProgramStateRef CurrSt,
+                                             const LocationContext *LCtx,
+                                             SymbolRef &Sym,
+                                             Optional<CallEventRef<>> CE) {
   if (!CE)
-    return std::nullopt;
+    return None;
 
   for (unsigned Idx = 0; Idx < (*CE)->getNumArgs(); Idx++)
     if (const MemRegion *MR = (*CE)->getArgSVal(Idx).getAsRegion())
@@ -180,25 +182,25 @@ static std::optional<unsigned> findArgIdxOfSymbol(ProgramStateRef CurrSt,
         if (CurrSt->getSVal(MR, TR->getValueType()).getAsSymbol() == Sym)
           return Idx;
 
-  return std::nullopt;
+  return None;
 }
 
-static std::optional<std::string> findMetaClassAlloc(const Expr *Callee) {
+static Optional<std::string> findMetaClassAlloc(const Expr *Callee) {
   if (const auto *ME = dyn_cast<MemberExpr>(Callee)) {
     if (ME->getMemberDecl()->getNameAsString() != "alloc")
-      return std::nullopt;
+      return None;
     const Expr *This = ME->getBase()->IgnoreParenImpCasts();
     if (const auto *DRE = dyn_cast<DeclRefExpr>(This)) {
       const ValueDecl *VD = DRE->getDecl();
       if (VD->getNameAsString() != "metaClass")
-        return std::nullopt;
+        return None;
 
       if (const auto *RD = dyn_cast<CXXRecordDecl>(VD->getDeclContext()))
         return RD->getNameAsString();
 
     }
   }
-  return std::nullopt;
+  return None;
 }
 
 static std::string findAllocatedObjectName(const Stmt *S, QualType QT) {
@@ -262,12 +264,14 @@ static void generateDiagnosticsForCallLike(ProgramStateRef CurrSt,
   }
 
   if (CurrV.getObjKind() == ObjKind::CF) {
-    os << "a Core Foundation object of type '" << Sym->getType() << "' with a ";
+    os << "a Core Foundation object of type '"
+       << Sym->getType().getAsString() << "' with a ";
   } else if (CurrV.getObjKind() == ObjKind::OS) {
     os << "an OSObject of type '" << findAllocatedObjectName(S, Sym->getType())
        << "' with a ";
   } else if (CurrV.getObjKind() == ObjKind::Generalized) {
-    os << "an object of type '" << Sym->getType() << "' with a ";
+    os << "an object of type '" << Sym->getType().getAsString()
+       << "' with a ";
   } else {
     assert(CurrV.getObjKind() == ObjKind::ObjC);
     QualType T = Sym->getType();
@@ -275,7 +279,8 @@ static void generateDiagnosticsForCallLike(ProgramStateRef CurrSt,
       os << "an Objective-C object with a ";
     } else {
       const ObjCObjectPointerType *PT = cast<ObjCObjectPointerType>(T);
-      os << "an instance of " << PT->getPointeeType() << " with a ";
+      os << "an instance of " << PT->getPointeeType().getAsString()
+         << " with a ";
     }
   }
 
@@ -603,12 +608,12 @@ RefCountReportVisitor::VisitNode(const ExplodedNode *N, BugReporterContext &BRC,
   return std::move(P);
 }
 
-static std::optional<std::string> describeRegion(const MemRegion *MR) {
+static Optional<std::string> describeRegion(const MemRegion *MR) {
   if (const auto *VR = dyn_cast_or_null<VarRegion>(MR))
     return std::string(VR->getDecl()->getName());
   // Once we support more storage locations for bindings,
   // this would need to be improved.
-  return std::nullopt;
+  return None;
 }
 
 using Bindings = llvm::SmallVector<std::pair<const MemRegion *, SVal>, 4>;
@@ -772,7 +777,7 @@ RefLeakReportVisitor::getEndPath(BugReporterContext &BRC,
 
   os << "Object leaked: ";
 
-  std::optional<std::string> RegionDescription = describeRegion(LastBinding);
+  Optional<std::string> RegionDescription = describeRegion(LastBinding);
   if (RegionDescription) {
     os << "object allocated and stored into '" << *RegionDescription << '\'';
   } else {
@@ -918,7 +923,7 @@ void RefLeakReport::createDescription(CheckerContext &Ctx) {
   llvm::raw_string_ostream os(Description);
   os << "Potential leak of an object";
 
-  std::optional<std::string> RegionDescription =
+  Optional<std::string> RegionDescription =
       describeRegion(AllocBindingToReport);
   if (RegionDescription) {
     os << " stored into '" << *RegionDescription << '\'';

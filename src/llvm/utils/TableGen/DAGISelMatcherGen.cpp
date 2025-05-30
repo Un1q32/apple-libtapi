@@ -6,10 +6,9 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "CodeGenDAGPatterns.h"
-#include "CodeGenInstruction.h"
-#include "CodeGenRegisters.h"
 #include "DAGISelMatcher.h"
+#include "CodeGenDAGPatterns.h"
+#include "CodeGenRegisters.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringMap.h"
 #include "llvm/TableGen/Error.h"
@@ -268,7 +267,7 @@ void MatcherGen::EmitLeafMatchCode(const TreePatternNode *N) {
       std::string S;
       raw_string_ostream OS(S);
       OS << "We expect complex pattern uses to have names: " << *N;
-      PrintFatalError(S);
+      PrintFatalError(OS.str());
     }
 
     // Remember this ComplexPattern so that we can emit it after all the other

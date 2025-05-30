@@ -16,6 +16,7 @@
 #include "tapi/Diagnostics/Diagnostics.h"
 #include "tapi/Driver/Driver.h"
 #include "tapi/Driver/Options.h"
+#include "tapi/Driver/Snapshot.h"
 #include "tapi/Frontend/Frontend.h"
 #include "clang/Driver/DriverDiagnostic.h"
 
@@ -133,6 +134,8 @@ bool Driver::Reexport::run(DiagnosticsEngine &diag, Options &opts) {
         << outputPath.str() << err.message();
     return false;
   }
+
+  globalSnapshot->recordFile(outputPath.str());
 
   return true;
 }

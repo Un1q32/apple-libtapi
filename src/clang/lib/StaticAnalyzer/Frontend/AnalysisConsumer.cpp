@@ -27,6 +27,7 @@
 #include "clang/Frontend/CompilerInstance.h"
 #include "clang/Lex/Preprocessor.h"
 #include "clang/Rewrite/Core/Rewriter.h"
+#include "clang/StaticAnalyzer/Checkers/LocalCheckers.h"
 #include "clang/StaticAnalyzer/Core/AnalyzerOptions.h"
 #include "clang/StaticAnalyzer/Core/BugReporter/BugReporter.h"
 #include "clang/StaticAnalyzer/Core/CheckerManager.h"
@@ -34,7 +35,6 @@
 #include "clang/StaticAnalyzer/Core/PathSensitive/AnalysisManager.h"
 #include "clang/StaticAnalyzer/Core/PathSensitive/ExprEngine.h"
 #include "llvm/ADT/PostOrderIterator.h"
-#include "llvm/ADT/ScopeExit.h"
 #include "llvm/ADT/Statistic.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/Path.h"
@@ -142,7 +142,7 @@ public:
     }
 
     if (Opts->PrintStats || Opts->ShouldSerializeStats) {
-      llvm::EnableStatistics(/* DoPrintOnExit= */ false);
+      llvm::EnableStatistics(/* PrintOnExit= */ false);
     }
 
     if (Opts->ShouldDisplayMacroExpansions)
@@ -170,7 +170,13 @@ public:
     }
 
     // Create the analyzer component creators.
-    CreateStoreMgr = &CreateRegionStoreManager;
+    switch (Opts->AnalysisStoreOpt) {
+    default:
+      llvm_unreachable("Unknown store manager.");
+#define ANALYSIS_STORE(NAME, CMDFLAG, DESC, CREATEFN)           \
+      case NAME##Model: CreateStoreMgr = CREATEFN; break;
+#include "clang/StaticAnalyzer/Core/Analyses.def"
+    }
 
     switch (Opts->AnalysisConstraintsOpt) {
     default:
@@ -282,7 +288,7 @@ public:
       return true;
 
     if (VD->hasExternalStorage() || VD->isStaticDataMember()) {
-      if (!cross_tu::shouldImport(VD, *Ctx))
+      if (!cross_tu::containsConst(VD, *Ctx))
         return true;
     } else {
       // Cannot be initialized in another TU.
@@ -351,6 +357,7 @@ public:
 
 private:
   void storeTopLevelDecls(DeclGroupRef DG);
+  std::string getFunctionName(const Decl *D);
 
   /// Check if we should skip (not analyze) the given function.
   AnalysisMode getModeForDecl(Decl *D, AnalysisMode Mode);
@@ -375,14 +382,14 @@ void AnalysisConsumer::HandleTopLevelDeclInObjCContainer(DeclGroupRef DG) {
 }
 
 void AnalysisConsumer::storeTopLevelDecls(DeclGroupRef DG) {
-  for (auto &I : DG) {
+  for (DeclGroupRef::iterator I = DG.begin(), E = DG.end(); I != E; ++I) {
 
     // Skip ObjCMethodDecl, wait for the objc container to avoid
     // analyzing twice.
-    if (isa<ObjCMethodDecl>(I))
+    if (isa<ObjCMethodDecl>(*I))
       continue;
 
-    LocalTUDecls.push_back(I);
+    LocalTUDecls.push_back(*I);
   }
 }
 
@@ -454,9 +461,11 @@ void AnalysisConsumer::HandleDeclsCallGraph(const unsigned LocalTUDeclsSize) {
   SetOfConstDecls Visited;
   SetOfConstDecls VisitedAsTopLevel;
   llvm::ReversePostOrderTraversal<clang::CallGraph*> RPOT(&CG);
-  for (auto &N : RPOT) {
+  for (llvm::ReversePostOrderTraversal<clang::CallGraph*>::rpo_iterator
+         I = RPOT.begin(), E = RPOT.end(); I != E; ++I) {
     NumFunctionTopLevel++;
 
+    CallGraphNode *N = *I;
     Decl *D = N->getDecl();
 
     // Skip the abstract root node.
@@ -467,18 +476,6 @@ void AnalysisConsumer::HandleDeclsCallGraph(const unsigned LocalTUDeclsSize) {
     // inlined.
     if (shouldSkipFunction(D, Visited, VisitedAsTopLevel))
       continue;
-
-    // The CallGraph might have declarations as callees. However, during CTU
-    // the declaration might form a declaration chain with the newly imported
-    // definition from another TU. In this case we don't want to analyze the
-    // function definition as toplevel.
-    if (const auto *FD = dyn_cast<FunctionDecl>(D)) {
-      // Calling 'hasBody' replaces 'FD' in place with the FunctionDecl
-      // that has the body.
-      FD->hasBody(FD);
-      if (CTU.isImportedAsNew(FD))
-        continue;
-    }
 
     // Analyze the function.
     SetOfConstDecls VisitedCallees;
@@ -496,33 +493,13 @@ void AnalysisConsumer::HandleDeclsCallGraph(const unsigned LocalTUDeclsSize) {
   }
 }
 
-static bool fileContainsString(StringRef Substring, ASTContext &C) {
+static bool isBisonFile(ASTContext &C) {
   const SourceManager &SM = C.getSourceManager();
   FileID FID = SM.getMainFileID();
   StringRef Buffer = SM.getBufferOrFake(FID).getBuffer();
-  return Buffer.contains(Substring);
-}
-
-static void reportAnalyzerFunctionMisuse(const AnalyzerOptions &Opts,
-                                         const ASTContext &Ctx) {
-  llvm::errs() << "Every top-level function was skipped.\n";
-
-  if (!Opts.AnalyzerDisplayProgress)
-    llvm::errs() << "Pass the -analyzer-display-progress for tracking which "
-                    "functions are analyzed.\n";
-
-  bool HasBrackets =
-      Opts.AnalyzeSpecificFunction.find("(") != std::string::npos;
-
-  if (Ctx.getLangOpts().CPlusPlus && !HasBrackets) {
-    llvm::errs()
-        << "For analyzing C++ code you need to pass the function parameter "
-           "list: -analyze-function=\"foobar(int, _Bool)\"\n";
-  } else if (!Ctx.getLangOpts().CPlusPlus && HasBrackets) {
-    llvm::errs() << "For analyzing C code you shouldn't pass the function "
-                    "parameter list, only the name of the function: "
-                    "-analyze-function=foobar\n";
-  }
+  if (Buffer.startswith("/* A Bison parser, made by"))
+    return true;
+  return false;
 }
 
 void AnalysisConsumer::runAnalysisOnTranslationUnit(ASTContext &C) {
@@ -561,14 +538,6 @@ void AnalysisConsumer::runAnalysisOnTranslationUnit(ASTContext &C) {
 
   BR.FlushReports();
   RecVisitorBR = nullptr;
-
-  // If the user wanted to analyze a specific function and the number of basic
-  // blocks analyzed is zero, than the user might not specified the function
-  // name correctly.
-  // FIXME: The user might have analyzed the requested function in Syntax mode,
-  // but we are unaware of that.
-  if (!Opts->AnalyzeSpecificFunction.empty() && NumFunctionsAnalyzed == 0)
-    reportAnalyzerFunctionMisuse(*Opts, *Ctx);
 }
 
 void AnalysisConsumer::reportAnalyzerProgress(StringRef S) {
@@ -577,39 +546,23 @@ void AnalysisConsumer::reportAnalyzerProgress(StringRef S) {
 }
 
 void AnalysisConsumer::HandleTranslationUnit(ASTContext &C) {
+
   // Don't run the actions if an error has occurred with parsing the file.
   DiagnosticsEngine &Diags = PP.getDiagnostics();
   if (Diags.hasErrorOccurred() || Diags.hasFatalErrorOccurred())
     return;
 
-  // Explicitly destroy the PathDiagnosticConsumer.  This will flush its output.
-  // FIXME: This should be replaced with something that doesn't rely on
-  // side-effects in PathDiagnosticConsumer's destructor. This is required when
-  // used with option -disable-free.
-  const auto DiagFlusherScopeExit =
-      llvm::make_scope_exit([this] { Mgr.reset(); });
-
-  if (Opts->ShouldIgnoreBisonGeneratedFiles &&
-      fileContainsString("/* A Bison parser, made by", C)) {
+  if (isBisonFile(C)) {
     reportAnalyzerProgress("Skipping bison-generated file\n");
-    return;
-  }
+  } else if (Opts->DisableAllCheckers) {
 
-  if (Opts->ShouldIgnoreFlexGeneratedFiles &&
-      fileContainsString("/* A lexical scanner generated by flex", C)) {
-    reportAnalyzerProgress("Skipping flex-generated file\n");
-    return;
-  }
-
-  // Don't analyze if the user explicitly asked for no checks to be performed
-  // on this file.
-  if (Opts->DisableAllCheckers) {
+    // Don't analyze if the user explicitly asked for no checks to be performed
+    // on this file.
     reportAnalyzerProgress("All checks are disabled using a supplied option\n");
-    return;
+  } else {
+    // Otherwise, just run the analysis.
+    runAnalysisOnTranslationUnit(C);
   }
-
-  // Otherwise, just run the analysis.
-  runAnalysisOnTranslationUnit(C);
 
   // Count how many basic blocks we have not covered.
   NumBlocksInAnalyzedFunctions = FunctionSummaries.getTotalNumBasicBlocks();
@@ -617,8 +570,14 @@ void AnalysisConsumer::HandleTranslationUnit(ASTContext &C) {
       FunctionSummaries.getTotalNumVisitedBasicBlocks();
   if (NumBlocksInAnalyzedFunctions > 0)
     PercentReachableBlocks =
-        (FunctionSummaries.getTotalNumVisitedBasicBlocks() * 100) /
+      (FunctionSummaries.getTotalNumVisitedBasicBlocks() * 100) /
         NumBlocksInAnalyzedFunctions;
+
+  // Explicitly destroy the PathDiagnosticConsumer.  This will flush its output.
+  // FIXME: This should be replaced with something that doesn't rely on
+  // side-effects in PathDiagnosticConsumer's destructor. This is required when
+  // used with option -disable-free.
+  Mgr.reset();
 }
 
 AnalysisConsumer::AnalysisMode
@@ -632,24 +591,16 @@ AnalysisConsumer::getModeForDecl(Decl *D, AnalysisMode Mode) {
   // - Main source file: run both path-sensitive and non-path-sensitive checks.
   // - Header files: run non-path-sensitive checks only.
   // - System headers: don't run any checks.
-  if (Opts->AnalyzeAll)
-    return Mode;
+  SourceManager &SM = Ctx->getSourceManager();
+  const Stmt *Body = D->getBody();
+  SourceLocation SL = Body ? Body->getBeginLoc() : D->getLocation();
+  SL = SM.getExpansionLoc(SL);
 
-  const SourceManager &SM = Ctx->getSourceManager();
-
-  const SourceLocation Loc = [&SM](Decl *D) -> SourceLocation {
-    const Stmt *Body = D->getBody();
-    SourceLocation SL = Body ? Body->getBeginLoc() : D->getLocation();
-    return SM.getExpansionLoc(SL);
-  }(D);
-
-  // Ignore system headers.
-  if (Loc.isInvalid() || SM.isInSystemHeader(Loc))
-    return AM_None;
-
-  // Disable path sensitive analysis in user-headers.
-  if (!Mgr->isInCodeFile(Loc))
+  if (!Opts->AnalyzeAll && !Mgr->isInCodeFile(SL)) {
+    if (SL.isInvalid() || SM.isInSystemHeader(SL))
+      return AM_None;
     return Mode & ~AM_Path;
+  }
 
   return Mode;
 }

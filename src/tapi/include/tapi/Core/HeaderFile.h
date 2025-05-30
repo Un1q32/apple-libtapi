@@ -16,7 +16,6 @@
 
 #include "tapi/Core/LLVM.h"
 #include "tapi/Defines.h"
-#include "clang/Basic/LangStandard.h"
 #include "llvm/ADT/StringRef.h"
 #include <string>
 
@@ -45,21 +44,16 @@ struct HeaderFile {
   std::string relativePath;
   std::string includeName;
   HeaderType type;
-  llvm::Optional<clang::Language> language;
   bool isUmbrellaHeader{false};
   bool isExcluded{false};
   bool isExtra{false};
   bool isPreInclude{false};
-  bool isSwiftCompatibilityHeader{false};
 
   HeaderFile(StringRef fullPath, HeaderType type,
              StringRef relativePath = StringRef(),
-             StringRef includeName = StringRef(),
-             llvm::Optional<clang::Language> language = llvm::None,
-             bool isSwiftCompatibilityHeader = false)
+             StringRef includeName = StringRef())
       : fullPath(fullPath), relativePath(relativePath),
-        includeName(includeName), type(type), language(language),
-        isSwiftCompatibilityHeader(isSwiftCompatibilityHeader) {}
+        includeName(includeName), type(type) {}
 
   bool useIncludeName() const {
     // If this is a extra-included header it can be a SRCROOT path

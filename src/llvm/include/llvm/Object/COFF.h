@@ -379,8 +379,8 @@ public:
   }
 
   bool isCommon() const {
-    return (isExternal() || isSection()) &&
-           getSectionNumber() == COFF::IMAGE_SYM_UNDEFINED && getValue() != 0;
+    return isExternal() && getSectionNumber() == COFF::IMAGE_SYM_UNDEFINED &&
+           getValue() != 0;
   }
 
   bool isUndefined() const {
@@ -597,6 +597,17 @@ struct coff_tls_directory {
 using coff_tls_directory32 = coff_tls_directory<support::little32_t>;
 using coff_tls_directory64 = coff_tls_directory<support::little64_t>;
 
+/// Bits in control flow guard flags as we understand them.
+enum class coff_guard_flags : uint32_t {
+  CFInstrumented = 0x00000100,
+  HasFidTable = 0x00000400,
+  ProtectDelayLoadIAT = 0x00001000,
+  DelayLoadIATSection = 0x00002000, // Delay load in separate section
+  HasLongJmpTable = 0x00010000,
+  HasEHContTable = 0x00400000,
+  FidTableHasFlags = 0x10000000, // Indicates that fid tables are 5 bytes
+};
+
 enum class frame_type : uint16_t { Fpo = 0, Trap = 1, Tss = 2, NonFpo = 3 };
 
 struct coff_load_config_code_integrity {
@@ -722,47 +733,6 @@ struct coff_load_configuration64 {
   support::ulittle64_t CastGuardOsDeterminedFailureMode;
 };
 
-struct chpe_metadata {
-  support::ulittle32_t Version;
-  support::ulittle32_t CodeMap;
-  support::ulittle32_t CodeMapCount;
-  support::ulittle32_t CodeRangesToEntryPoints;
-  support::ulittle32_t RedirectionMetadata;
-  support::ulittle32_t __os_arm64x_dispatch_call_no_redirect;
-  support::ulittle32_t __os_arm64x_dispatch_ret;
-  support::ulittle32_t __os_arm64x_dispatch_call;
-  support::ulittle32_t __os_arm64x_dispatch_icall;
-  support::ulittle32_t __os_arm64x_dispatch_icall_cfg;
-  support::ulittle32_t AlternateEntryPoint;
-  support::ulittle32_t AuxiliaryIAT;
-  support::ulittle32_t CodeRangesToEntryPointsCount;
-  support::ulittle32_t RedirectionMetadataCount;
-  support::ulittle32_t GetX64InformationFunctionPointer;
-  support::ulittle32_t SetX64InformationFunctionPointer;
-  support::ulittle32_t ExtraRFETable;
-  support::ulittle32_t ExtraRFETableSize;
-  support::ulittle32_t __os_arm64x_dispatch_fptr;
-  support::ulittle32_t AuxiliaryIATCopy;
-};
-
-struct chpe_range_entry {
-  support::ulittle32_t StartOffset;
-  support::ulittle32_t Length;
-};
-
-enum chpe_range_type { CHPE_RANGE_ARM64, CHPE_RANGE_ARM64EC, CHPE_RANGE_AMD64 };
-
-struct chpe_code_range_entry {
-  support::ulittle32_t StartRva;
-  support::ulittle32_t EndRva;
-  support::ulittle32_t EntryPoint;
-};
-
-struct chpe_redirection_entry {
-  support::ulittle32_t Source;
-  support::ulittle32_t Destination;
-};
-
 struct coff_runtime_function_x64 {
   support::ulittle32_t BeginAddress;
   support::ulittle32_t EndAddress;
@@ -854,7 +824,6 @@ private:
   const coff_tls_directory64 *TLSDirectory64;
   // Either coff_load_configuration32 or coff_load_configuration64.
   const void *LoadConfig = nullptr;
-  const chpe_metadata *CHPEMetadata = nullptr;
 
   Expected<StringRef> getString(uint32_t offset) const;
 
@@ -956,10 +925,6 @@ public:
 
   uint32_t getStringTableSize() const { return StringTableSize; }
 
-  const export_directory_table_entry *getExportTable() const {
-    return ExportDirectory;
-  }
-
   const coff_load_configuration32 *getLoadConfig32() const {
     assert(!is64());
     return reinterpret_cast<const coff_load_configuration32 *>(LoadConfig);
@@ -969,9 +934,6 @@ public:
     assert(is64());
     return reinterpret_cast<const coff_load_configuration64 *>(LoadConfig);
   }
-
-  const chpe_metadata *getCHPEMetadata() const { return CHPEMetadata; }
-
   StringRef getRelocationTypeName(uint16_t Type) const;
 
 protected:
@@ -1117,15 +1079,13 @@ public:
 
   uint64_t getImageBase() const;
   Error getVaPtr(uint64_t VA, uintptr_t &Res) const;
-  Error getRvaPtr(uint32_t Rva, uintptr_t &Res,
-                  const char *ErrorContext = nullptr) const;
+  Error getRvaPtr(uint32_t Rva, uintptr_t &Res) const;
 
   /// Given an RVA base and size, returns a valid array of bytes or an error
   /// code if the RVA and size is not contained completely within a valid
   /// section.
   Error getRvaAndSizeAsBytes(uint32_t RVA, uint32_t Size,
-                             ArrayRef<uint8_t> &Contents,
-                             const char *ErrorContext = nullptr) const;
+                             ArrayRef<uint8_t> &Contents) const;
 
   Error getHintName(uint32_t Rva, uint16_t &Hint,
                               StringRef &Name) const;
@@ -1334,12 +1294,6 @@ struct FpoData {
 
   // cbFrame: frame pointer
   frame_type getFP() const { return static_cast<frame_type>(Attributes >> 14); }
-};
-
-class SectionStrippedError
-    : public ErrorInfo<SectionStrippedError, BinaryError> {
-public:
-  SectionStrippedError() { setErrorCode(object_error::section_stripped); }
 };
 
 } // end namespace object

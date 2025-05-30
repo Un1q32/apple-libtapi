@@ -1,8 +1,6 @@
 add_llvm_component_library(LLVMPasses
-  OptimizationLevel.cpp
   PassBuilder.cpp
   PassBuilderBindings.cpp
-  PassBuilderPipelines.cpp
   PassPlugin.cpp
   StandardInstrumentations.cpp
 

@@ -16,9 +16,7 @@
 #define LLVM_TRANSFORMS_INSTRUMENTATION_PGOINSTRUMENTATION_H
 
 #include "llvm/ADT/ArrayRef.h"
-#include "llvm/ADT/IntrusiveRefCntPtr.h"
 #include "llvm/IR/PassManager.h"
-#include "llvm/Support/VirtualFileSystem.h"
 #include <cstdint>
 #include <string>
 
@@ -27,10 +25,6 @@ namespace llvm {
 class Function;
 class Instruction;
 class Module;
-
-namespace vfs {
-class FileSystem;
-} // namespace vfs
 
 /// The instrumentation (profile-instr-gen) pass for IR based PGO.
 // We use this pass to create COMDAT profile variables for context
@@ -64,8 +58,7 @@ private:
 class PGOInstrumentationUse : public PassInfoMixin<PGOInstrumentationUse> {
 public:
   PGOInstrumentationUse(std::string Filename = "",
-                        std::string RemappingFilename = "", bool IsCS = false,
-                        IntrusiveRefCntPtr<vfs::FileSystem> FS = nullptr);
+                        std::string RemappingFilename = "", bool IsCS = false);
 
   PreservedAnalyses run(Module &M, ModuleAnalysisManager &AM);
 
@@ -74,7 +67,6 @@ private:
   std::string ProfileRemappingFileName;
   // If this is a context sensitive instrumentation.
   bool IsCS;
-  IntrusiveRefCntPtr<vfs::FileSystem> FS;
 };
 
 /// The indirect function call promotion pass.

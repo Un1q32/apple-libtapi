@@ -160,9 +160,6 @@ endmacro(add_tapi_library)
 macro(add_tapi_executable name)
   add_llvm_executable(${name} ${ARGN})
   set_target_properties(${name} PROPERTIES FOLDER "Tapi executables")
-  if(APPLE)
-    target_link_options(${name} PRIVATE "-Wl,-no_exported_symbols")
-  endif()
 endmacro(add_tapi_executable)
 
 function(tapi_clang_tablegen)
@@ -206,8 +203,6 @@ if( TAPI_INCLUDE_TESTS )
     list(APPEND TAPI_TEST_PARAMS
       tapi_unit_site_config=${CMAKE_CURRENT_BINARY_DIR}/test/Unit/lit.site.cfg
       )
-  else() 
-    message("TAPI_INCLUDE_TESTS specified, but gtest.h was not found.")
   endif()
   if(EXISTS ${TAPI_SOURCE_DIR}/test)
     add_subdirectory(test)

@@ -16,11 +16,14 @@
 #include "llvm/Analysis/PostDominators.h"
 #include "llvm/Analysis/ValueTracking.h"
 #include "llvm/IR/AssemblyAnnotationWriter.h"
+#include "llvm/IR/DataLayout.h"
 #include "llvm/IR/Dominators.h"
 #include "llvm/IR/InstIterator.h"
+#include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/PassManager.h"
 #include "llvm/InitializePasses.h"
+#include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/FormattedStream.h"
 #include "llvm/Support/raw_ostream.h"
 
@@ -59,11 +62,10 @@ void SimpleLoopSafetyInfo::computeLoopSafetyInfo(const Loop *CurLoop) {
   // The first block in loopinfo.Blocks is guaranteed to be the header.
   assert(Header == *CurLoop->getBlocks().begin() &&
          "First block must be header");
-  for (const BasicBlock *BB : llvm::drop_begin(CurLoop->blocks())) {
-    MayThrow |= !isGuaranteedToTransferExecutionToSuccessor(BB);
-    if (MayThrow)
-      break;
-  }
+  for (Loop::block_iterator BB = std::next(CurLoop->block_begin()),
+                            BBE = CurLoop->block_end();
+       (BB != BBE) && !MayThrow; ++BB)
+    MayThrow |= !isGuaranteedToTransferExecutionToSuccessor(*BB);
 
   computeBlockColors(CurLoop);
 }
@@ -82,7 +84,7 @@ void ICFLoopSafetyInfo::computeLoopSafetyInfo(const Loop *CurLoop) {
   MW.clear();
   MayThrow = false;
   // Figure out the fact that at least one block may throw.
-  for (const auto &BB : CurLoop->blocks())
+  for (auto &BB : CurLoop->blocks())
     if (ICF.hasICF(&*BB)) {
       MayThrow = true;
       break;
@@ -141,7 +143,7 @@ static bool CanProveNotTakenFirstIteration(const BasicBlock *ExitBlock,
     return false;
   auto DL = ExitBlock->getModule()->getDataLayout();
   auto *IVStart = LHS->getIncomingValueForBlock(CurLoop->getLoopPreheader());
-  auto *SimpleValOrNull = simplifyCmpInst(Cond->getPredicate(),
+  auto *SimpleValOrNull = SimplifyCmpInst(Cond->getPredicate(),
                                           IVStart, RHS,
                                           {DL, /*TLI*/ nullptr,
                                               DT, /*AC*/ nullptr, BI});
@@ -165,7 +167,7 @@ static void collectTransitivePredecessors(
   if (BB == CurLoop->getHeader())
     return;
   SmallVector<const BasicBlock *, 4> WorkList;
-  for (const auto *Pred : predecessors(BB)) {
+  for (auto *Pred : predecessors(BB)) {
     Predecessors.insert(Pred);
     WorkList.push_back(Pred);
   }
@@ -181,7 +183,7 @@ static void collectTransitivePredecessors(
     // @nested and @nested_no_throw in test/Analysis/MustExecute/loop-header.ll.
     // We can ignore backedge of all loops containing BB to get a sligtly more
     // optimistic result.
-    for (const auto *PredPred : predecessors(Pred))
+    for (auto *PredPred : predecessors(Pred))
       if (Predecessors.insert(PredPred).second)
         WorkList.push_back(PredPred);
   }
@@ -201,15 +203,6 @@ bool LoopSafetyInfo::allLoopPathsLeadToBlock(const Loop *CurLoop,
   SmallPtrSet<const BasicBlock *, 4> Predecessors;
   collectTransitivePredecessors(CurLoop, BB, Predecessors);
 
-  // Bail out if a latch block is part of the predecessor set. In this case
-  // we may take the backedge to the header and not execute other latch
-  // successors.
-  for (const BasicBlock *Pred : predecessors(CurLoop->getHeader()))
-    // Predecessors only contains loop blocks, so we don't have to worry about
-    // preheader predecessors here.
-    if (Predecessors.contains(Pred))
-      return false;
-
   // Make sure that all successors of, all predecessors of BB which are not
   // dominated by BB, are either:
   // 1) BB,
@@ -217,7 +210,7 @@ bool LoopSafetyInfo::allLoopPathsLeadToBlock(const Loop *CurLoop,
   // 3) Exit blocks which are not taken on 1st iteration.
   // Memoize blocks we've already checked.
   SmallPtrSet<const BasicBlock *, 4> CheckedSuccessors;
-  for (const auto *Pred : Predecessors) {
+  for (auto *Pred : Predecessors) {
     // Predecessor block may throw, so it has a side exit.
     if (blockMayThrow(Pred))
       return false;
@@ -227,7 +220,7 @@ bool LoopSafetyInfo::allLoopPathsLeadToBlock(const Loop *CurLoop,
     if (DT->dominates(BB, Pred))
       continue;
 
-    for (const auto *Succ : successors(Pred))
+    for (auto *Succ : successors(Pred))
       if (CheckedSuccessors.insert(Succ).second &&
           Succ != BB && !Predecessors.count(Succ))
         // By discharging conditions that are not executed on the 1st iteration,
@@ -295,7 +288,7 @@ bool ICFLoopSafetyInfo::doesNotWriteMemoryBefore(const BasicBlock *BB,
   collectTransitivePredecessors(CurLoop, BB, Predecessors);
   // Find if there any instruction in either predecessor that could write
   // to memory.
-  for (const auto *Pred : Predecessors)
+  for (auto *Pred : Predecessors)
     if (MW.mayWriteToMemory(Pred))
       return false;
   return true;
@@ -423,7 +416,7 @@ class MustExecuteAnnotatedWriter : public AssemblyAnnotationWriter {
 public:
   MustExecuteAnnotatedWriter(const Function &F,
                              DominatorTree &DT, LoopInfo &LI) {
-    for (const auto &I: instructions(F)) {
+    for (auto &I: instructions(F)) {
       Loop *L = LI.getLoopFor(I.getParent());
       while (L) {
         if (isMustExecuteIn(I, L, &DT)) {
@@ -435,8 +428,8 @@ public:
   }
   MustExecuteAnnotatedWriter(const Module &M,
                              DominatorTree &DT, LoopInfo &LI) {
-    for (const auto &F : M)
-    for (const auto &I: instructions(F)) {
+    for (auto &F : M)
+    for (auto &I: instructions(F)) {
       Loop *L = LI.getLoopFor(I.getParent());
       while (L) {
         if (isMustExecuteIn(I, L, &DT)) {
@@ -501,9 +494,9 @@ template <typename K, typename V, typename FnTy, typename... ArgsTy>
 static V getOrCreateCachedOptional(K Key, DenseMap<K, Optional<V>> &Map,
                                    FnTy &&Fn, ArgsTy&&... args) {
   Optional<V> &OptVal = Map[Key];
-  if (!OptVal)
+  if (!OptVal.hasValue())
     OptVal = Fn(std::forward<ArgsTy>(args)...);
-  return OptVal.value();
+  return OptVal.getValue();
 }
 
 const BasicBlock *

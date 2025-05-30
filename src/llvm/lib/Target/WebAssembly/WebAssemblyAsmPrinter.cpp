@@ -42,8 +42,8 @@
 #include "llvm/MC/MCStreamer.h"
 #include "llvm/MC/MCSymbol.h"
 #include "llvm/MC/MCSymbolWasm.h"
-#include "llvm/MC/TargetRegistry.h"
 #include "llvm/Support/Debug.h"
+#include "llvm/Support/TargetRegistry.h"
 #include "llvm/Support/raw_ostream.h"
 
 using namespace llvm;
@@ -51,6 +51,8 @@ using namespace llvm;
 #define DEBUG_TYPE "asm-printer"
 
 extern cl::opt<bool> WasmKeepRegisters;
+extern cl::opt<bool> EnableEmException;
+extern cl::opt<bool> EnableEmSjLj;
 
 //===----------------------------------------------------------------------===//
 // Helpers.
@@ -159,7 +161,7 @@ MCSymbolWasm *WebAssemblyAsmPrinter::getMCSymbolForFunction(
           "Emscripten EH/SjLj does not support multivalue returns: " +
           std::string(F->getName()) + ": " +
           WebAssembly::signatureToString(Sig);
-      report_fatal_error(Twine(Msg));
+      report_fatal_error(Msg);
     }
     WasmSym = cast<MCSymbolWasm>(
         GetExternalSymbolSymbol(getEmscriptenInvokeSymbolName(Sig)));
@@ -180,30 +182,29 @@ void WebAssemblyAsmPrinter::emitGlobalVariable(const GlobalVariable *GV) {
   MCSymbolWasm *Sym = cast<MCSymbolWasm>(getSymbol(GV));
 
   if (!Sym->getType()) {
-    SmallVector<MVT, 1> VTs;
-    Type *GlobalVT = GV->getValueType();
-    if (Subtarget) {
-      // Subtarget is only set when a function is defined, because
-      // each function can declare a different subtarget. For example,
-      // on ARM a compilation unit might have a function on ARM and
-      // another on Thumb. Therefore only if Subtarget is non-null we
-      // can actually calculate the legal VTs.
-      const WebAssemblyTargetLowering &TLI = *Subtarget->getTargetLowering();
-      computeLegalValueVTs(TLI, GV->getParent()->getContext(),
-                           GV->getParent()->getDataLayout(), GlobalVT, VTs);
-    }
-    WebAssembly::wasmSymbolSetType(Sym, GlobalVT, VTs);
+    const WebAssemblyTargetLowering &TLI = *Subtarget->getTargetLowering();
+    SmallVector<EVT, 1> VTs;
+    ComputeValueVTs(TLI, GV->getParent()->getDataLayout(), GV->getValueType(),
+                    VTs);
+    if (VTs.size() != 1 ||
+        TLI.getNumRegisters(GV->getParent()->getContext(), VTs[0]) != 1)
+      report_fatal_error("Aggregate globals not yet implemented");
+    MVT VT = TLI.getRegisterType(GV->getParent()->getContext(), VTs[0]);
+    bool Mutable = true;
+    wasm::ValType Type = WebAssembly::toValType(VT);
+    Sym->setType(wasm::WASM_SYMBOL_TYPE_GLOBAL);
+    Sym->setGlobalType(wasm::WasmGlobalType{uint8_t(Type), Mutable});
   }
 
   emitVisibility(Sym, GV->getVisibility(), !GV->isDeclaration());
-  emitSymbolType(Sym);
   if (GV->hasInitializer()) {
     assert(getSymbolPreferLocal(*GV) == Sym);
     emitLinkage(GV, Sym);
+    getTargetStreamer()->emitGlobalType(Sym);
     OutStreamer->emitLabel(Sym);
     // TODO: Actually emit the initializer value.  Otherwise the global has the
     // default value for its type (0, ref.null, etc).
-    OutStreamer->addBlankLine();
+    OutStreamer->AddBlankLine();
   }
 }
 
@@ -211,7 +212,7 @@ MCSymbol *WebAssemblyAsmPrinter::getOrCreateWasmSymbol(StringRef Name) {
   auto *WasmSym = cast<MCSymbolWasm>(GetExternalSymbolSymbol(Name));
 
   // May be called multiple times, so early out.
-  if (WasmSym->getType())
+  if (WasmSym->getType().hasValue())
     return WasmSym;
 
   const WebAssemblySubtarget &Subtarget = getSubtarget();
@@ -233,32 +234,26 @@ MCSymbol *WebAssemblyAsmPrinter::getOrCreateWasmSymbol(StringRef Name) {
     return WasmSym;
   }
 
-  if (Name.startswith("GCC_except_table")) {
-    WasmSym->setType(wasm::WASM_SYMBOL_TYPE_DATA);
-    return WasmSym;
-  }
-
   SmallVector<wasm::ValType, 4> Returns;
   SmallVector<wasm::ValType, 4> Params;
-  if (Name == "__cpp_exception" || Name == "__c_longjmp") {
+  if (Name == "__cpp_exception") {
     WasmSym->setType(wasm::WASM_SYMBOL_TYPE_TAG);
-    // In static linking we define tag symbols in WasmException::endModule().
-    // But we may have multiple objects to be linked together, each of which
-    // defines the tag symbols. To resolve them, we declare them as weak. In
-    // dynamic linking we make tag symbols undefined in the backend, define it
-    // in JS, and feed them to each importing module.
-    if (!isPositionIndependent())
-      WasmSym->setWeak(true);
+    // We can't confirm its signature index for now because there can be
+    // imported exceptions. Set it to be 0 for now.
+    WasmSym->setTagType(
+        {wasm::WASM_TAG_ATTRIBUTE_EXCEPTION, /* SigIndex */ 0});
+    // We may have multiple C++ compilation units to be linked together, each of
+    // which defines the exception symbol. To resolve them, we declare them as
+    // weak.
+    WasmSym->setWeak(true);
     WasmSym->setExternal(true);
 
-    // Currently both C++ exceptions and C longjmps have a single pointer type
-    // param. For C++ exceptions it is a pointer to an exception object, and for
-    // C longjmps it is pointer to a struct that contains a setjmp buffer and a
-    // longjmp return value. We may consider using multiple value parameters for
-    // longjmps later when multivalue support is ready.
-    wasm::ValType AddrType =
-        Subtarget.hasAddr64() ? wasm::ValType::I64 : wasm::ValType::I32;
-    Params.push_back(AddrType);
+    // All C++ exceptions are assumed to have a single i32 (for wasm32) or i64
+    // (for wasm64) param type and void return type. The reaon is, all C++
+    // exception values are pointers, and to share the type section with
+    // functions, exceptions are assumed to have void return type.
+    Params.push_back(Subtarget.hasAddr64() ? wasm::ValType::I64
+                                           : wasm::ValType::I32);
   } else { // Function symbols
     WasmSym->setType(wasm::WASM_SYMBOL_TYPE_FUNCTION);
     getLibcallSignature(Subtarget, Name, Returns, Params);
@@ -271,52 +266,31 @@ MCSymbol *WebAssemblyAsmPrinter::getOrCreateWasmSymbol(StringRef Name) {
   return WasmSym;
 }
 
-void WebAssemblyAsmPrinter::emitSymbolType(const MCSymbolWasm *Sym) {
-  Optional<wasm::WasmSymbolType> WasmTy = Sym->getType();
-  if (!WasmTy)
-    return;
-
-  switch (*WasmTy) {
-  case wasm::WASM_SYMBOL_TYPE_GLOBAL:
-    getTargetStreamer()->emitGlobalType(Sym);
-    break;
-  case wasm::WASM_SYMBOL_TYPE_TAG:
-    getTargetStreamer()->emitTagType(Sym);
-    break;
-  case wasm::WASM_SYMBOL_TYPE_TABLE:
-    getTargetStreamer()->emitTableType(Sym);
-    break;
-  default:
-    break; // We only handle globals, tags and tables here
-  }
-}
-
-void WebAssemblyAsmPrinter::emitDecls(const Module &M) {
+void WebAssemblyAsmPrinter::emitExternalDecls(const Module &M) {
   if (signaturesEmitted)
     return;
   signaturesEmitted = true;
 
   // Normally symbols for globals get discovered as the MI gets lowered,
-  // but we need to know about them ahead of time. This will however,
-  // only find symbols that have been used. Unused symbols from globals will
-  // not be found here.
+  // but we need to know about them ahead of time.
   MachineModuleInfoWasm &MMIW = MMI->getObjFileInfo<MachineModuleInfoWasm>();
   for (const auto &Name : MMIW.MachineSymbolsUsed) {
-    auto *WasmSym = cast<MCSymbolWasm>(getOrCreateWasmSymbol(Name.getKey()));
-    if (WasmSym->isFunction()) {
-      // TODO(wvo): is there any case where this overlaps with the call to
-      // emitFunctionType in the loop below?
-      getTargetStreamer()->emitFunctionType(WasmSym);
-    }
+    getOrCreateWasmSymbol(Name.getKey());
   }
 
   for (auto &It : OutContext.getSymbols()) {
-    // Emit .globaltype, .tagtype, or .tabletype declarations for extern
-    // declarations, i.e. those that have only been declared (but not defined)
-    // in the current module
+    // Emit .globaltype, .tagtype, or .tabletype declarations.
     auto Sym = cast<MCSymbolWasm>(It.getValue());
-    if (!Sym->isDefined())
-      emitSymbolType(Sym);
+    if (Sym->getType() == wasm::WASM_SYMBOL_TYPE_GLOBAL) {
+      // .globaltype already handled by emitGlobalVariable for defined
+      // variables; here we make sure the types of external wasm globals get
+      // written to the file.
+      if (Sym->isUndefined())
+        getTargetStreamer()->emitGlobalType(Sym);
+    } else if (Sym->getType() == wasm::WASM_SYMBOL_TYPE_TAG)
+      getTargetStreamer()->emitTagType(Sym);
+    else if (Sym->getType() == wasm::WASM_SYMBOL_TYPE_TABLE)
+      getTargetStreamer()->emitTableType(Sym);
   }
 
   DenseSet<MCSymbol *> InvokeSymbols;
@@ -324,56 +298,54 @@ void WebAssemblyAsmPrinter::emitDecls(const Module &M) {
     if (F.isIntrinsic())
       continue;
 
-    // Emit function type info for all functions. This will emit duplicate
-    // information for defined functions (which already have function type
-    // info emitted alongside their definition), but this is necessary in
-    // order to enable the single-pass WebAssemblyAsmTypeCheck to succeed.
-    SmallVector<MVT, 4> Results;
-    SmallVector<MVT, 4> Params;
-    computeSignatureVTs(F.getFunctionType(), &F, F, TM, Params, Results);
-    // At this point these MCSymbols may or may not have been created already
-    // and thus also contain a signature, but we need to get the signature
-    // anyway here in case it is an invoke that has not yet been created. We
-    // will discard it later if it turns out not to be necessary.
-    auto Signature = signatureFromMVTs(Results, Params);
-    bool InvokeDetected = false;
-    auto *Sym = getMCSymbolForFunction(
-        &F, WebAssembly::WasmEnableEmEH || WebAssembly::WasmEnableEmSjLj,
-        Signature.get(), InvokeDetected);
+    // Emit function type info for all undefined functions
+    if (F.isDeclarationForLinker()) {
+      SmallVector<MVT, 4> Results;
+      SmallVector<MVT, 4> Params;
+      computeSignatureVTs(F.getFunctionType(), &F, F, TM, Params, Results);
+      // At this point these MCSymbols may or may not have been created already
+      // and thus also contain a signature, but we need to get the signature
+      // anyway here in case it is an invoke that has not yet been created. We
+      // will discard it later if it turns out not to be necessary.
+      auto Signature = signatureFromMVTs(Results, Params);
+      bool InvokeDetected = false;
+      auto *Sym = getMCSymbolForFunction(&F, EnableEmException || EnableEmSjLj,
+                                         Signature.get(), InvokeDetected);
 
-    // Multiple functions can be mapped to the same invoke symbol. For
-    // example, two IR functions '__invoke_void_i8*' and '__invoke_void_i32'
-    // are both mapped to '__invoke_vi'. We keep them in a set once we emit an
-    // Emscripten EH symbol so we don't emit the same symbol twice.
-    if (InvokeDetected && !InvokeSymbols.insert(Sym).second)
-      continue;
+      // Multiple functions can be mapped to the same invoke symbol. For
+      // example, two IR functions '__invoke_void_i8*' and '__invoke_void_i32'
+      // are both mapped to '__invoke_vi'. We keep them in a set once we emit an
+      // Emscripten EH symbol so we don't emit the same symbol twice.
+      if (InvokeDetected && !InvokeSymbols.insert(Sym).second)
+        continue;
 
-    Sym->setType(wasm::WASM_SYMBOL_TYPE_FUNCTION);
-    if (!Sym->getSignature()) {
-      Sym->setSignature(Signature.get());
-      addSignature(std::move(Signature));
-    } else {
-      // This symbol has already been created and had a signature. Discard it.
-      Signature.reset();
-    }
+      Sym->setType(wasm::WASM_SYMBOL_TYPE_FUNCTION);
+      if (!Sym->getSignature()) {
+        Sym->setSignature(Signature.get());
+        addSignature(std::move(Signature));
+      } else {
+        // This symbol has already been created and had a signature. Discard it.
+        Signature.reset();
+      }
 
-    getTargetStreamer()->emitFunctionType(Sym);
+      getTargetStreamer()->emitFunctionType(Sym);
 
-    if (F.hasFnAttribute("wasm-import-module")) {
-      StringRef Name =
-          F.getFnAttribute("wasm-import-module").getValueAsString();
-      Sym->setImportModule(storeName(Name));
-      getTargetStreamer()->emitImportModule(Sym, Name);
-    }
-    if (F.hasFnAttribute("wasm-import-name")) {
-      // If this is a converted Emscripten EH/SjLj symbol, we shouldn't use
-      // the original function name but the converted symbol name.
-      StringRef Name =
-          InvokeDetected
-              ? Sym->getName()
-              : F.getFnAttribute("wasm-import-name").getValueAsString();
-      Sym->setImportName(storeName(Name));
-      getTargetStreamer()->emitImportName(Sym, Name);
+      if (F.hasFnAttribute("wasm-import-module")) {
+        StringRef Name =
+            F.getFnAttribute("wasm-import-module").getValueAsString();
+        Sym->setImportModule(storeName(Name));
+        getTargetStreamer()->emitImportModule(Sym, Name);
+      }
+      if (F.hasFnAttribute("wasm-import-name")) {
+        // If this is a converted Emscripten EH/SjLj symbol, we shouldn't use
+        // the original function name but the converted symbol name.
+        StringRef Name =
+            InvokeDetected
+                ? Sym->getName()
+                : F.getFnAttribute("wasm-import-name").getValueAsString();
+        Sym->setImportName(storeName(Name));
+        getTargetStreamer()->emitImportName(Sym, Name);
+      }
     }
 
     if (F.hasFnAttribute("wasm-export-name")) {
@@ -384,12 +356,9 @@ void WebAssemblyAsmPrinter::emitDecls(const Module &M) {
     }
   }
 }
-
+  
 void WebAssemblyAsmPrinter::emitEndOfAsmFile(Module &M) {
-  // This is required to emit external declarations (like .functypes) when
-  // no functions are defined in the compilation unit and therefore,
-  // emitDecls() is not called until now.
-  emitDecls(M);
+  emitExternalDecls(M);
 
   // When a function's address is taken, a TABLE_INDEX relocation is emitted
   // against the function symbol at the use site.  However the relocation
@@ -426,13 +395,13 @@ void WebAssemblyAsmPrinter::emitEndOfAsmFile(Module &M) {
       if (!Name || !Contents)
         continue;
 
-      OutStreamer->pushSection();
+      OutStreamer->PushSection();
       std::string SectionName = (".custom_section." + Name->getString()).str();
       MCSectionWasm *MySection =
           OutContext.getWasmSection(SectionName, SectionKind::getMetadata());
-      OutStreamer->switchSection(MySection);
+      OutStreamer->SwitchSection(MySection);
       OutStreamer->emitBytes(Contents->getString());
-      OutStreamer->popSection();
+      OutStreamer->PopSection();
     }
   }
 
@@ -470,8 +439,8 @@ void WebAssemblyAsmPrinter::EmitProducerInfo(Module &M) {
   if (FieldCount != 0) {
     MCSectionWasm *Producers = OutContext.getWasmSection(
         ".custom_section.producers", SectionKind::getMetadata());
-    OutStreamer->pushSection();
-    OutStreamer->switchSection(Producers);
+    OutStreamer->PushSection();
+    OutStreamer->SwitchSection(Producers);
     OutStreamer->emitULEB128IntValue(FieldCount);
     for (auto &Producers : {std::make_pair("language", &Languages),
             std::make_pair("processed-by", &Tools)}) {
@@ -487,7 +456,7 @@ void WebAssemblyAsmPrinter::EmitProducerInfo(Module &M) {
         OutStreamer->emitBytes(Producer.second);
       }
     }
-    OutStreamer->popSection();
+    OutStreamer->PopSection();
   }
 }
 
@@ -528,23 +497,14 @@ void WebAssemblyAsmPrinter::EmitTargetFeatures(Module &M) {
   // This pseudo-feature tells the linker whether shared memory would be safe
   EmitFeature("shared-mem");
 
-  // This is an "architecture", not a "feature", but we emit it as such for
-  // the benefit of tools like Binaryen and consistency with other producers.
-  // FIXME: Subtarget is null here, so can't Subtarget->hasAddr64() ?
-  if (M.getDataLayout().getPointerSize() == 8) {
-    // Can't use EmitFeature since "wasm-feature-memory64" is not a module
-    // flag.
-    EmittedFeatures.push_back({wasm::WASM_FEATURE_PREFIX_USED, "memory64"});
-  }
-
   if (EmittedFeatures.size() == 0)
     return;
 
   // Emit features and linkage policies into the "target_features" section
   MCSectionWasm *FeaturesSection = OutContext.getWasmSection(
       ".custom_section.target_features", SectionKind::getMetadata());
-  OutStreamer->pushSection();
-  OutStreamer->switchSection(FeaturesSection);
+  OutStreamer->PushSection();
+  OutStreamer->SwitchSection(FeaturesSection);
 
   OutStreamer->emitULEB128IntValue(EmittedFeatures.size());
   for (auto &F : EmittedFeatures) {
@@ -553,11 +513,10 @@ void WebAssemblyAsmPrinter::EmitTargetFeatures(Module &M) {
     OutStreamer->emitBytes(F.Name);
   }
 
-  OutStreamer->popSection();
+  OutStreamer->PopSection();
 }
 
 void WebAssemblyAsmPrinter::emitConstantPool() {
-  emitDecls(*MMI->getModule());
   assert(MF->getConstantPool()->getConstants().empty() &&
          "WebAssembly disables constant pools");
 }
@@ -565,6 +524,17 @@ void WebAssemblyAsmPrinter::emitConstantPool() {
 void WebAssemblyAsmPrinter::emitJumpTableInfo() {
   // Nothing to do; jump tables are incorporated into the instruction stream.
 }
+
+void WebAssemblyAsmPrinter::emitLinkage(const GlobalValue *GV, MCSymbol *Sym)
+  const {
+  AsmPrinter::emitLinkage(GV, Sym);
+  // This gets called before the function label and type are emitted.
+  // We use it to emit signatures of external functions.
+  // FIXME casts!
+  const_cast<WebAssemblyAsmPrinter *>(this)
+    ->emitExternalDecls(*MMI->getModule());
+}
+
 
 void WebAssemblyAsmPrinter::emitFunctionBodyStart() {
   const Function &F = MF->getFunction();
@@ -597,8 +567,6 @@ void WebAssemblyAsmPrinter::emitFunctionBodyStart() {
 
 void WebAssemblyAsmPrinter::emitInstruction(const MachineInstr *MI) {
   LLVM_DEBUG(dbgs() << "EmitInstruction: " << *MI << '\n');
-  WebAssembly_MC::verifyInstructionPredicates(MI->getOpcode(),
-                                              Subtarget->getFeatureBits());
 
   switch (MI->getOpcode()) {
   case WebAssembly::ARGUMENT_i32:
@@ -629,7 +597,7 @@ void WebAssemblyAsmPrinter::emitInstruction(const MachineInstr *MI) {
     // function body.
     if (isVerbose()) {
       OutStreamer->AddComment("fallthrough-return");
-      OutStreamer->addBlankLine();
+      OutStreamer->AddBlankLine();
     }
     break;
   }

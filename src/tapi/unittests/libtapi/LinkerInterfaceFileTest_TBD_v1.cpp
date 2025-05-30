@@ -16,8 +16,6 @@ using namespace tapi;
 #define DEBUG_TYPE "libtapi-test"
 
 namespace {
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wdeprecated-declarations"
 
 class LibTapiTest_TBDv1 : public LibTapiTest {};
 
@@ -207,7 +205,6 @@ TEST_F(LibTapiTest_TBDv1, LIF_Load_Install_Name) {
   EXPECT_TRUE(file->isInstallNameVersionSpecific());
 }
 
-// Test for invalid files.
 TEST_F(LibTapiTest_TBDv1, LIF_Load_Unknown_Platform) {
   static const char tbd_file[] = "---\n"
                                  "archs: [ i386 ]\n"
@@ -219,15 +216,13 @@ TEST_F(LibTapiTest_TBDv1, LIF_Load_Unknown_Platform) {
   auto file = std::unique_ptr<LinkerInterfaceFile>(LinkerInterfaceFile::create(
       getTempFilePath(), CPU_TYPE_I386, CPU_SUBTYPE_I386_ALL,
       ParsingFlags::None, PackedVersion32(10, 11, 0), errorMessage));
-
-  EXPECT_EQ(nullptr, file);
-  ASSERT_EQ(std::string("malformed file\n") + getTempFilePath() +
-                ":3:11: error: unknown platform\n"
-                "platform: unknown\n"
-                "          ^~~~~~~\n",
-            errorMessage);
+  ASSERT_NE(nullptr, file);
+  ASSERT_TRUE(errorMessage.empty());
+  EXPECT_TRUE(file->getPlatformSet().empty());
+  EXPECT_EQ(std::string("Test.dylib"), file->getInstallName());
 }
 
+// Test for invalid files.
 TEST_F(LibTapiTest_TBDv1, LIF_UnsupportedFileType) {
   writeTempFile(unsupported_file);
   std::string errorMessage;
@@ -724,5 +719,4 @@ TEST_F(LibTapiTest_TBDv1, LIF_FallBack_x86_64h) {
             errorMessage);
 }
 
-#pragma clang diagnostic pop
 } // end namespace

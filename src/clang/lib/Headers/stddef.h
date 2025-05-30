@@ -62,7 +62,7 @@ typedef __SIZE_TYPE__ rsize_t;
 #endif /* defined(__need_STDDEF_H_misc) */
 
 #if defined(__need_wchar_t)
-#if !defined(__cplusplus) || (defined(_MSC_VER) && !_NATIVE_WCHAR_T_DEFINED)
+#ifndef __cplusplus
 /* Always define wchar_t when modules are available. */
 #if !defined(_WCHAR_T) || __has_feature(modules)
 #if !__has_feature(modules)
@@ -98,8 +98,7 @@ using ::std::nullptr_t;
 #endif /* defined(__need_NULL) */
 
 #if defined(__need_STDDEF_H_misc)
-#if (defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L) ||              \
-    (defined(__cplusplus) && __cplusplus >= 201103L)
+#if __STDC_VERSION__ >= 201112L || __cplusplus >= 201103L
 #include "__stddef_max_align_t.h"
 #endif
 #define offsetof(t, d) __builtin_offsetof(t, d)

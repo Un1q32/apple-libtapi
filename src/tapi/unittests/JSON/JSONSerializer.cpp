@@ -11,7 +11,6 @@
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Path.h"
-#include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/raw_ostream.h"
 #include "gtest/gtest.h"
 #define DEBUG_TYPE "json-test"
@@ -35,6 +34,8 @@ TEST(JSON, Serializer) {
   std::string output;
   raw_string_ostream os(output);
   APIJSONOption options{};
+  options.noElaboratedSymbolInfo = true;
+  options.noUnifiedTypedefEntries = true;
   APIJSONSerializer serializer(*api, options);
   serializer.serialize(os);
 
@@ -53,6 +54,8 @@ TEST(JSON, Serializer2) {
   std::string output;
   raw_string_ostream os(output);
   APIJSONOption options{};
+  options.noElaboratedSymbolInfo = true;
+  options.noUnifiedTypedefEntries = true;
   APIJSONSerializer serializer(*api, options);
   serializer.serialize(os);
 

@@ -22,7 +22,8 @@
 using namespace llvm;
 
 DiagnosticInfoMIROptimization::MachineArgument::MachineArgument(
-    StringRef MKey, const MachineInstr &MI) {
+    StringRef MKey, const MachineInstr &MI)
+    : Argument() {
   Key = std::string(MKey);
 
   raw_string_ostream OS(Val);
@@ -53,8 +54,10 @@ void MachineOptimizationRemarkEmitter::emit(
   LLVMContext &Ctx = MF.getFunction().getContext();
 
   // Only emit it if its hotness meets the threshold.
-  if (OptDiag.getHotness().value_or(0) < Ctx.getDiagnosticsHotnessThreshold())
+  if (OptDiag.getHotness().getValueOr(0) <
+      Ctx.getDiagnosticsHotnessThreshold()) {
     return;
+  }
 
   Ctx.diagnose(OptDiag);
 }

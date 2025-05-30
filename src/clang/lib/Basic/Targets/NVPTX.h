@@ -121,7 +121,7 @@ public:
 
   void fillValidCPUList(SmallVectorImpl<StringRef> &Values) const override {
     for (int i = static_cast<int>(CudaArch::SM_20);
-         i < static_cast<int>(CudaArch::Generic); ++i)
+         i < static_cast<int>(CudaArch::LAST); ++i)
       Values.emplace_back(CudaArchToString(static_cast<CudaArch>(i)));
   }
 
@@ -147,10 +147,6 @@ public:
     Opts["cl_khr_local_int32_extended_atomics"] = true;
   }
 
-  const llvm::omp::GV &getGridValue() const override {
-    return llvm::omp::NVPTXGridValues;
-  }
-
   /// \returns If a target requires an address within a target specific address
   /// space \p AddressSpace to be converted in order to be used, then return the
   /// corresponding target specific DWARF address space.
@@ -159,7 +155,7 @@ public:
   /// DWARF.
   Optional<unsigned>
   getDWARFAddressSpace(unsigned AddressSpace) const override {
-    if (AddressSpace >= std::size(NVPTXDWARFAddrSpaceMap) ||
+    if (AddressSpace >= llvm::array_lengthof(NVPTXDWARFAddrSpaceMap) ||
         NVPTXDWARFAddrSpaceMap[AddressSpace] < 0)
       return llvm::None;
     return NVPTXDWARFAddrSpaceMap[AddressSpace];
@@ -175,7 +171,7 @@ public:
     return CCCR_Warning;
   }
 
-  bool hasBitIntType() const override { return true; }
+  bool hasExtIntType() const override { return true; }
 };
 } // namespace targets
 } // namespace clang

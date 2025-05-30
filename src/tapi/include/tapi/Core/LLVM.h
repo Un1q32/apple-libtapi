@@ -14,7 +14,6 @@
 #ifndef TAPI_CORE_LLVM_H
 #define TAPI_CORE_LLVM_H
 
-#include "llvm/BinaryFormat/MachO.h"
 #include "llvm/Support/Casting.h"
 
 namespace llvm {
@@ -36,20 +35,8 @@ class MemoryBufferRef;
 namespace MachO {
 enum Architecture : uint8_t;
 class ArchitectureSet;
+enum class PlatformKind : unsigned;
 class Target;
-enum class SymbolKind : uint8_t;
-enum class SymbolFlags : uint8_t;
-enum FileType : unsigned;
-class InterfaceFile;
-class PackedVersion;
-class SymbolSet;
-using TargetList = SmallVector<Target, 5>;
-class TextAPIReader;
-class TextAPIWriter;
-class TextAPIError;
-enum class TextAPIErrorCode;
-class InterfaceFileRef;
-
 } // namespace MachO
 
 } // end namespace llvm.
@@ -93,25 +80,11 @@ using clang::FileEntry;
 using clang::DiagnosticBuilder;
 using clang::StreamingDiagnostic;
 
-// BinaryFormat
-using llvm::MachO::PlatformType;
-
 // TextAPI types
 using llvm::MachO::Architecture;
 using llvm::MachO::ArchitectureSet;
-using llvm::MachO::FileType;
-using llvm::MachO::InterfaceFile;
-using llvm::MachO::InterfaceFileRef;
-using llvm::MachO::PackedVersion;
-using llvm::MachO::SymbolFlags;
-using llvm::MachO::SymbolKind;
-using llvm::MachO::SymbolSet;
+using llvm::MachO::PlatformKind;
 using llvm::MachO::Target;
-using llvm::MachO::TargetList;
-using llvm::MachO::TextAPIError;
-using llvm::MachO::TextAPIErrorCode;
-using llvm::MachO::TextAPIReader;
-using llvm::MachO::TextAPIWriter;
 
 } // end namespace tapi.
 

@@ -5,17 +5,15 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-///
-/// \file
-/// This file defines the StringMap class.
-///
+//
+// This file defines the StringMap class.
+//
 //===----------------------------------------------------------------------===//
 
 #ifndef LLVM_ADT_STRINGMAP_H
 #define LLVM_ADT_STRINGMAP_H
 
 #include "llvm/ADT/StringMapEntry.h"
-#include "llvm/ADT/iterator.h"
 #include "llvm/Support/AllocatorBase.h"
 #include "llvm/Support/PointerLikeTypeTraits.h"
 #include <initializer_list>
@@ -107,9 +105,8 @@ public:
 /// funky memory allocation and hashing things to make it extremely efficient,
 /// storing the string data *after* the value in the map.
 template <typename ValueTy, typename AllocatorTy = MallocAllocator>
-class StringMap : public StringMapImpl,
-                  private detail::AllocatorHolder<AllocatorTy> {
-  using AllocTy = detail::AllocatorHolder<AllocatorTy>;
+class StringMap : public StringMapImpl {
+  AllocatorTy Allocator;
 
 public:
   using MapEntryTy = StringMapEntry<ValueTy>;
@@ -120,23 +117,26 @@ public:
       : StringMapImpl(InitialSize, static_cast<unsigned>(sizeof(MapEntryTy))) {}
 
   explicit StringMap(AllocatorTy A)
-      : StringMapImpl(static_cast<unsigned>(sizeof(MapEntryTy))), AllocTy(A) {}
+      : StringMapImpl(static_cast<unsigned>(sizeof(MapEntryTy))), Allocator(A) {
+  }
 
   StringMap(unsigned InitialSize, AllocatorTy A)
       : StringMapImpl(InitialSize, static_cast<unsigned>(sizeof(MapEntryTy))),
-        AllocTy(A) {}
+        Allocator(A) {}
 
   StringMap(std::initializer_list<std::pair<StringRef, ValueTy>> List)
       : StringMapImpl(List.size(), static_cast<unsigned>(sizeof(MapEntryTy))) {
-    insert(List);
+    for (const auto &P : List) {
+      insert(P);
+    }
   }
 
   StringMap(StringMap &&RHS)
-      : StringMapImpl(std::move(RHS)), AllocTy(std::move(RHS.getAllocator())) {}
+      : StringMapImpl(std::move(RHS)), Allocator(std::move(RHS.Allocator)) {}
 
   StringMap(const StringMap &RHS)
       : StringMapImpl(static_cast<unsigned>(sizeof(MapEntryTy))),
-        AllocTy(RHS.getAllocator()) {
+        Allocator(RHS.Allocator) {
     if (RHS.empty())
       return;
 
@@ -156,7 +156,7 @@ public:
       }
 
       TheTable[I] = MapEntryTy::Create(
-          static_cast<MapEntryTy *>(Bucket)->getKey(), getAllocator(),
+          static_cast<MapEntryTy *>(Bucket)->getKey(), Allocator,
           static_cast<MapEntryTy *>(Bucket)->getValue());
       HashTable[I] = RHSHashTable[I];
     }
@@ -171,7 +171,7 @@ public:
 
   StringMap &operator=(StringMap RHS) {
     StringMapImpl::swap(RHS);
-    std::swap(getAllocator(), RHS.getAllocator());
+    std::swap(Allocator, RHS.Allocator);
     return *this;
   }
 
@@ -183,14 +183,15 @@ public:
       for (unsigned I = 0, E = NumBuckets; I != E; ++I) {
         StringMapEntryBase *Bucket = TheTable[I];
         if (Bucket && Bucket != getTombstoneVal()) {
-          static_cast<MapEntryTy *>(Bucket)->Destroy(getAllocator());
+          static_cast<MapEntryTy *>(Bucket)->Destroy(Allocator);
         }
       }
     }
     free(TheTable);
   }
 
-  using AllocTy::getAllocator;
+  AllocatorTy &getAllocator() { return Allocator; }
+  const AllocatorTy &getAllocator() const { return Allocator; }
 
   using key_type = const char *;
   using mapped_type = ValueTy;
@@ -296,21 +297,6 @@ public:
     return try_emplace(KV.first, std::move(KV.second));
   }
 
-  /// Inserts elements from range [first, last). If multiple elements in the
-  /// range have keys that compare equivalent, it is unspecified which element
-  /// is inserted .
-  template <typename InputIt> void insert(InputIt First, InputIt Last) {
-    for (InputIt It = First; It != Last; ++It)
-      insert(*It);
-  }
-
-  ///  Inserts elements from initializer list ilist. If multiple elements in
-  /// the range have keys that compare equivalent, it is unspecified which
-  /// element is inserted
-  void insert(std::initializer_list<std::pair<StringRef, ValueTy>> List) {
-    insert(List.begin(), List.end());
-  }
-
   /// Inserts an element or assigns to the current element if the key already
   /// exists. The return type is the same as try_emplace.
   template <typename V>
@@ -326,7 +312,7 @@ public:
   /// if and only if the insertion takes place, and the iterator component of
   /// the pair points to the element with key equivalent to the key of the pair.
   template <typename... ArgsTy>
-  std::pair<iterator, bool> try_emplace(StringRef Key, ArgsTy &&...Args) {
+  std::pair<iterator, bool> try_emplace(StringRef Key, ArgsTy &&... Args) {
     unsigned BucketNo = LookupBucketFor(Key);
     StringMapEntryBase *&Bucket = TheTable[BucketNo];
     if (Bucket && Bucket != getTombstoneVal())
@@ -335,8 +321,7 @@ public:
 
     if (Bucket == getTombstoneVal())
       --NumTombstones;
-    Bucket =
-        MapEntryTy::Create(Key, getAllocator(), std::forward<ArgsTy>(Args)...);
+    Bucket = MapEntryTy::Create(Key, Allocator, std::forward<ArgsTy>(Args)...);
     ++NumItems;
     assert(NumItems + NumTombstones <= NumBuckets);
 
@@ -354,7 +339,7 @@ public:
     for (unsigned I = 0, E = NumBuckets; I != E; ++I) {
       StringMapEntryBase *&Bucket = TheTable[I];
       if (Bucket && Bucket != getTombstoneVal()) {
-        static_cast<MapEntryTy *>(Bucket)->Destroy(getAllocator());
+        static_cast<MapEntryTy *>(Bucket)->Destroy(Allocator);
       }
       Bucket = nullptr;
     }
@@ -370,7 +355,7 @@ public:
   void erase(iterator I) {
     MapEntryTy &V = *I;
     remove(&V);
-    V.Destroy(getAllocator());
+    V.Destroy(Allocator);
   }
 
   bool erase(StringRef Key) {
@@ -480,7 +465,13 @@ public:
   explicit StringMapKeyIterator(StringMapConstIterator<ValueTy> Iter)
       : base(std::move(Iter)) {}
 
-  StringRef operator*() const { return this->wrapped()->getKey(); }
+  StringRef &operator*() {
+    Key = this->wrapped()->getKey();
+    return Key;
+  }
+
+private:
+  StringRef Key;
 };
 
 } // end namespace llvm

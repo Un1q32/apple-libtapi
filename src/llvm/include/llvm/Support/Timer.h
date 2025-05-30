@@ -13,12 +13,13 @@
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/DataTypes.h"
 #include <cassert>
-#include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace llvm {
 
+class Timer;
 class TimerGroup;
 class raw_ostream;
 
@@ -106,7 +107,7 @@ public:
   ~Timer();
 
   /// Create an uninitialized timer, client must use 'init'.
-  explicit Timer() = default;
+  explicit Timer() {}
   void init(StringRef TimerName, StringRef TimerDescription);
   void init(StringRef TimerName, StringRef TimerDescription, TimerGroup &tg);
 
@@ -231,10 +232,10 @@ public:
   /// Prints all timers as JSON key/value pairs.
   static const char *printAllJSONValues(raw_ostream &OS, const char *delim);
 
-  /// Ensure global objects required for statistics printing are initialized.
-  /// This function is used by the Statistic code to ensure correct order of
-  /// global constructors and destructors.
-  static void constructForStatistics();
+  /// Ensure global timer group lists are initialized. This function is mostly
+  /// used by the Statistic code to influence the construction and destruction
+  /// order of the global timer lists.
+  static void ConstructTimerLists();
 
   /// This makes the default group unmanaged, and lets the user manage the
   /// group's lifetime.

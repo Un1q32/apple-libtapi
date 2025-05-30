@@ -48,6 +48,7 @@ namespace clang {
 class AnalyzerOptions;
 class ASTContext;
 class Decl;
+class DiagnosticsEngine;
 class LocationContext;
 class SourceManager;
 class Stmt;
@@ -60,6 +61,7 @@ class ExplodedGraph;
 class ExplodedNode;
 class ExprEngine;
 class MemRegion;
+class SValBuilder;
 
 //===----------------------------------------------------------------------===//
 // Interface for individual bug reports.
@@ -629,14 +631,14 @@ public:
   void EmitBasicReport(const Decl *DeclWithIssue, const CheckerBase *Checker,
                        StringRef BugName, StringRef BugCategory,
                        StringRef BugStr, PathDiagnosticLocation Loc,
-                       ArrayRef<SourceRange> Ranges = std::nullopt,
-                       ArrayRef<FixItHint> Fixits = std::nullopt);
+                       ArrayRef<SourceRange> Ranges = None,
+                       ArrayRef<FixItHint> Fixits = None);
 
   void EmitBasicReport(const Decl *DeclWithIssue, CheckerNameRef CheckerName,
                        StringRef BugName, StringRef BugCategory,
                        StringRef BugStr, PathDiagnosticLocation Loc,
-                       ArrayRef<SourceRange> Ranges = std::nullopt,
-                       ArrayRef<FixItHint> Fixits = std::nullopt);
+                       ArrayRef<SourceRange> Ranges = None,
+                       ArrayRef<FixItHint> Fixits = None);
 
 private:
   llvm::StringMap<std::unique_ptr<BugType>> StrBugTypes;
@@ -783,7 +785,7 @@ public:
                                         PathSensitiveBugReport &R) const {
     std::string Msg = Cb(BRC, R);
     if (Msg.empty())
-      return std::nullopt;
+      return None;
 
     return std::move(Msg);
   }

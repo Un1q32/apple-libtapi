@@ -98,7 +98,7 @@ static bool ignoreExtraCC1Commands(const driver::Compilation *Compilation) {
       OffloadCompilation = true;
 
   if (Jobs.size() > 1) {
-    for (auto *A : Actions){
+    for (auto A : Actions){
       // On MacOSX real actions may end up being wrapped in BindArchAction
       if (isa<driver::BindArchAction>(A))
         A = *A->input_begin();
@@ -161,7 +161,7 @@ getCC1Arguments(DiagnosticsEngine *Diagnostics,
 
 /// Returns a clang build invocation initialized from the CC1 flags.
 CompilerInvocation *newInvocation(DiagnosticsEngine *Diagnostics,
-                                  ArrayRef<const char *> CC1Args,
+                                  const llvm::opt::ArgStringList &CC1Args,
                                   const char *const BinaryName) {
   assert(!CC1Args.empty() && "Must at least contain the program name!");
   CompilerInvocation *Invocation = new CompilerInvocation;
@@ -268,14 +268,14 @@ void addTargetAndModeForProgramName(std::vector<std::string> &CommandLine,
     return;
   const auto &Table = driver::getDriverOptTable();
   // --target=X
-  StringRef TargetOPT =
+  const std::string TargetOPT =
       Table.getOption(driver::options::OPT_target).getPrefixedName();
   // -target X
-  StringRef TargetOPTLegacy =
+  const std::string TargetOPTLegacy =
       Table.getOption(driver::options::OPT_target_legacy_spelling)
           .getPrefixedName();
   // --driver-mode=X
-  StringRef DriverModeOPT =
+  const std::string DriverModeOPT =
       Table.getOption(driver::options::OPT_driver_mode).getPrefixedName();
   auto TargetMode =
       driver::ToolChain::getTargetAndModeFromProgramName(InvokedAs);
@@ -295,7 +295,7 @@ void addTargetAndModeForProgramName(std::vector<std::string> &CommandLine,
   }
   if (ShouldAddTarget) {
     CommandLine.insert(++CommandLine.begin(),
-                       (TargetOPT + TargetMode.TargetPrefix).str());
+                       TargetOPT + TargetMode.TargetPrefix);
   }
 }
 
@@ -339,7 +339,7 @@ ToolInvocation::~ToolInvocation() {
 }
 
 bool ToolInvocation::run() {
-  llvm::opt::ArgStringList Argv;
+  std::vector<const char*> Argv;
   for (const std::string &Str : CommandLine)
     Argv.push_back(Str.c_str());
   const char *const BinaryName = Argv[0];
@@ -361,17 +361,6 @@ bool ToolInvocation::run() {
   // `DiagConsumer` might expect a `SourceManager` to be present.
   SourceManager SrcMgr(*Diagnostics, *Files);
   Diagnostics->setSourceManager(&SrcMgr);
-
-  // We already have a cc1, just create an invocation.
-  if (CommandLine.size() >= 2 && CommandLine[1] == "-cc1") {
-    ArrayRef<const char *> CC1Args = makeArrayRef(Argv).drop_front();
-    std::unique_ptr<CompilerInvocation> Invocation(
-        newInvocation(&*Diagnostics, CC1Args, BinaryName));
-    if (Diagnostics->hasErrorOccurred())
-      return false;
-    return Action->runInvocation(std::move(Invocation), Files,
-                                 std::move(PCHContainerOps), DiagConsumer);
-  }
 
   const std::unique_ptr<driver::Driver> Driver(
       newDriver(&*Diagnostics, BinaryName, &Files->getVirtualFileSystem()));

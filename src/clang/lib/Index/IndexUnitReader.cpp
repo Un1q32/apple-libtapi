@@ -1,8 +1,9 @@
 //===--- IndexUnitReader.cpp - Index unit deserialization -----------------===//
 //
-// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
-// See https://llvm.org/LICENSE.txt for license information.
-// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//                     The LLVM Compiler Infrastructure
+//
+// This file is distributed under the University of Illinois Open Source
+// License. See LICENSE.TXT for details.
 //
 //===----------------------------------------------------------------------===//
 
@@ -43,15 +44,14 @@ public:
   bool IsSystemUnit;
   bool IsModuleUnit;
   bool IsDebugCompilation;
-  std::string WorkingDir;
-  std::string OutputFile;
-  std::string SysrootPath;
+  StringRef WorkingDir;
+  StringRef OutputFile;
+  StringRef SysrootPath;
   StringRef ModuleName;
   SmallString<128> MainFilePath;
   StringRef Target;
   std::vector<FileBitPath> Paths;
   StringRef PathsBuffer;
-  const PathRemapper &Remapper;
 
   struct ModuleInfo {
     unsigned NameOffset;
@@ -60,7 +60,6 @@ public:
   std::vector<ModuleInfo> Modules;
   StringRef ModuleNamesBuffer;
 
-  IndexUnitReaderImpl(const PathRemapper &remapper) : Remapper(remapper) {}
   bool init(std::unique_ptr<MemoryBuffer> Buf, sys::TimePoint<> ModTime,
             std::string &Error);
 
@@ -88,10 +87,6 @@ public:
 
   StringRef getPathFromBuffer(size_t Offset, size_t Size) {
     return PathsBuffer.substr(Offset, Size);
-  }
-
-  std::string getAndRemapPathFromBuffer(size_t Offset, size_t Size) {
-    return Remapper.remapPath(getPathFromBuffer(Offset, Size));
   }
 
   void constructFilePath(SmallVectorImpl<char> &Path, int PathIndex);
@@ -211,13 +206,9 @@ public:
         break;
       case UNIT_PATH_BUFFER:
         Reader.PathsBuffer = Blob;
-        Reader.WorkingDir = Reader.getAndRemapPathFromBuffer(WorkDirOffset, WorkDirSize);
-        // We intentionally do -not- remap the output file and instead leave it
-        // in the canonical form. This is because the output file need not be an
-        // actual real file path and this allows clients to provide the same
-        // canonical output path e.g. in the explicit output files list.
-        Reader.OutputFile = Reader.getPathFromBuffer(OutputFileOffset, OutputFileSize).str();
-        Reader.SysrootPath = Reader.getAndRemapPathFromBuffer(SysrootOffset, SysrootSize);
+        Reader.WorkingDir = Reader.getPathFromBuffer(WorkDirOffset, WorkDirSize);
+        Reader.OutputFile = Reader.getPathFromBuffer(OutputFileOffset, OutputFileSize);
+        Reader.SysrootPath = Reader.getPathFromBuffer(SysrootOffset, SysrootSize);
 
         // now we can populate the main file's path
         Reader.constructFilePath(Reader.MainFilePath, MainPathIndex);
@@ -280,8 +271,7 @@ public:
 } // anonymous namespace
 
 bool IndexUnitReaderImpl::init(std::unique_ptr<MemoryBuffer> Buf,
-                               sys::TimePoint<> ModTime,
-                               std::string &Error) {
+                               sys::TimePoint<> ModTime, std::string &Error) {
   this->ModTime = ModTime;
   this->MemBuf = std::move(Buf);
   llvm::BitstreamCursor Stream(*MemBuf);
@@ -385,8 +375,6 @@ void IndexUnitReaderImpl::constructFilePath(SmallVectorImpl<char> &PathBuf,
   sys::path::append(PathBuf,
                     getPathFromBuffer(Path.Dir.Offset, Path.Dir.Size),
                     getPathFromBuffer(Path.Filename.Offset, Path.Filename.Size));
-  if (Path.PrefixKind == UNIT_PATH_PREFIX_NONE && !Remapper.empty())
-    Remapper.remapPath(PathBuf);
 }
 
 StringRef IndexUnitReaderImpl::getModuleName(int ModuleIndex) {
@@ -404,18 +392,15 @@ StringRef IndexUnitReaderImpl::getModuleName(int ModuleIndex) {
 std::unique_ptr<IndexUnitReader>
 IndexUnitReader::createWithUnitFilename(StringRef UnitFilename,
                                         StringRef StorePath,
-                                        const PathRemapper &Remapper,
                                         std::string &Error) {
   SmallString<128> PathBuf = StorePath;
   appendUnitSubDir(PathBuf);
   sys::path::append(PathBuf, UnitFilename);
-  return createWithFilePath(PathBuf.str(), Remapper, Error);
+  return createWithFilePath(PathBuf.str(), Error);
 }
 
 std::unique_ptr<IndexUnitReader>
-IndexUnitReader::createWithFilePath(StringRef FilePath,
-                                    const PathRemapper &Remapper,
-                                    std::string &Error) {
+IndexUnitReader::createWithFilePath(StringRef FilePath, std::string &Error) {
   int FD;
   std::error_code EC = sys::fs::openFileForRead(FilePath, FD);
   if (EC) {
@@ -449,7 +434,7 @@ IndexUnitReader::createWithFilePath(StringRef FilePath,
     return nullptr;
   }
 
-  auto Impl = std::make_unique<IndexUnitReaderImpl>(Remapper);
+  std::unique_ptr<IndexUnitReaderImpl> Impl(new IndexUnitReaderImpl());
   bool Err = Impl->init(std::move(*ErrOrBuf), FileStat.getLastModificationTime(),
                         Error);
   if (Err)

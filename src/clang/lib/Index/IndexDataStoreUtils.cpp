@@ -1,8 +1,9 @@
 //===--- IndexDataStoreUtils.cpp - Functions/constants for the data store -===//
 //
-// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
-// See https://llvm.org/LICENSE.txt for license information.
-// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//                     The LLVM Compiler Infrastructure
+//
+// This file is distributed under the University of Illinois Open Source
+// License. See LICENSE.TXT for details.
 //
 //===----------------------------------------------------------------------===//
 
@@ -133,8 +134,6 @@ SymbolKind index::getSymbolKind(indexstore_symbol_kind_t K) {
     return SymbolKind::Using;
   case INDEXSTORE_SYMBOL_KIND_COMMENTTAG:
     return SymbolKind::CommentTag;
-  case INDEXSTORE_SYMBOL_KIND_CONCEPT:
-    return SymbolKind::Concept;
   }
 }
 
@@ -155,8 +154,6 @@ SymbolSubKind index::getSymbolSubKind(indexstore_symbol_subkind_t K) {
       return SymbolSubKind::UsingTypename;
   case INDEXSTORE_SYMBOL_SUBKIND_USINGVALUE:
       return SymbolSubKind::UsingValue;
-  case INDEXSTORE_SYMBOL_SUBKIND_USINGENUM:
-      return SymbolSubKind::UsingEnum;
   case INDEXSTORE_SYMBOL_SUBKIND_SWIFTACCESSORWILLSET:
     return SymbolSubKind::SwiftAccessorWillSet;
   case INDEXSTORE_SYMBOL_SUBKIND_SWIFTACCESSORDIDSET:
@@ -169,8 +166,6 @@ SymbolSubKind index::getSymbolSubKind(indexstore_symbol_subkind_t K) {
     return SymbolSubKind::SwiftAccessorRead;
   case INDEXSTORE_SYMBOL_SUBKIND_SWIFTACCESSORMODIFY:
     return SymbolSubKind::SwiftAccessorModify;
-  case INDEXSTORE_SYMBOL_SUBKIND_SWIFTACCESSORINIT:
-    return SymbolSubKind::SwiftAccessorInit;
   case INDEXSTORE_SYMBOL_SUBKIND_SWIFTEXTENSIONOFSTRUCT:
     return SymbolSubKind::SwiftExtensionOfStruct;
   case INDEXSTORE_SYMBOL_SUBKIND_SWIFTEXTENSIONOFCLASS:
@@ -363,8 +358,6 @@ indexstore_symbol_kind_t index::getIndexStoreKind(SymbolKind K) {
     return INDEXSTORE_SYMBOL_KIND_USING;
   case SymbolKind::CommentTag:
     return INDEXSTORE_SYMBOL_KIND_COMMENTTAG;
-  case SymbolKind::Concept:
-    return INDEXSTORE_SYMBOL_KIND_CONCEPT;
   }
   llvm_unreachable("unexpected symbol kind");
 }
@@ -385,8 +378,6 @@ indexstore_symbol_subkind_t index::getIndexStoreSubKind(SymbolSubKind K) {
     return INDEXSTORE_SYMBOL_SUBKIND_USINGTYPENAME;
   case SymbolSubKind::UsingValue:
     return INDEXSTORE_SYMBOL_SUBKIND_USINGVALUE;
-  case SymbolSubKind::UsingEnum:
-    return INDEXSTORE_SYMBOL_SUBKIND_USINGENUM;
   case SymbolSubKind::SwiftAccessorWillSet:
     return INDEXSTORE_SYMBOL_SUBKIND_SWIFTACCESSORWILLSET;
   case SymbolSubKind::SwiftAccessorDidSet:
@@ -399,8 +390,6 @@ indexstore_symbol_subkind_t index::getIndexStoreSubKind(SymbolSubKind K) {
     return INDEXSTORE_SYMBOL_SUBKIND_SWIFTACCESSORREAD;
   case SymbolSubKind::SwiftAccessorModify:
     return INDEXSTORE_SYMBOL_SUBKIND_SWIFTACCESSORMODIFY;
-  case SymbolSubKind::SwiftAccessorInit:
-    return INDEXSTORE_SYMBOL_SUBKIND_SWIFTACCESSORINIT;
   case SymbolSubKind::SwiftExtensionOfStruct:
     return INDEXSTORE_SYMBOL_SUBKIND_SWIFTEXTENSIONOFSTRUCT;
   case SymbolSubKind::SwiftExtensionOfClass:

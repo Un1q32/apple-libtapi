@@ -15,7 +15,6 @@
 #include "RISCVELFStreamer.h"
 #include "RISCVInstPrinter.h"
 #include "RISCVMCAsmInfo.h"
-#include "RISCVMCObjectFileInfo.h"
 #include "RISCVTargetStreamer.h"
 #include "TargetInfo/RISCVTargetInfo.h"
 #include "llvm/ADT/STLExtras.h"
@@ -24,16 +23,14 @@
 #include "llvm/MC/MCCodeEmitter.h"
 #include "llvm/MC/MCInstrAnalysis.h"
 #include "llvm/MC/MCInstrInfo.h"
-#include "llvm/MC/MCObjectFileInfo.h"
 #include "llvm/MC/MCObjectWriter.h"
 #include "llvm/MC/MCRegisterInfo.h"
 #include "llvm/MC/MCStreamer.h"
 #include "llvm/MC/MCSubtargetInfo.h"
-#include "llvm/MC/TargetRegistry.h"
 #include "llvm/Support/ErrorHandling.h"
+#include "llvm/Support/TargetRegistry.h"
 
 #define GET_INSTRINFO_MC_DESC
-#define ENABLE_INSTR_PREDICATE_VERIFIER
 #include "RISCVGenInstrInfo.inc"
 
 #define GET_REGINFO_MC_DESC
@@ -68,19 +65,13 @@ static MCAsmInfo *createRISCVMCAsmInfo(const MCRegisterInfo &MRI,
   return MAI;
 }
 
-static MCObjectFileInfo *
-createRISCVMCObjectFileInfo(MCContext &Ctx, bool PIC,
-                            bool LargeCodeModel = false) {
-  MCObjectFileInfo *MOFI = new RISCVMCObjectFileInfo();
-  MOFI->initMCObjectFileInfo(Ctx, PIC, LargeCodeModel);
-  return MOFI;
-}
-
 static MCSubtargetInfo *createRISCVMCSubtargetInfo(const Triple &TT,
                                                    StringRef CPU, StringRef FS) {
-  if (CPU.empty() || CPU == "generic")
+  if (CPU.empty())
     CPU = TT.isArch64Bit() ? "generic-rv64" : "generic-rv32";
-
+  if (CPU == "generic")
+    report_fatal_error(Twine("CPU 'generic' is not supported. Use ") +
+                       (TT.isArch64Bit() ? "generic-rv64" : "generic-rv32"));
   return createRISCVMCSubtargetInfoImpl(TT, CPU, /*TuneCPU*/ CPU, FS);
 }
 
@@ -164,7 +155,6 @@ MCStreamer *createRISCVELFStreamer(const Triple &T, MCContext &Context,
 extern "C" LLVM_EXTERNAL_VISIBILITY void LLVMInitializeRISCVTargetMC() {
   for (Target *T : {&getTheRISCV32Target(), &getTheRISCV64Target()}) {
     TargetRegistry::RegisterMCAsmInfo(*T, createRISCVMCAsmInfo);
-    TargetRegistry::RegisterMCObjectFileInfo(*T, createRISCVMCObjectFileInfo);
     TargetRegistry::RegisterMCInstrInfo(*T, createRISCVMCInstrInfo);
     TargetRegistry::RegisterMCRegInfo(*T, createRISCVMCRegisterInfo);
     TargetRegistry::RegisterMCAsmBackend(*T, createRISCVAsmBackend);

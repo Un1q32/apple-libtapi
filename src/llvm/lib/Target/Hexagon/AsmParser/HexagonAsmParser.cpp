@@ -37,7 +37,6 @@
 #include "llvm/MC/MCSubtargetInfo.h"
 #include "llvm/MC/MCSymbol.h"
 #include "llvm/MC/MCValue.h"
-#include "llvm/MC/TargetRegistry.h"
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Debug.h"
@@ -46,6 +45,7 @@
 #include "llvm/Support/MathExtras.h"
 #include "llvm/Support/SMLoc.h"
 #include "llvm/Support/SourceMgr.h"
+#include "llvm/Support/TargetRegistry.h"
 #include "llvm/Support/raw_ostream.h"
 #include <algorithm>
 #include <cassert>
@@ -141,6 +141,12 @@ class HexagonAsmParser : public MCTargetAsmParser {
   int processInstruction(MCInst &Inst, OperandVector const &Operands,
                          SMLoc IDLoc);
 
+  // Check if we have an assembler and, if so, set the ELF e_header flags.
+  void chksetELFHeaderEFlags(unsigned flags) {
+    if (getAssembler())
+      getAssembler()->setELFHeaderEFlags(flags);
+  }
+
   unsigned matchRegister(StringRef Name);
 
 /// @name Auto-generated Match Functions
@@ -205,13 +211,18 @@ struct HexagonOperand : public MCParsedAsmOperand {
     const MCExpr *Val;
   };
 
+  struct InstTy {
+    OperandVector *SubInsts;
+  };
+
   union {
     struct TokTy Tok;
     struct RegTy Reg;
     struct ImmTy Imm;
   };
 
-  HexagonOperand(KindTy K, MCContext &Context) : Kind(K), Context(Context) {}
+  HexagonOperand(KindTy K, MCContext &Context)
+      : MCParsedAsmOperand(), Kind(K), Context(Context) {}
 
 public:
   HexagonOperand(const HexagonOperand &o)
@@ -573,7 +584,7 @@ bool HexagonAsmParser::matchOneInstruction(MCInst &MCI, SMLoc IDLoc,
   case Match_MnemonicFail:
     return Error(IDLoc, "unrecognized instruction");
   case Match_InvalidOperand:
-    [[fallthrough]];
+    LLVM_FALLTHROUGH;
   case Match_InvalidTiedOperand:
     SMLoc ErrorLoc = IDLoc;
     if (ErrorInfo != ~0U) {
@@ -681,7 +692,7 @@ bool HexagonAsmParser::ParseDirectiveSubsection(SMLoc L) {
     Subsection = HexagonMCExpr::create(
         MCConstantExpr::create(8192 + Res, getContext()), getContext());
 
-  getStreamer().subSection(Subsection);
+  getStreamer().SubSection(Subsection);
   return false;
 }
 
@@ -1440,7 +1451,7 @@ int HexagonAsmParser::processInstruction(MCInst &Inst,
   // Translate a "$Rx =  CONST32(#imm)" to "$Rx = memw(gp+#LABEL) "
   case Hexagon::CONST32:
     is32bit = true;
-    [[fallthrough]];
+    LLVM_FALLTHROUGH;
   // Translate a "$Rx:y =  CONST64(#imm)" to "$Rx:y = memd(gp+#LABEL) "
   case Hexagon::CONST64:
     // FIXME: need better way to detect AsmStreamer (upstream removed getKind())
@@ -1450,7 +1461,7 @@ int HexagonAsmParser::processInstruction(MCInst &Inst,
       MCOperand &MO_0 = Inst.getOperand(0);
 
       // push section onto section stack
-      MES->pushSection();
+      MES->PushSection();
 
       std::string myCharStr;
       MCSectionELF *mySection;
@@ -1485,9 +1496,9 @@ int HexagonAsmParser::processInstruction(MCInst &Inst,
       } else
         llvm_unreachable("unexpected type of machine operand!");
 
-      MES->switchSection(mySection);
+      MES->SwitchSection(mySection);
       unsigned byteSize = is32bit ? 4 : 8;
-      getStreamer().emitCodeAlignment(byteSize, &getSTI(), byteSize);
+      getStreamer().emitCodeAlignment(byteSize, byteSize);
 
       MCSymbol *Sym;
 
@@ -1526,7 +1537,7 @@ int HexagonAsmParser::processInstruction(MCInst &Inst,
       } else
         llvm_unreachable("unexpected type of machine operand!");
 
-      MES->popSection();
+      MES->PopSection();
 
       if (Sym) {
         MCInst TmpInst;

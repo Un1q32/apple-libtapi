@@ -51,15 +51,18 @@ enum SymbolKind : uint16_t {
 
 #define CV_DEFINE_ENUM_CLASS_FLAGS_OPERATORS(Class)                            \
   inline Class operator|(Class a, Class b) {                                   \
-    return static_cast<Class>(static_cast<std::underlying_type_t<Class>>(a) |  \
-                              static_cast<std::underlying_type_t<Class>>(b));  \
+    return static_cast<Class>(                                                 \
+        static_cast<std::underlying_type<Class>::type>(a) |                    \
+        static_cast<std::underlying_type<Class>::type>(b));                    \
   }                                                                            \
   inline Class operator&(Class a, Class b) {                                   \
-    return static_cast<Class>(static_cast<std::underlying_type_t<Class>>(a) &  \
-                              static_cast<std::underlying_type_t<Class>>(b));  \
+    return static_cast<Class>(                                                 \
+        static_cast<std::underlying_type<Class>::type>(a) &                    \
+        static_cast<std::underlying_type<Class>::type>(b));                    \
   }                                                                            \
   inline Class operator~(Class a) {                                            \
-    return static_cast<Class>(~static_cast<std::underlying_type_t<Class>>(a)); \
+    return static_cast<Class>(                                                 \
+        ~static_cast<std::underlying_type<Class>::type>(a));                   \
   }                                                                            \
   inline Class &operator|=(Class &a, Class b) {                                \
     a = a | b;                                                                 \
@@ -158,8 +161,6 @@ enum SourceLanguage : uint8_t {
   JScript = 0x0e,
   MSIL = 0x0f,
   HLSL = 0x10,
-
-  Rust = 0x15,
 
   /// The DMD & Swift compilers emit 'D' and 'S', respectively, for the CV
   /// source language. Microsoft does not have enumerators for them yet.
@@ -327,9 +328,6 @@ enum class DebugSubsectionKind : uint32_t {
   MergedAssemblyInput = 0xfc,
 
   CoffSymbolRVA = 0xfd,
-
-  XfgHashType = 0xff,
-  XfgHashVirtual = 0x100,
 };
 
 /// Equivalent to CV_ptrtype_e.

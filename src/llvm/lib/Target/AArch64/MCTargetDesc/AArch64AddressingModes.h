@@ -13,7 +13,6 @@
 #ifndef LLVM_LIB_TARGET_AARCH64_MCTARGETDESC_AARCH64ADDRESSINGMODES_H
 #define LLVM_LIB_TARGET_AARCH64_MCTARGETDESC_AARCH64ADDRESSINGMODES_H
 
-#include "AArch64ExpandImm.h"
 #include "llvm/ADT/APFloat.h"
 #include "llvm/ADT/APInt.h"
 #include "llvm/ADT/bit.h"
@@ -755,7 +754,7 @@ static inline uint64_t decodeAdvSIMDModImmType12(uint8_t Imm) {
 template <typename T>
 static inline bool isSVEMaskOfIdenticalElements(int64_t Imm) {
   auto Parts = bit_cast<std::array<T, sizeof(int64_t) / sizeof(T)>>(Imm);
-  return llvm::all_equal(Parts);
+  return all_of(Parts, [&](T Elem) { return Elem == Parts[0]; });
 }
 
 /// Returns true if Imm is valid for CPY/DUP.

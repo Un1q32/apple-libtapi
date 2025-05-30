@@ -18,7 +18,6 @@ import lit.reports
 import lit.run
 import lit.Test
 import lit.util
-from lit.formats.googletest import GoogleTest
 from lit.TestTimes import record_test_times
 
 
@@ -37,7 +36,6 @@ def main(builtin_params={}):
         noExecute=opts.noExecute,
         debug=opts.debug,
         isWindows=is_windows,
-        order=opts.order,
         params=params,
         config_prefix=opts.configPrefix,
         echo_all_commands=opts.echoAllCommands)
@@ -88,9 +86,11 @@ def main(builtin_params={}):
 
     # When running multiple shards, don't include skipped tests in the xunit
     # output since merging the files will result in duplicates.
+    tests_for_report = discovered_tests
     if opts.shard:
         (run, shards) = opts.shard
         selected_tests = filter_by_shard(selected_tests, run, shards, lit_config)
+        tests_for_report = selected_tests
         if not selected_tests:
             sys.stderr.write('warning: shard does not contain any tests.  '
                              'Consider decreasing the number of shards.\n')
@@ -108,15 +108,11 @@ def main(builtin_params={}):
 
     record_test_times(selected_tests, lit_config)
 
-    selected_tests, discovered_tests = GoogleTest.post_process_shard_results(
-        selected_tests, discovered_tests)
-
     if opts.time_tests:
         print_histogram(discovered_tests)
 
     print_results(discovered_tests, elapsed, opts)
 
-    tests_for_report = selected_tests if opts.shard else discovered_tests
     for report in opts.reports:
         report.write_results(tests_for_report, elapsed)
 
@@ -170,14 +166,11 @@ def print_discovered(tests, show_suites, show_tests):
 
 def determine_order(tests, order):
     from lit.cl_arguments import TestOrder
-    enum_order = TestOrder(order)
-    if enum_order == TestOrder.RANDOM:
+    if order == TestOrder.RANDOM:
         import random
         random.shuffle(tests)
-    elif enum_order == TestOrder.LEXICAL:
-        tests.sort(key=lambda t: t.getFullName())
     else:
-        assert enum_order == TestOrder.SMART, 'Unknown TestOrder value'
+        assert order == TestOrder.DEFAULT, 'Unknown TestOrder value'
         tests.sort(key=lambda t: (not t.previous_failure, -t.previous_elapsed, t.getFullName()))
 
 
@@ -249,12 +242,13 @@ def execute_in_tmp_dir(run, lit_config):
     tmp_dir = None
     if 'LIT_PRESERVES_TMP' not in os.environ:
         import tempfile
-        # z/OS linker does not support '_' in paths, so use '-'.
-        tmp_dir = tempfile.mkdtemp(prefix='lit-tmp-')
-        tmp_dir_envs = {k: tmp_dir for k in ['TMP', 'TMPDIR', 'TEMP', 'TEMPDIR']}
-        os.environ.update(tmp_dir_envs)
-        for cfg in {t.config for t in run.tests}:
-            cfg.environment.update(tmp_dir_envs)
+        tmp_dir = tempfile.mkdtemp(prefix="lit_tmp_")
+        os.environ.update({
+                'TMPDIR': tmp_dir,
+                'TMP': tmp_dir,
+                'TEMP': tmp_dir,
+                'TEMPDIR': tmp_dir,
+                })
     try:
         run.execute()
     finally:

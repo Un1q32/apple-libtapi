@@ -21,21 +21,21 @@ TAPI_NAMESPACE_INTERNAL_BEGIN
 
 class APINormalizer : public APIMutator {
 public:
-  APINormalizer(bool isPublicLibrary)
-      : isPublicLibrary(isPublicLibrary), fileMap({}) {}
+  void visitMacroDefinition(MacroDefinitionRecord &record) override;
   void visitGlobal(GlobalRecord &record) override;
   void visitEnum(EnumRecord &record) override;
   void visitObjCInterface(ObjCInterfaceRecord &record) override;
   void visitObjCCategory(ObjCCategoryRecord &record) override;
   void visitObjCProtocol(ObjCProtocolRecord &record) override;
   void visitTypeDef(TypedefRecord &record) override;
+  void visitStruct(StructRecord &record) override;
 
 private:
+  static bool isPublicHeader(StringRef path);
   void updateAPIRecord(APIRecord &record);
   void updateAPILoc(APIRecord &record);
   void updateContainer(ObjCContainerRecord &record);
 
-  bool isPublicLibrary = false;
   llvm::StringMap<std::string> fileMap;
 };
 

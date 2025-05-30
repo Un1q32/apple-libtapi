@@ -59,10 +59,12 @@ unsigned ContentCache::getSizeBytesMapped() const {
 /// Returns the kind of memory used to back the memory buffer for
 /// this content cache.  This is used for performance analysis.
 llvm::MemoryBuffer::BufferKind ContentCache::getMemoryBufferKind() const {
-  if (Buffer == nullptr) {
-    assert(0 && "Buffer should never be null");
+  assert(Buffer);
+
+  // Should be unreachable, but keep for sanity.
+  if (!Buffer)
     return llvm::MemoryBuffer::MemoryBuffer_Malloc;
-  }
+
   return Buffer->getBufferKind();
 }
 
@@ -205,30 +207,28 @@ void LineTableInfo::AddLineNote(FileID FID, unsigned Offset, unsigned LineNo,
                                 SrcMgr::CharacteristicKind FileKind) {
   std::vector<LineEntry> &Entries = LineEntries[FID];
 
+  // An unspecified FilenameID means use the last filename if available, or the
+  // main source file otherwise.
+  if (FilenameID == -1 && !Entries.empty())
+    FilenameID = Entries.back().FilenameID;
+
   assert((Entries.empty() || Entries.back().FileOffset < Offset) &&
          "Adding line entries out of order!");
 
   unsigned IncludeOffset = 0;
-  if (EntryExit == 1) {
-    // Push #include
+  if (EntryExit == 0) {  // No #include stack change.
+    IncludeOffset = Entries.empty() ? 0 : Entries.back().IncludeOffset;
+  } else if (EntryExit == 1) {
     IncludeOffset = Offset-1;
-  } else {
-    const auto *PrevEntry = Entries.empty() ? nullptr : &Entries.back();
-    if (EntryExit == 2) {
-      // Pop #include
-      assert(PrevEntry && PrevEntry->IncludeOffset &&
-             "PPDirectives should have caught case when popping empty include "
-             "stack");
-      PrevEntry = FindNearestLineEntry(FID, PrevEntry->IncludeOffset);
-    }
-    if (PrevEntry) {
+  } else if (EntryExit == 2) {
+    assert(!Entries.empty() && Entries.back().IncludeOffset &&
+       "PPDirectives should have caught case when popping empty include stack");
+
+    // Get the include loc of the last entries' include loc as our include loc.
+    IncludeOffset = 0;
+    if (const LineEntry *PrevEntry =
+          FindNearestLineEntry(FID, Entries.back().IncludeOffset))
       IncludeOffset = PrevEntry->IncludeOffset;
-      if (FilenameID == -1) {
-        // An unspecified FilenameID means use the previous (or containing)
-        // filename if available, or the main source file otherwise.
-        FilenameID = PrevEntry->FilenameID;
-      }
-    }
   }
 
   Entries.push_back(LineEntry::get(Offset, LineNo, FilenameID, FileKind,
@@ -399,7 +399,8 @@ ContentCache &SourceManager::getOrCreateContentCache(FileEntryRef FileEnt,
   if (OverriddenFilesInfo) {
     // If the file contents are overridden with contents from another file,
     // pass that file to ContentCache.
-    auto overI = OverriddenFilesInfo->OverriddenFiles.find(FileEnt);
+    llvm::DenseMap<const FileEntry *, const FileEntry *>::iterator
+        overI = OverriddenFilesInfo->OverriddenFiles.find(FileEnt);
     if (overI == OverriddenFilesInfo->OverriddenFiles.end())
       new (Entry) ContentCache(FileEnt);
     else
@@ -628,21 +629,23 @@ FileID SourceManager::createFileIDImpl(ContentCache &File, StringRef Filename,
   return LastFileIDLookup = FID;
 }
 
-SourceLocation SourceManager::createMacroArgExpansionLoc(
-    SourceLocation SpellingLoc, SourceLocation ExpansionLoc, unsigned Length) {
+SourceLocation
+SourceManager::createMacroArgExpansionLoc(SourceLocation SpellingLoc,
+                                          SourceLocation ExpansionLoc,
+                                          unsigned TokLength) {
   ExpansionInfo Info = ExpansionInfo::createForMacroArg(SpellingLoc,
                                                         ExpansionLoc);
-  return createExpansionLocImpl(Info, Length);
+  return createExpansionLocImpl(Info, TokLength);
 }
 
 SourceLocation SourceManager::createExpansionLoc(
     SourceLocation SpellingLoc, SourceLocation ExpansionLocStart,
-    SourceLocation ExpansionLocEnd, unsigned Length,
+    SourceLocation ExpansionLocEnd, unsigned TokLength,
     bool ExpansionIsTokenRange, int LoadedID,
     SourceLocation::UIntTy LoadedOffset) {
   ExpansionInfo Info = ExpansionInfo::create(
       SpellingLoc, ExpansionLocStart, ExpansionLocEnd, ExpansionIsTokenRange);
-  return createExpansionLocImpl(Info, Length, LoadedID, LoadedOffset);
+  return createExpansionLocImpl(Info, TokLength, LoadedID, LoadedOffset);
 }
 
 SourceLocation SourceManager::createTokenSplitLoc(SourceLocation Spelling,
@@ -657,7 +660,7 @@ SourceLocation SourceManager::createTokenSplitLoc(SourceLocation Spelling,
 
 SourceLocation
 SourceManager::createExpansionLocImpl(const ExpansionInfo &Info,
-                                      unsigned Length, int LoadedID,
+                                      unsigned TokLength, int LoadedID,
                                       SourceLocation::UIntTy LoadedOffset) {
   if (LoadedID < 0) {
     assert(LoadedID != -1 && "Loading sentinel FileID");
@@ -669,12 +672,12 @@ SourceManager::createExpansionLocImpl(const ExpansionInfo &Info,
     return SourceLocation::getMacroLoc(LoadedOffset);
   }
   LocalSLocEntryTable.push_back(SLocEntry::get(NextLocalOffset, Info));
-  assert(NextLocalOffset + Length + 1 > NextLocalOffset &&
-         NextLocalOffset + Length + 1 <= CurrentLoadedOffset &&
+  assert(NextLocalOffset + TokLength + 1 > NextLocalOffset &&
+         NextLocalOffset + TokLength + 1 <= CurrentLoadedOffset &&
          "Ran out of source locations!");
   // See createFileID for that +1.
-  NextLocalOffset += Length + 1;
-  return SourceLocation::getMacroLoc(NextLocalOffset - (Length + 1));
+  NextLocalOffset += TokLength + 1;
+  return SourceLocation::getMacroLoc(NextLocalOffset - (TokLength + 1));
 }
 
 llvm::Optional<llvm::MemoryBufferRef>
@@ -694,18 +697,14 @@ void SourceManager::overrideFileContents(
 }
 
 void SourceManager::overrideFileContents(const FileEntry *SourceFile,
-                                         FileEntryRef NewFile) {
-  assert(SourceFile->getSize() == NewFile.getSize() &&
+                                         const FileEntry *NewFile) {
+  assert(SourceFile->getSize() == NewFile->getSize() &&
          "Different sizes, use the FileManager to create a virtual file with "
          "the correct size");
   assert(FileInfos.count(SourceFile) == 0 &&
          "This function should be called at the initialization stage, before "
          "any parsing occurs.");
-  // FileEntryRef is not default-constructible.
-  auto Pair = getOverriddenFilesInfo().OverriddenFiles.insert(
-      std::make_pair(SourceFile, NewFile));
-  if (!Pair.second)
-    Pair.first->second = NewFile;
+  getOverriddenFilesInfo().OverriddenFiles[SourceFile] = NewFile;
 }
 
 Optional<FileEntryRef>
@@ -793,28 +792,24 @@ FileID SourceManager::getFileIDLocal(SourceLocation::UIntTy SLocOffset) const {
 
   // See if this is near the file point - worst case we start scanning from the
   // most newly created FileID.
+  const SrcMgr::SLocEntry *I;
 
-  // LessIndex - This is the lower bound of the range that we're searching.
-  // We know that the offset corresponding to the FileID is is less than
-  // SLocOffset.
-  unsigned LessIndex = 0;
-  // upper bound of the search range.
-  unsigned GreaterIndex = LocalSLocEntryTable.size();
-  if (LastFileIDLookup.ID >= 0) {
-    // Use the LastFileIDLookup to prune the search space.
-    if (LocalSLocEntryTable[LastFileIDLookup.ID].getOffset() < SLocOffset)
-      LessIndex = LastFileIDLookup.ID;
-    else
-      GreaterIndex = LastFileIDLookup.ID;
+  if (LastFileIDLookup.ID < 0 ||
+      LocalSLocEntryTable[LastFileIDLookup.ID].getOffset() < SLocOffset) {
+    // Neither loc prunes our search.
+    I = LocalSLocEntryTable.end();
+  } else {
+    // Perhaps it is near the file point.
+    I = LocalSLocEntryTable.begin()+LastFileIDLookup.ID;
   }
 
-  // Find the FileID that contains this.
+  // Find the FileID that contains this.  "I" is an iterator that points to a
+  // FileID whose offset is known to be larger than SLocOffset.
   unsigned NumProbes = 0;
   while (true) {
-    --GreaterIndex;
-    assert(GreaterIndex < LocalSLocEntryTable.size());
-    if (LocalSLocEntryTable[GreaterIndex].getOffset() <= SLocOffset) {
-      FileID Res = FileID::get(int(GreaterIndex));
+    --I;
+    if (I->getOffset() <= SLocOffset) {
+      FileID Res = FileID::get(int(I - LocalSLocEntryTable.begin()));
       // Remember it.  We have good locality across FileID lookups.
       LastFileIDLookup = Res;
       NumLinearScans += NumProbes+1;
@@ -824,6 +819,13 @@ FileID SourceManager::getFileIDLocal(SourceLocation::UIntTy SLocOffset) const {
       break;
   }
 
+  // Convert "I" back into an index.  We know that it is an entry whose index is
+  // larger than the offset we are looking for.
+  unsigned GreaterIndex = I - LocalSLocEntryTable.begin();
+  // LessIndex - This is the lower bound of the range that we're searching.
+  // We know that the offset corresponding to the FileID is is less than
+  // SLocOffset.
+  unsigned LessIndex = 0;
   NumProbes = 0;
   while (true) {
     unsigned MiddleIndex = (GreaterIndex-LessIndex)/2+LessIndex;
@@ -860,53 +862,52 @@ FileID SourceManager::getFileIDLocal(SourceLocation::UIntTy SLocOffset) const {
 /// This function knows that the SourceLocation is in a loaded buffer, not a
 /// local one.
 FileID SourceManager::getFileIDLoaded(SourceLocation::UIntTy SLocOffset) const {
+  // Sanity checking, otherwise a bug may lead to hanging in release build.
   if (SLocOffset < CurrentLoadedOffset) {
     assert(0 && "Invalid SLocOffset or bad function choice");
     return FileID();
   }
 
   // Essentially the same as the local case, but the loaded array is sorted
-  // in the other direction (decreasing order).
-  // GreaterIndex is the one where the offset is greater, which is actually a
-  // lower index!
-  unsigned GreaterIndex = 0;
-  unsigned LessIndex = LoadedSLocEntryTable.size();
-  if (LastFileIDLookup.ID < 0) {
-    // Prune the search space.
-    int LastID = LastFileIDLookup.ID;
-    if (getLoadedSLocEntryByID(LastID).getOffset() > SLocOffset)
-      GreaterIndex =
-          (-LastID - 2) + 1; // Exclude LastID, else we would have hit the cache
-    else
-      LessIndex = -LastID - 2;
-  }
+  // in the other direction.
 
   // First do a linear scan from the last lookup position, if possible.
+  unsigned I;
+  int LastID = LastFileIDLookup.ID;
+  if (LastID >= 0 || getLoadedSLocEntryByID(LastID).getOffset() < SLocOffset)
+    I = 0;
+  else
+    I = (-LastID - 2) + 1;
+
   unsigned NumProbes;
-  bool Invalid = false;
-  for (NumProbes = 0; NumProbes < 8; ++NumProbes, ++GreaterIndex) {
+  for (NumProbes = 0; NumProbes < 8; ++NumProbes, ++I) {
     // Make sure the entry is loaded!
-    const SrcMgr::SLocEntry &E = getLoadedSLocEntry(GreaterIndex, &Invalid);
-    if (Invalid)
-      return FileID(); // invalid entry.
+    const SrcMgr::SLocEntry &E = getLoadedSLocEntry(I);
     if (E.getOffset() <= SLocOffset) {
-      FileID Res = FileID::get(-int(GreaterIndex) - 2);
+      FileID Res = FileID::get(-int(I) - 2);
       LastFileIDLookup = Res;
       NumLinearScans += NumProbes + 1;
       return Res;
     }
   }
 
-  // Linear scan failed. Do the binary search.
+  // Linear scan failed. Do the binary search. Note the reverse sorting of the
+  // table: GreaterIndex is the one where the offset is greater, which is
+  // actually a lower index!
+  unsigned GreaterIndex = I;
+  unsigned LessIndex = LoadedSLocEntryTable.size();
   NumProbes = 0;
   while (true) {
     ++NumProbes;
     unsigned MiddleIndex = (LessIndex - GreaterIndex) / 2 + GreaterIndex;
-    const SrcMgr::SLocEntry &E = getLoadedSLocEntry(MiddleIndex, &Invalid);
-    if (Invalid)
+    const SrcMgr::SLocEntry &E = getLoadedSLocEntry(MiddleIndex);
+    if (E.getOffset() == 0)
       return FileID(); // invalid entry.
 
+    ++NumProbes;
+
     if (E.getOffset() > SLocOffset) {
+      // Sanity checking, otherwise a bug may lead to hanging in release build.
       if (GreaterIndex == MiddleIndex) {
         assert(0 && "binary search missed the entry");
         return FileID();
@@ -922,6 +923,7 @@ FileID SourceManager::getFileIDLoaded(SourceLocation::UIntTy SLocOffset) const {
       return Res;
     }
 
+    // Sanity checking, otherwise a bug may lead to hanging in release build.
     if (LessIndex == MiddleIndex) {
       assert(0 && "binary search missed the entry");
       return FileID();
@@ -1795,11 +1797,11 @@ void SourceManager::computeMacroArgsCache(MacroArgsMap &MacroArgsCache,
         if (Entry.getFile().NumCreatedFIDs)
           ID += Entry.getFile().NumCreatedFIDs - 1 /*because of next ++ID*/;
         continue;
-      }
-      // If file was included but not from FID, there is no more files/macros
-      // that may be "contained" in this file.
-      if (IncludeLoc.isValid())
+      } else if (IncludeLoc.isValid()) {
+        // If file was included but not from FID, there is no more files/macros
+        // that may be "contained" in this file.
         return;
+      }
       continue;
     }
 
@@ -1992,7 +1994,6 @@ InBeforeInTUCacheEntry &SourceManager::getInBeforeInTUCache(FileID LFID,
   // This is a magic number for limiting the cache size.  It was experimentally
   // derived from a small Objective-C project (where the cache filled
   // out to ~250 items).  We can make it larger if necessary.
-  // FIXME: this is almost certainly full these days. Use an LRU cache?
   enum { MagicCacheSize = 300 };
   IsBeforeInTUCacheKey Key(LFID, RFID);
 
@@ -2001,7 +2002,7 @@ InBeforeInTUCacheEntry &SourceManager::getInBeforeInTUCache(FileID LFID,
   // use.  When they update the value, the cache will get automatically
   // updated as well.
   if (IBTUCache.size() < MagicCacheSize)
-    return IBTUCache.try_emplace(Key, LFID, RFID).first->second;
+    return IBTUCache[Key];
 
   // Otherwise, do a lookup that will not construct a new value.
   InBeforeInTUCache::iterator I = IBTUCache.find(Key);
@@ -2009,7 +2010,6 @@ InBeforeInTUCacheEntry &SourceManager::getInBeforeInTUCache(FileID LFID,
     return I->second;
 
   // Fall back to the overflow value.
-  IBTUCacheOverflow.setQueryFIDs(LFID, RFID);
   return IBTUCacheOverflow;
 }
 
@@ -2084,62 +2084,43 @@ std::pair<bool, bool> SourceManager::isInTheSameTranslationUnit(
 
   // If we are comparing a source location with multiple locations in the same
   // file, we get a big win by caching the result.
-  if (IsBeforeInTUCache.isCacheValid())
+  if (IsBeforeInTUCache.isCacheValid(LOffs.first, ROffs.first))
     return std::make_pair(
         true, IsBeforeInTUCache.getCachedResult(LOffs.second, ROffs.second));
 
-  // Okay, we missed in the cache, we'll compute the answer and populate it.
+  // Okay, we missed in the cache, start updating the cache for this query.
+  IsBeforeInTUCache.setQueryFIDs(LOffs.first, ROffs.first,
+                          /*isLFIDBeforeRFID=*/LOffs.first.ID < ROffs.first.ID);
+
   // We need to find the common ancestor. The only way of doing this is to
   // build the complete include chain for one and then walking up the chain
   // of the other looking for a match.
-
-  // A location within a FileID on the path up from LOffs to the main file.
-  struct Entry {
-    unsigned Offset;
-    FileID ParentFID; // Used for breaking ties.
-  };
-  llvm::SmallDenseMap<FileID, Entry, 16> LChain;
-
-  FileID Parent;
+  // We use a map from FileID to Offset to store the chain. Easier than writing
+  // a custom set hash info that only depends on the first part of a pair.
+  using LocSet = llvm::SmallDenseMap<FileID, unsigned, 16>;
+  LocSet LChain;
   do {
-    LChain.try_emplace(LOffs.first, Entry{LOffs.second, Parent});
+    LChain.insert(LOffs);
     // We catch the case where LOffs is in a file included by ROffs and
     // quit early. The other way round unfortunately remains suboptimal.
-    if (LOffs.first == ROffs.first)
-      break;
-    Parent = LOffs.first;
-  } while (!MoveUpIncludeHierarchy(LOffs, *this));
+  } while (LOffs.first != ROffs.first && !MoveUpIncludeHierarchy(LOffs, *this));
+  LocSet::iterator I;
+  while((I = LChain.find(ROffs.first)) == LChain.end()) {
+    if (MoveUpIncludeHierarchy(ROffs, *this))
+      break; // Met at topmost file.
+  }
+  if (I != LChain.end())
+    LOffs = *I;
 
-  Parent = FileID();
-  do {
-    auto I = LChain.find(ROffs.first);
-    if (I != LChain.end()) {
-      // Compare the locations within the common file and cache them.
-      LOffs.first = I->first;
-      LOffs.second = I->second.Offset;
-      // The relative order of LParent and RParent is a tiebreaker when
-      // - locs expand to the same location (occurs in macro arg expansion)
-      // - one loc is a parent of the other (we consider the parent as "first")
-      // For the parent to be first, the invalid file ID must compare smaller.
-      // However loaded FileIDs are <0, so we perform *unsigned* comparison!
-      // This changes the relative order of local vs loaded FileIDs, but it
-      // doesn't matter as these are never mixed in macro expansion.
-      unsigned LParent = I->second.ParentFID.ID;
-      unsigned RParent = Parent.ID;
-      assert((LOffs.second != ROffs.second) || (LParent == 0 || RParent == 0) ||
-             isInSameSLocAddrSpace(getComposedLoc(I->second.ParentFID, 0),
-                                   getComposedLoc(Parent, 0), nullptr) &&
-                 "Mixed local/loaded FileIDs with same include location?");
-      IsBeforeInTUCache.setCommonLoc(LOffs.first, LOffs.second, ROffs.second,
-                                     LParent < RParent);
-      return std::make_pair(
-          true, IsBeforeInTUCache.getCachedResult(LOffs.second, ROffs.second));
-    }
-    Parent = ROffs.first;
-  } while (!MoveUpIncludeHierarchy(ROffs, *this));
-
-  // If we found no match, we're not in the same TU.
-  // We don't cache this, but it is rare.
+  // If we exited because we found a nearest common ancestor, compare the
+  // locations within the common file and cache them.
+  if (LOffs.first == ROffs.first) {
+    IsBeforeInTUCache.setCommonLoc(LOffs.first, LOffs.second, ROffs.second);
+    return std::make_pair(
+        true, IsBeforeInTUCache.getCachedResult(LOffs.second, ROffs.second));
+  }
+  // Clear the lookup cache, it depends on a common location.
+  IsBeforeInTUCache.clear();
   return std::make_pair(false, false);
 }
 

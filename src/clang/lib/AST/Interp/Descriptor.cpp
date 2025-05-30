@@ -259,7 +259,9 @@ SourceLocation Descriptor::getLocation() const {
 }
 
 InitMap::InitMap(unsigned N) : UninitFields(N) {
-  std::fill_n(data(), (N + PER_FIELD - 1) / PER_FIELD, 0);
+  for (unsigned I = 0; I < N / PER_FIELD; ++I) {
+    data()[I] = 0;
+  }
 }
 
 InitMap::T *InitMap::data() {
@@ -269,7 +271,7 @@ InitMap::T *InitMap::data() {
 
 bool InitMap::initialize(unsigned I) {
   unsigned Bucket = I / PER_FIELD;
-  T Mask = T(1) << (I % PER_FIELD);
+  unsigned Mask = 1ull << static_cast<uint64_t>(I % PER_FIELD);
   if (!(data()[Bucket] & Mask)) {
     data()[Bucket] |= Mask;
     UninitFields -= 1;
@@ -279,7 +281,8 @@ bool InitMap::initialize(unsigned I) {
 
 bool InitMap::isInitialized(unsigned I) {
   unsigned Bucket = I / PER_FIELD;
-  return data()[Bucket] & (T(1) << (I % PER_FIELD));
+  unsigned Mask = 1ull << static_cast<uint64_t>(I % PER_FIELD);
+  return data()[Bucket] & Mask;
 }
 
 InitMap *InitMap::allocate(unsigned N) {

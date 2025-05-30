@@ -22,25 +22,6 @@ using namespace llvm;
 
 TAPI_NAMESPACE_INTERNAL_BEGIN
 
-SwiftModule::SwiftModule(StringRef path) {
-  auto filename = sys::path::filename(path);
-  if (filename.consume_back(".swiftmodule"))
-    name = filename.str();
-  else if (auto n = filename.consume_back(".swiftinterface"))
-    name = filename.str();
-  else
-    llvm_unreachable("unexpected file extension");
-}
-
-const Regex Rule("(.+)/(.+)\\.framework/");
-StringRef Framework::getNameFromInstallName(StringRef installName) {
-  SmallVector<StringRef, 3> match;
-  Rule.match(installName, &match);
-  if (match.empty())
-    return "";
-  return match.back();
-}
-
 StringRef Framework::getName() const {
   StringRef path = _baseDirectory;
   // Returns the framework name extract from path.
@@ -56,12 +37,14 @@ StringRef Framework::getName() const {
   return sys::path::filename(path.rtrim("/"));
 }
 
-bool Framework::isMacCatalyst() const {
-  return StringRef(_baseDirectory).contains(MACCATALYST_PREFIX_PATH "/");
-}
-
-bool Framework::isDriverKit() const {
-  return StringRef(_baseDirectory).contains(DRIVERKIT_PREFIX_PATH "/");
+SwiftModule::SwiftModule(StringRef path) {
+  auto filename = sys::path::filename(path);
+  if (filename.consume_back(".swiftmodule"))
+    name = filename.str();
+  else if (auto n = filename.consume_back(".swiftinterface"))
+    name = filename.str();
+  else
+    llvm_unreachable("unexpected file extension");
 }
 
 StringRef Framework::getAdditionalIncludePath() const {

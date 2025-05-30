@@ -38,6 +38,7 @@
 #include "llvm/IR/GlobalVariable.h"
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/IntrinsicInst.h"
+#include "llvm/IR/Intrinsics.h"
 #include "llvm/IR/Metadata.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/ModuleSummaryIndex.h"
@@ -164,8 +165,7 @@ static void addIntrinsicToSummary(
     SetVector<FunctionSummary::ConstVCall> &TypeCheckedLoadConstVCalls,
     DominatorTree &DT) {
   switch (CI->getCalledFunction()->getIntrinsicID()) {
-  case Intrinsic::type_test:
-  case Intrinsic::public_type_test: {
+  case Intrinsic::type_test: {
     auto *TypeMDVal = cast<MetadataAsValue>(CI->getArgOperand(1));
     auto *TypeId = dyn_cast<MDString>(TypeMDVal->getMetadata());
     if (!TypeId)
@@ -192,7 +192,6 @@ static void addIntrinsicToSummary(
     break;
   }
 
-  case Intrinsic::type_checked_load_relative:
   case Intrinsic::type_checked_load: {
     auto *TypeMDVal = cast<MetadataAsValue>(CI->getArgOperand(2));
     auto *TypeId = dyn_cast<MDString>(TypeMDVal->getMetadata());
@@ -235,18 +234,6 @@ static bool isNonVolatileStore(const Instruction *I) {
   return false;
 }
 
-// Returns true if the function definition must be unreachable.
-//
-// Note if this helper function returns true, `F` is guaranteed
-// to be unreachable; if it returns false, `F` might still
-// be unreachable but not covered by this helper function.
-static bool mustBeUnreachableFunction(const Function &F) {
-  // A function must be unreachable if its entry block ends with an
-  // 'unreachable'.
-  assert(!F.isDeclaration());
-  return isa<UnreachableInst>(F.getEntryBlock().getTerminator());
-}
-
 static void computeFunctionSummary(
     ModuleSummaryIndex &Index, const Module &M, const Function &F,
     BlockFrequencyInfo *BFI, ProfileSummaryInfo *PSI, DominatorTree &DT,
@@ -277,27 +264,11 @@ static void computeFunctionSummary(
   std::vector<const Instruction *> NonVolatileStores;
 
   bool HasInlineAsmMaybeReferencingInternal = false;
-  bool HasIndirBranchToBlockAddress = false;
-  bool HasUnknownCall = false;
-  bool MayThrow = false;
-  for (const BasicBlock &BB : F) {
-    // We don't allow inlining of function with indirect branch to blockaddress.
-    // If the blockaddress escapes the function, e.g., via a global variable,
-    // inlining may lead to an invalid cross-function reference. So we shouldn't
-    // import such function either.
-    if (BB.hasAddressTaken()) {
-      for (User *U : BlockAddress::get(const_cast<BasicBlock *>(&BB))->users())
-        if (!isa<CallBrInst>(*U)) {
-          HasIndirBranchToBlockAddress = true;
-          break;
-        }
-    }
-
+  for (const BasicBlock &BB : F)
     for (const Instruction &I : BB) {
-      if (I.isDebugOrPseudoInst())
+      if (isa<DbgInfoIntrinsic>(I))
         continue;
       ++NumInsts;
-
       // Regular LTO module doesn't participate in ThinLTO import,
       // so no reference from it can be read/writeonly, since this
       // would require importing variable as local copy
@@ -329,11 +300,8 @@ static void computeFunctionSummary(
       }
       findRefEdges(Index, &I, RefEdges, Visited);
       const auto *CB = dyn_cast<CallBase>(&I);
-      if (!CB) {
-        if (I.mayThrow())
-          MayThrow = true;
+      if (!CB)
         continue;
-      }
 
       const auto *CI = dyn_cast<CallInst>(&I);
       // Since we don't know exactly which local values are referenced in inline
@@ -355,7 +323,7 @@ static void computeFunctionSummary(
       // called aliasee for the checks below.
       if (auto *GA = dyn_cast<GlobalAlias>(CalledValue)) {
         assert(!CalledFunction && "Expected null called function in callsite for alias");
-        CalledFunction = dyn_cast<Function>(GA->getAliaseeObject());
+        CalledFunction = dyn_cast<Function>(GA->getBaseObject());
       }
       // Check if this is a direct call to a known function or a known
       // intrinsic, or an indirect call with profile data.
@@ -369,7 +337,7 @@ static void computeFunctionSummary(
         // We should have named any anonymous globals
         assert(CalledFunction->hasName());
         auto ScaledCount = PSI->getProfileCount(*CB, BFI);
-        auto Hotness = ScaledCount ? getHotness(*ScaledCount, PSI)
+        auto Hotness = ScaledCount ? getHotness(ScaledCount.getValue(), PSI)
                                    : CalleeInfo::HotnessType::Unknown;
         if (ForceSummaryEdgesCold != FunctionSummary::FSHT_None)
           Hotness = CalleeInfo::HotnessType::Cold;
@@ -389,7 +357,6 @@ static void computeFunctionSummary(
           ValueInfo.updateRelBlockFreq(BBFreq, EntryFreq);
         }
       } else {
-        HasUnknownCall = true;
         // Skip inline assembly calls.
         if (CI && CI->isInlineAsm())
           continue;
@@ -402,7 +369,7 @@ static void computeFunctionSummary(
         // to enable importing for subsequent indirect call promotion and
         // inlining.
         if (auto *MD = I.getMetadata(LLVMContext::MD_callees)) {
-          for (const auto &Op : MD->operands()) {
+          for (auto &Op : MD->operands()) {
             Function *Callee = mdconst::extract_or_null<Function>(Op);
             if (Callee)
               CallGraphEdges[Index.getOrInsertValueInfo(Callee)];
@@ -414,12 +381,11 @@ static void computeFunctionSummary(
         auto CandidateProfileData =
             ICallAnalysis.getPromotionCandidatesForInstruction(
                 &I, NumVals, TotalCount, NumCandidates);
-        for (const auto &Candidate : CandidateProfileData)
+        for (auto &Candidate : CandidateProfileData)
           CallGraphEdges[Index.getOrInsertValueInfo(Candidate.Value)]
               .updateHotness(getHotness(Candidate.Count, PSI));
       }
     }
-  }
   Index.addBlockCount(F.size());
 
   std::vector<ValueInfo> Refs;
@@ -453,7 +419,7 @@ static void computeFunctionSummary(
     // If both load and store instruction reference the same variable
     // we won't be able to optimize it. Add all such reference edges
     // to RefEdges set.
-    for (const auto &VI : StoreRefEdges)
+    for (auto &VI : StoreRefEdges)
       if (LoadRefEdges.remove(VI))
         RefEdges.insert(VI);
 
@@ -461,11 +427,11 @@ static void computeFunctionSummary(
     // All new reference edges inserted in two loops below are either
     // read or write only. They will be grouped in the end of RefEdges
     // vector, so we can use a single integer value to identify them.
-    for (const auto &VI : LoadRefEdges)
+    for (auto &VI : LoadRefEdges)
       RefEdges.insert(VI);
 
     unsigned FirstWORef = RefEdges.size();
-    for (const auto &VI : StoreRefEdges)
+    for (auto &VI : StoreRefEdges)
       RefEdges.insert(VI);
 
     Refs = RefEdges.takeVector();
@@ -486,22 +452,20 @@ static void computeFunctionSummary(
             : CalleeInfo::HotnessType::Critical);
 
   bool NonRenamableLocal = isNonRenamableLocal(F);
-  bool NotEligibleForImport = NonRenamableLocal ||
-                              HasInlineAsmMaybeReferencingInternal ||
-                              HasIndirBranchToBlockAddress;
+  bool NotEligibleForImport =
+      NonRenamableLocal || HasInlineAsmMaybeReferencingInternal;
   GlobalValueSummary::GVFlags Flags(
       F.getLinkage(), F.getVisibility(), NotEligibleForImport,
-      /* Live = */ false, F.isDSOLocal(), F.canBeOmittedFromSymbolTable());
+      /* Live = */ false, F.isDSOLocal(),
+      F.hasLinkOnceODRLinkage() && F.hasGlobalUnnamedAddr());
   FunctionSummary::FFlags FunFlags{
       F.hasFnAttribute(Attribute::ReadNone),
       F.hasFnAttribute(Attribute::ReadOnly),
       F.hasFnAttribute(Attribute::NoRecurse), F.returnDoesNotAlias(),
       // FIXME: refactor this to use the same code that inliner is using.
       // Don't try to import functions with noinline attribute.
-      F.getAttributes().hasFnAttr(Attribute::NoInline),
-      F.hasFnAttribute(Attribute::AlwaysInline),
-      F.hasFnAttribute(Attribute::NoUnwind), MayThrow, HasUnknownCall,
-      mustBeUnreachableFunction(F)};
+      F.getAttributes().hasFnAttribute(Attribute::NoInline),
+      F.hasFnAttribute(Attribute::AlwaysInline)};
   std::vector<FunctionSummary::ParamAccess> ParamAccesses;
   if (auto *SSI = GetSSICallback(F))
     ParamAccesses = SSI->getParamAccesses(Index);
@@ -612,7 +576,8 @@ static void computeVariableSummary(ModuleSummaryIndex &Index,
   bool NonRenamableLocal = isNonRenamableLocal(V);
   GlobalValueSummary::GVFlags Flags(
       V.getLinkage(), V.getVisibility(), NonRenamableLocal,
-      /* Live = */ false, V.isDSOLocal(), V.canBeOmittedFromSymbolTable());
+      /* Live = */ false, V.isDSOLocal(),
+      V.hasLinkOnceODRLinkage() && V.hasGlobalUnnamedAddr());
 
   VTableFuncList VTableFuncs;
   // If splitting is not enabled, then we compute the summary information
@@ -648,18 +613,16 @@ static void computeVariableSummary(ModuleSummaryIndex &Index,
   Index.addGlobalValueSummary(V, std::move(GVarSummary));
 }
 
-static void computeAliasSummary(ModuleSummaryIndex &Index, const GlobalAlias &A,
-                                DenseSet<GlobalValue::GUID> &CantBePromoted) {
-  // Skip summary for indirect function aliases as summary for aliasee will not
-  // be emitted.
-  const GlobalObject *Aliasee = A.getAliaseeObject();
-  if (isa<GlobalIFunc>(Aliasee))
-    return;
+static void
+computeAliasSummary(ModuleSummaryIndex &Index, const GlobalAlias &A,
+                    DenseSet<GlobalValue::GUID> &CantBePromoted) {
   bool NonRenamableLocal = isNonRenamableLocal(A);
   GlobalValueSummary::GVFlags Flags(
       A.getLinkage(), A.getVisibility(), NonRenamableLocal,
-      /* Live = */ false, A.isDSOLocal(), A.canBeOmittedFromSymbolTable());
+      /* Live = */ false, A.isDSOLocal(),
+      A.hasLinkOnceODRLinkage() && A.hasGlobalUnnamedAddr());
   auto AS = std::make_unique<AliasSummary>(Flags);
+  auto *Aliasee = A.getBaseObject();
   auto AliaseeVI = Index.getValueInfo(Aliasee->getGUID());
   assert(AliaseeVI && "Alias expects aliasee summary to be available");
   assert(AliaseeVI.getSummaryList().size() == 1 &&
@@ -673,7 +636,7 @@ static void computeAliasSummary(ModuleSummaryIndex &Index, const GlobalAlias &A,
 // Set LiveRoot flag on entries matching the given value name.
 static void setLiveRoot(ModuleSummaryIndex &Index, StringRef Name) {
   if (ValueInfo VI = Index.getValueInfo(GlobalValue::getGUID(Name)))
-    for (const auto &Summary : VI.getSummaryList())
+    for (auto &Summary : VI.getSummaryList())
       Summary->setLive(true);
 }
 
@@ -734,7 +697,8 @@ ModuleSummaryIndex llvm::buildModuleSummaryIndex(
               GlobalValue::InternalLinkage, GlobalValue::DefaultVisibility,
               /* NotEligibleToImport = */ true,
               /* Live = */ true,
-              /* Local */ GV->isDSOLocal(), GV->canBeOmittedFromSymbolTable());
+              /* Local */ GV->isDSOLocal(),
+              GV->hasLinkOnceODRLinkage() && GV->hasGlobalUnnamedAddr());
           CantBePromoted.insert(GV->getGUID());
           // Create the appropriate summary type.
           if (Function *F = dyn_cast<Function>(GV)) {
@@ -747,11 +711,7 @@ ModuleSummaryIndex llvm::buildModuleSummaryIndex(
                         F->hasFnAttribute(Attribute::NoRecurse),
                         F->returnDoesNotAlias(),
                         /* NoInline = */ false,
-                        F->hasFnAttribute(Attribute::AlwaysInline),
-                        F->hasFnAttribute(Attribute::NoUnwind),
-                        /* MayThrow */ true,
-                        /* HasUnknownCall */ true,
-                        /* MustBeUnreachable */ false},
+                        F->hasFnAttribute(Attribute::AlwaysInline)},
                     /*EntryCount=*/0, ArrayRef<ValueInfo>{},
                     ArrayRef<FunctionSummary::EdgeTy>{},
                     ArrayRef<GlobalValue::GUID>{},
@@ -781,7 +741,7 @@ ModuleSummaryIndex llvm::buildModuleSummaryIndex(
 
   // Compute summaries for all functions defined in module, and save in the
   // index.
-  for (const auto &F : M) {
+  for (auto &F : M) {
     if (F.isDeclaration())
       continue;
 
@@ -815,13 +775,6 @@ ModuleSummaryIndex llvm::buildModuleSummaryIndex(
   // index.
   for (const GlobalAlias &A : M.aliases())
     computeAliasSummary(Index, A, CantBePromoted);
-
-  // Iterate through ifuncs, set their resolvers all alive.
-  for (const GlobalIFunc &I : M.ifuncs()) {
-    I.applyAlongResolverPath([&Index](const GlobalValue &GV) {
-      Index.getGlobalValueSummary(GV)->setLive(true);
-    });
-  }
 
   for (auto *V : LocalsUsed) {
     auto *Summary = Index.getGlobalValueSummary(*V);

@@ -34,11 +34,13 @@ namespace objcarc {
 /// TODO: This class could be generalized to know about other ObjC-specific
 /// tricks. Such as knowing that ivars in the non-fragile ABI are non-aliasing
 /// even though their offsets are dynamic.
-class ObjCARCAAResult : public AAResultBase {
+class ObjCARCAAResult : public AAResultBase<ObjCARCAAResult> {
+  friend AAResultBase<ObjCARCAAResult>;
+
   const DataLayout &DL;
 
 public:
-  explicit ObjCARCAAResult(const DataLayout &DL) : DL(DL) {}
+  explicit ObjCARCAAResult(const DataLayout &DL) : AAResultBase(), DL(DL) {}
   ObjCARCAAResult(ObjCARCAAResult &&Arg)
       : AAResultBase(std::move(Arg)), DL(Arg.DL) {}
 

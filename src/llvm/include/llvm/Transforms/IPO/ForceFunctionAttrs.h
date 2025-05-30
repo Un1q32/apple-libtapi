@@ -16,8 +16,6 @@
 #include "llvm/IR/PassManager.h"
 
 namespace llvm {
-class Module;
-class Pass;
 
 /// Pass which forces specific function attributes into the IR, primarily as
 /// a debugging tool.

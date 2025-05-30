@@ -86,7 +86,7 @@ ParamCommandComment *Sema::actOnParamCommandStart(
       new (Allocator) ParamCommandComment(LocBegin, LocEnd, CommandID,
                                           CommandMarker);
 
-  if (!involvesFunctionType())
+  if (!isFunctionDecl() && !isFunctionOrBlockPointerVarLikeDecl())
     Diag(Command->getLocation(),
          diag::warn_doc_param_not_attached_to_a_function_decl)
       << CommandMarker
@@ -236,7 +236,9 @@ void Sema::actOnParamCommandDirectionArg(ParamCommandComment *Command,
 
   if (Direction == -1) {
     // Try again with whitespace removed.
-    llvm::erase_if(ArgLower, clang::isWhitespace);
+    ArgLower.erase(
+        std::remove_if(ArgLower.begin(), ArgLower.end(), clang::isWhitespace),
+        ArgLower.end());
     Direction = getParamPassDirection(ArgLower);
 
     SourceRange ArgRange(ArgLocBegin, ArgLocEnd);
@@ -265,8 +267,10 @@ void Sema::actOnParamCommandParamNameArg(ParamCommandComment *Command,
     // User didn't provide a direction argument.
     Command->setDirection(ParamCommandComment::In, /* Explicit = */ false);
   }
-  auto *A = new (Allocator)
-      Comment::Argument{SourceRange(ArgLocBegin, ArgLocEnd), Arg};
+  typedef BlockCommandComment::Argument Argument;
+  Argument *A = new (Allocator) Argument(SourceRange(ArgLocBegin,
+                                                     ArgLocEnd),
+                                         Arg);
   Command->setArgs(llvm::makeArrayRef(A, 1));
 }
 
@@ -301,8 +305,10 @@ void Sema::actOnTParamCommandParamNameArg(TParamCommandComment *Command,
   // Parser will not feed us more arguments than needed.
   assert(Command->getNumArgs() == 0);
 
-  auto *A = new (Allocator)
-      Comment::Argument{SourceRange(ArgLocBegin, ArgLocEnd), Arg};
+  typedef BlockCommandComment::Argument Argument;
+  Argument *A = new (Allocator) Argument(SourceRange(ArgLocBegin,
+                                                     ArgLocEnd),
+                                         Arg);
   Command->setArgs(llvm::makeArrayRef(A, 1));
 
   if (!isTemplateOrSpecialization()) {
@@ -357,15 +363,37 @@ void Sema::actOnTParamCommandFinish(TParamCommandComment *Command,
   checkBlockCommandEmptyParagraph(Command);
 }
 
-InlineCommandComment *
-Sema::actOnInlineCommand(SourceLocation CommandLocBegin,
-                         SourceLocation CommandLocEnd, unsigned CommandID,
-                         ArrayRef<Comment::Argument> Args) {
+InlineCommandComment *Sema::actOnInlineCommand(SourceLocation CommandLocBegin,
+                                               SourceLocation CommandLocEnd,
+                                               unsigned CommandID) {
+  ArrayRef<InlineCommandComment::Argument> Args;
+  StringRef CommandName = Traits.getCommandInfo(CommandID)->Name;
+  return new (Allocator) InlineCommandComment(
+                                  CommandLocBegin,
+                                  CommandLocEnd,
+                                  CommandID,
+                                  getInlineCommandRenderKind(CommandName),
+                                  Args);
+}
+
+InlineCommandComment *Sema::actOnInlineCommand(SourceLocation CommandLocBegin,
+                                               SourceLocation CommandLocEnd,
+                                               unsigned CommandID,
+                                               SourceLocation ArgLocBegin,
+                                               SourceLocation ArgLocEnd,
+                                               StringRef Arg) {
+  typedef InlineCommandComment::Argument Argument;
+  Argument *A = new (Allocator) Argument(SourceRange(ArgLocBegin,
+                                                     ArgLocEnd),
+                                         Arg);
   StringRef CommandName = Traits.getCommandInfo(CommandID)->Name;
 
-  return new (Allocator)
-      InlineCommandComment(CommandLocBegin, CommandLocEnd, CommandID,
-                           getInlineCommandRenderKind(CommandName), Args);
+  return new (Allocator) InlineCommandComment(
+                                  CommandLocBegin,
+                                  CommandLocEnd,
+                                  CommandID,
+                                  getInlineCommandRenderKind(CommandName),
+                                  llvm::makeArrayRef(A, 1));
 }
 
 InlineContentComment *Sema::actOnUnknownCommand(SourceLocation LocBegin,
@@ -562,7 +590,7 @@ void Sema::checkReturnsCommand(const BlockCommandComment *Command) {
   // to document the value that the property getter returns.
   if (isObjCPropertyDecl())
     return;
-  if (involvesFunctionType()) {
+  if (isFunctionDecl() || isFunctionOrBlockPointerVarLikeDecl()) {
     assert(!ThisDeclInfo->ReturnType.isNull() &&
            "should have a valid return type");
     if (ThisDeclInfo->ReturnType->isVoidType()) {
@@ -702,7 +730,7 @@ void Sema::checkDeprecatedCommand(const BlockCommandComment *Command) {
 }
 
 void Sema::resolveParamCommandIndexes(const FullComment *FC) {
-  if (!involvesFunctionType()) {
+  if (!isFunctionDecl()) {
     // We already warned that \\param commands are not attached to a function
     // decl.
     return;
@@ -790,14 +818,6 @@ void Sema::resolveParamCommandIndexes(const FullComment *FC) {
   }
 }
 
-bool Sema::involvesFunctionType() {
-  if (!ThisDeclInfo)
-    return false;
-  if (!ThisDeclInfo->IsFilled)
-    inspectThisDecl();
-  return ThisDeclInfo->involvesFunctionType();
-}
-
 bool Sema::isFunctionDecl() {
   if (!ThisDeclInfo)
     return false;
@@ -812,11 +832,26 @@ bool Sema::isAnyFunctionDecl() {
 }
 
 bool Sema::isFunctionOrMethodVariadic() {
-  if (!ThisDeclInfo)
+  if (!isFunctionDecl() || !ThisDeclInfo->CurrentDecl)
     return false;
-  if (!ThisDeclInfo->IsFilled)
-    inspectThisDecl();
-  return ThisDeclInfo->IsVariadic;
+  if (const FunctionDecl *FD =
+        dyn_cast<FunctionDecl>(ThisDeclInfo->CurrentDecl))
+    return FD->isVariadic();
+  if (const FunctionTemplateDecl *FTD =
+        dyn_cast<FunctionTemplateDecl>(ThisDeclInfo->CurrentDecl))
+    return FTD->getTemplatedDecl()->isVariadic();
+  if (const ObjCMethodDecl *MD =
+        dyn_cast<ObjCMethodDecl>(ThisDeclInfo->CurrentDecl))
+    return MD->isVariadic();
+  if (const TypedefNameDecl *TD =
+          dyn_cast<TypedefNameDecl>(ThisDeclInfo->CurrentDecl)) {
+    QualType Type = TD->getUnderlyingType();
+    if (Type->isFunctionPointerType() || Type->isBlockPointerType())
+      Type = Type->getPointeeType();
+    if (const auto *FT = Type->getAs<FunctionProtoType>())
+      return FT->isVariadic();
+  }
+  return false;
 }
 
 bool Sema::isObjCMethodDecl() {
@@ -836,6 +871,36 @@ bool Sema::isFunctionPointerVarDecl() {
     }
   }
   return false;
+}
+
+bool Sema::isFunctionOrBlockPointerVarLikeDecl() {
+  if (!ThisDeclInfo)
+    return false;
+  if (!ThisDeclInfo->IsFilled)
+    inspectThisDecl();
+  if (ThisDeclInfo->getKind() != DeclInfo::VariableKind ||
+      !ThisDeclInfo->CurrentDecl)
+    return false;
+  QualType QT;
+  if (const auto *VD = dyn_cast<DeclaratorDecl>(ThisDeclInfo->CurrentDecl))
+    QT = VD->getType();
+  else if (const auto *PD =
+               dyn_cast<ObjCPropertyDecl>(ThisDeclInfo->CurrentDecl))
+    QT = PD->getType();
+  else
+    return false;
+  // We would like to warn about the 'returns'/'param' commands for
+  // variables that don't directly specify the function type, so type aliases
+  // can be ignored.
+  if (QT->getAs<TypedefType>())
+    return false;
+  if (const auto *P = QT->getAs<PointerType>())
+    if (P->getPointeeType()->getAs<TypedefType>())
+      return false;
+  if (const auto *P = QT->getAs<BlockPointerType>())
+    if (P->getPointeeType()->getAs<TypedefType>())
+      return false;
+  return QT->isFunctionPointerType() || QT->isBlockPointerType();
 }
 
 bool Sema::isObjCPropertyDecl() {

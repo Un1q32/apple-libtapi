@@ -33,11 +33,6 @@
     },
     {
       "linkage": "exported",
-      "name": "_threadGlobal",
-      "threadLocalValue": true
-    },
-    {
-      "linkage": "exported",
       "name": "_weakGlobal",
       "weakDefined": true
     },
@@ -47,11 +42,20 @@
       "weakReferenced": true
     },
     {
+      "linkage": "exported",
+      "name": "_threadGlobal",
+      "threadLocalValue": true
+    },
+    {
       "linkage": "external",
       "name": "dyld_stub_binder"
     }
   ],
   "interfaces": [
+    {
+      "name": "Simple",
+      "super": "NSObject"
+    },
     {
       "instanceMethods": [
         {
@@ -69,10 +73,6 @@
       ],
       "name": "FooClass",
       "super": ""
-    },
-    {
-      "name": "Simple",
-      "super": "NSObject"
     }
   ],
   "potentiallyDefinedSelectors": [

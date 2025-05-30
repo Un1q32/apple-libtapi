@@ -42,7 +42,6 @@ def build(parser, args):
                                           projects,
                                           args.override_compiler,
                                           args.extra_analyzer_config,
-                                          args.extra_checkers,
                                           args.regenerate,
                                           args.strictness)
     tests_passed = tester.test_all()
@@ -251,10 +250,6 @@ def main():
                               dest="extra_analyzer_config", type=str,
                               default="",
                               help="Arguments passed to to -analyzer-config")
-    build_parser.add_argument("--extra-checkers",
-                              dest="extra_checkers", type=str,
-                              default="",
-                              help="Extra checkers to enable")
     build_parser.add_argument("--projects", action="store", default="",
                               help="Comma-separated list of projects to test")
     build_parser.add_argument("--max-size", action="store", default=None,
@@ -321,7 +316,7 @@ def main():
     dock_parser.add_argument("--clang-dir", action="store", default="",
                              help="Path to find/install LLVM installation.")
     dock_parser.add_argument("rest", nargs=argparse.REMAINDER, default=[],
-                             help="Additional args that will be forwarded "
+                             help="Additionall args that will be forwarded "
                              "to the docker's entrypoint.")
     dock_parser.set_defaults(func=docker)
 

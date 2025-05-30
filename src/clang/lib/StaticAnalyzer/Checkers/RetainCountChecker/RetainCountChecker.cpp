@@ -45,7 +45,7 @@ static ProgramStateRef removeRefBinding(ProgramStateRef State, SymbolRef Sym) {
 
 void RefVal::print(raw_ostream &Out) const {
   if (!T.isNull())
-    Out << "Tracked " << T << " | ";
+    Out << "Tracked " << T.getAsString() << " | ";
 
   switch (getKind()) {
     default: llvm_unreachable("Invalid RefVal kind");
@@ -290,7 +290,7 @@ void RetainCountChecker::checkPostStmt(const ObjCIvarRefExpr *IRE,
 
   ProgramStateRef State = C.getState();
   SymbolRef Sym = State->getSVal(*IVarLoc).getAsSymbol();
-  if (!Sym || !isa_and_nonnull<ObjCIvarRegion>(Sym->getOriginRegion()))
+  if (!Sym || !dyn_cast_or_null<ObjCIvarRegion>(Sym->getOriginRegion()))
     return;
 
   // Accessing an ivar directly is unusual. If we've done that, be more
@@ -420,7 +420,7 @@ static Optional<RefVal> refValFromRetEffect(RetEffect RE,
     return RefVal::makeNotOwned(RE.getObjKind(), ResultTy);
   }
 
-  return std::nullopt;
+  return None;
 }
 
 static bool isPointerToObject(QualType QT) {
@@ -767,7 +767,7 @@ ProgramStateRef RetainCountChecker::updateSymbol(ProgramStateRef state,
         break;
       }
 
-      [[fallthrough]];
+      LLVM_FALLTHROUGH;
 
     case DoNothing:
       return state;
@@ -945,8 +945,7 @@ bool RetainCountChecker::evalCall(const CallEvent &Call,
 
       // Assume that output is zero on the other branch.
       NullOutputState = NullOutputState->BindExpr(
-          CE, LCtx, C.getSValBuilder().makeNullWithType(ResultTy),
-          /*Invalidate=*/false);
+          CE, LCtx, C.getSValBuilder().makeNull(), /*Invalidate=*/false);
       C.addTransition(NullOutputState, &getCastFailTag());
 
       // And on the original branch assume that both input and
@@ -1189,14 +1188,14 @@ ProgramStateRef RetainCountChecker::checkRegionChanges(
   if (!invalidated)
     return state;
 
-  llvm::SmallPtrSet<SymbolRef, 8> AllowedSymbols;
+  llvm::SmallPtrSet<SymbolRef, 8> WhitelistedSymbols;
 
   for (const MemRegion *I : ExplicitRegions)
     if (const SymbolicRegion *SR = I->StripCasts()->getAs<SymbolicRegion>())
-      AllowedSymbols.insert(SR->getSymbol());
+      WhitelistedSymbols.insert(SR->getSymbol());
 
   for (SymbolRef sym : *invalidated) {
-    if (AllowedSymbols.count(sym))
+    if (WhitelistedSymbols.count(sym))
       continue;
     // Remove any existing reference-count binding.
     state = removeRefBinding(state, sym);

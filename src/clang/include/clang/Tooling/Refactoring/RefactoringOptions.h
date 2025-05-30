@@ -6,8 +6,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef LLVM_CLANG_TOOLING_REFACTORING_REFACTORINGOPTIONS_H
-#define LLVM_CLANG_TOOLING_REFACTORING_REFACTORINGOPTIONS_H
+#ifndef LLVM_CLANG_TOOLING_REFACTOR_REFACTORING_OPTIONS_H
+#define LLVM_CLANG_TOOLING_REFACTOR_REFACTORING_OPTIONS_H
 
 #include "clang/Basic/LLVM.h"
 #include "clang/Tooling/Refactoring/RefactoringActionRuleRequirements.h"
@@ -24,7 +24,7 @@ template <typename T,
           typename = std::enable_if_t<traits::IsValidOptionType<T>::value>>
 class OptionalRefactoringOption : public RefactoringOption {
 public:
-  void passToVisitor(RefactoringOptionVisitor &Visitor) final {
+  void passToVisitor(RefactoringOptionVisitor &Visitor) final override {
     Visitor.visit(*this, Value);
   }
 
@@ -48,10 +48,10 @@ public:
   const ValueType &getValue() const {
     return *OptionalRefactoringOption<T>::Value;
   }
-  bool isRequired() const final { return true; }
+  bool isRequired() const final override { return true; }
 };
 
 } // end namespace tooling
 } // end namespace clang
 
-#endif // LLVM_CLANG_TOOLING_REFACTORING_REFACTORINGOPTIONS_H
+#endif // LLVM_CLANG_TOOLING_REFACTOR_REFACTORING_OPTIONS_H

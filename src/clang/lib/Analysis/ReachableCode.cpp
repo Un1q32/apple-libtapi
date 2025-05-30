@@ -87,8 +87,10 @@ static bool isDeadReturn(const CFGBlock *B, const Stmt *S) {
   // block, or may be in a subsequent block because of destructors.
   const CFGBlock *Current = B;
   while (true) {
-    for (const CFGElement &CE : llvm::reverse(*Current)) {
-      if (Optional<CFGStmt> CS = CE.getAs<CFGStmt>()) {
+    for (CFGBlock::const_reverse_iterator I = Current->rbegin(),
+                                          E = Current->rend();
+         I != E; ++I) {
+      if (Optional<CFGStmt> CS = I->getAs<CFGStmt>()) {
         if (const ReturnStmt *RS = dyn_cast<ReturnStmt>(CS->getStmt())) {
           if (RS == S)
             return true;
@@ -218,15 +220,14 @@ static bool isConfigurationValue(const Stmt *S,
       return isConfigurationValue(cast<DeclRefExpr>(S)->getDecl(), PP);
     case Stmt::ObjCBoolLiteralExprClass:
       IgnoreYES_NO = true;
-      [[fallthrough]];
+      LLVM_FALLTHROUGH;
     case Stmt::CXXBoolLiteralExprClass:
     case Stmt::IntegerLiteralClass: {
       const Expr *E = cast<Expr>(S);
       if (IncludeIntegers) {
         if (SilenceableCondVal && !SilenceableCondVal->getBegin().isValid())
           *SilenceableCondVal = E->getSourceRange();
-        return WrappedInParens ||
-               isExpandedFromConfigurationMacro(E, PP, IgnoreYES_NO);
+        return WrappedInParens || isExpandedFromConfigurationMacro(E, PP, IgnoreYES_NO);
       }
       return false;
     }
@@ -299,12 +300,6 @@ static bool shouldTreatSuccessorsAsReachable(const CFGBlock *B,
     if (isa<BinaryOperator>(Term)) {
       return isConfigurationValue(Term, PP);
     }
-    // Do not treat constexpr if statement successors as unreachable in warnings
-    // since the point of these statements is to determine branches at compile
-    // time.
-    if (const auto *IS = dyn_cast<IfStmt>(Term);
-        IS != nullptr && IS->isConstexpr())
-      return true;
   }
 
   const Stmt *Cond = B->getTerminatorCondition(/* stripParens */ false);
@@ -351,13 +346,13 @@ static unsigned scanFromBlock(const CFGBlock *Start,
         if (!UB)
           break;
 
-        if (!TreatAllSuccessorsAsReachable) {
+        if (!TreatAllSuccessorsAsReachable.hasValue()) {
           assert(PP);
           TreatAllSuccessorsAsReachable =
             shouldTreatSuccessorsAsReachable(item, *PP);
         }
 
-        if (*TreatAllSuccessorsAsReachable) {
+        if (TreatAllSuccessorsAsReachable.getValue()) {
           B = UB;
           break;
         }
@@ -535,11 +530,12 @@ unsigned DeadCodeScan::scanBackwards(const clang::CFGBlock *Start,
   // earliest location.
   if (!DeferredLocs.empty()) {
     llvm::array_pod_sort(DeferredLocs.begin(), DeferredLocs.end(), SrcCmp);
-    for (const auto &I : DeferredLocs) {
-      const CFGBlock *Block = I.first;
+    for (DeferredLocsTy::iterator I = DeferredLocs.begin(),
+         E = DeferredLocs.end(); I != E; ++I) {
+      const CFGBlock *Block = I->first;
       if (Reachable[Block->getBlockID()])
         continue;
-      reportDeadCode(Block, I.second, CB);
+      reportDeadCode(Block, I->second, CB);
       count += scanMaybeReachableFromBlock(Block, PP, Reachable);
     }
   }
@@ -698,15 +694,18 @@ void FindUnreachableCode(AnalysisDeclContext &AC, Preprocessor &PP,
   // If there aren't explicit EH edges, we should include the 'try' dispatch
   // blocks as roots.
   if (!AC.getCFGBuildOptions().AddEHEdges) {
-    for (const CFGBlock *B : cfg->try_blocks())
-      numReachable += scanMaybeReachableFromBlock(B, PP, reachable);
+    for (CFG::try_block_iterator I = cfg->try_blocks_begin(),
+         E = cfg->try_blocks_end() ; I != E; ++I) {
+      numReachable += scanMaybeReachableFromBlock(*I, PP, reachable);
+    }
     if (numReachable == cfg->getNumBlockIDs())
       return;
   }
 
   // There are some unreachable blocks.  We need to find the root blocks that
   // contain code that should be considered unreachable.
-  for (const CFGBlock *block : *cfg) {
+  for (CFG::iterator I = cfg->begin(), E = cfg->end(); I != E; ++I) {
+    const CFGBlock *block = *I;
     // A block may have been marked reachable during this loop.
     if (reachable[block->getBlockID()])
       continue;

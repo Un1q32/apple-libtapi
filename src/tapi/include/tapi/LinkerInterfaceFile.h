@@ -98,13 +98,12 @@ public:
   /// \brief Check if we should prefer the text-based stub file.
   ///
   /// \param[in] path full path to the text-based stub file.
-  /// \returns true if the text-based stub file should be prefered over any
+  /// \returns true if the tex-based stub file should be prefered over any
   ///          dynamic library.
   /// \since 1.0
-  /// \deprecated 2.1
   ///
-  static bool shouldPreferTextBasedStubFile(const std::string &path) noexcept
-      __attribute__((deprecated));
+  static bool shouldPreferTextBasedStubFile(const std::string &path) noexcept;
+
   ///
   /// \brief Check if the text-based stub file and the MachO dynamic library
   ///        file are in sync.
@@ -116,11 +115,9 @@ public:
   /// \param[in] dylibPath full path to the MachO dynamic library file.
   /// \returns true if both files are in sync.
   /// \since 1.0
-  /// \deprecated 2.1
   ///
   static bool areEquivalent(const std::string &tbdPath,
-                            const std::string &dylibPath) noexcept
-      __attribute__((deprecated));
+                            const std::string &dylibPath) noexcept;
 
   ///
   /// \brief Create a LinkerInterfaceFile from a file.
@@ -149,20 +146,8 @@ public:
   /// \return Returns the set of platforms supported by the TAPI file as
   ///         defined by the MachO load command LC_BUILD_VERSION.
   /// \since 1.6
-  /// \deprecated 2.2
   ///
-  const std::vector<uint32_t> &getPlatformSet() const noexcept
-      __attribute__((deprecated));
-
-  ///
-  /// \brief Query the minimum deployment version for matching platforms.
-  /// \return Returns the set of platforms supported by the TAPI file as
-  ///         defined by the MachO load command LC_BUILD_VERSION and
-  ///         matching minimum deployment version.
-  /// \since 2.2
-  ///
-  const std::vector<std::pair<uint32_t, PackedVersion32>> &
-  getPlatformsAndMinDeployment() const noexcept;
+  const std::vector<uint32_t> &getPlatformSet() const noexcept;
 
   ///
   /// \brief Query the install name.
@@ -256,13 +241,6 @@ public:
   /// \since 1.0
   ///
   const std::vector<std::string> &reexportedLibraries() const noexcept;
-
-  ///
-  /// \brief Obtain the list of run path search paths.
-  /// \return Returns a list of run path search paths.
-  /// \since 2.2
-  ///
-  const std::vector<std::string> &rPaths() const noexcept;
 
   ///
   /// \brief Obtain a list of all symbols to be ignored.

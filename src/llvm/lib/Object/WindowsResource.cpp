@@ -12,11 +12,13 @@
 
 #include "llvm/Object/WindowsResource.h"
 #include "llvm/Object/COFF.h"
+#include "llvm/Support/FileOutputBuffer.h"
 #include "llvm/Support/FormatVariadic.h"
 #include "llvm/Support/MathExtras.h"
 #include "llvm/Support/ScopedPrinter.h"
 #include <ctime>
 #include <queue>
+#include <system_error>
 
 using namespace llvm;
 using namespace object;
@@ -938,7 +940,7 @@ void WindowsResourceCOFFWriter::writeDirectoryTree() {
 
   RelocationAddresses.resize(Data.size());
   // Now write all the resource data entries.
-  for (const auto *DataNodes : DataEntriesTreeOrder) {
+  for (auto DataNodes : DataEntriesTreeOrder) {
     auto *Entry = reinterpret_cast<coff_resource_data_entry *>(BufferStart +
                                                                CurrentOffset);
     RelocationAddresses[DataNodes->getDataIndex()] = CurrentRelativeOffset;
@@ -989,7 +991,6 @@ void WindowsResourceCOFFWriter::writeFirstSectionRelocations() {
       Reloc->Type = COFF::IMAGE_REL_I386_DIR32NB;
       break;
     case COFF::IMAGE_FILE_MACHINE_ARM64:
-    case COFF::IMAGE_FILE_MACHINE_ARM64EC:
       Reloc->Type = COFF::IMAGE_REL_ARM64_ADDR32NB;
       break;
     default:

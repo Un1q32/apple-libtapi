@@ -26,9 +26,11 @@
 #include "llvm/IR/Function.h"
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/IntrinsicInst.h"
+#include "llvm/IR/Intrinsics.h"
 #include "llvm/IR/PatternMatch.h"
 #include "llvm/InitializePasses.h"
 #include "llvm/Pass.h"
+#include "llvm/Support/Debug.h"
 #include "llvm/Transforms/Scalar.h"
 #include "llvm/Transforms/Utils/Local.h"
 
@@ -53,17 +55,11 @@ static bool replaceConditionalBranchesOnConstant(Instruction *II,
                                                  Value *NewValue,
                                                  DomTreeUpdater *DTU) {
   bool HasDeadBlocks = false;
-  SmallSetVector<Instruction *, 8> UnsimplifiedUsers;
+  SmallSetVector<Instruction *, 8> Worklist;
   replaceAndRecursivelySimplify(II, NewValue, nullptr, nullptr, nullptr,
-                                &UnsimplifiedUsers);
-  // UnsimplifiedUsers can contain PHI nodes that may be removed when
-  // replacing the branch instructions, so use a value handle worklist
-  // to handle those possibly removed instructions.
-  SmallVector<WeakVH, 8> Worklist(UnsimplifiedUsers.begin(),
-                                  UnsimplifiedUsers.end());
-
-  for (auto &VH : Worklist) {
-    BranchInst *BI = dyn_cast_or_null<BranchInst>(VH);
+                                &Worklist);
+  for (auto I : Worklist) {
+    BranchInst *BI = dyn_cast<BranchInst>(I);
     if (!BI)
       continue;
     if (BI->isUnconditional())
@@ -94,7 +90,7 @@ static bool replaceConditionalBranchesOnConstant(Instruction *II,
   return HasDeadBlocks;
 }
 
-static bool lowerConstantIntrinsics(Function &F, const TargetLibraryInfo &TLI,
+static bool lowerConstantIntrinsics(Function &F, const TargetLibraryInfo *TLI,
                                     DominatorTree *DT) {
   Optional<DomTreeUpdater> DTU;
   if (DT)
@@ -138,21 +134,21 @@ static bool lowerConstantIntrinsics(Function &F, const TargetLibraryInfo &TLI,
       IsConstantIntrinsicsHandled++;
       break;
     case Intrinsic::objectsize:
-      NewValue = lowerObjectSizeCall(II, DL, &TLI, true);
+      NewValue = lowerObjectSizeCall(II, DL, TLI, true);
       ObjectSizeIntrinsicsHandled++;
       break;
     }
     HasDeadBlocks |= replaceConditionalBranchesOnConstant(
-        II, NewValue, DTU ? DTU.getPointer() : nullptr);
+        II, NewValue, DTU.hasValue() ? DTU.getPointer() : nullptr);
   }
   if (HasDeadBlocks)
-    removeUnreachableBlocks(F, DTU ? DTU.getPointer() : nullptr);
+    removeUnreachableBlocks(F, DTU.hasValue() ? DTU.getPointer() : nullptr);
   return !Worklist.empty();
 }
 
 PreservedAnalyses
 LowerConstantIntrinsicsPass::run(Function &F, FunctionAnalysisManager &AM) {
-  if (lowerConstantIntrinsics(F, AM.getResult<TargetLibraryAnalysis>(F),
+  if (lowerConstantIntrinsics(F, AM.getCachedResult<TargetLibraryAnalysis>(F),
                               AM.getCachedResult<DominatorTreeAnalysis>(F))) {
     PreservedAnalyses PA;
     PA.preserve<DominatorTreeAnalysis>();
@@ -176,8 +172,8 @@ public:
   }
 
   bool runOnFunction(Function &F) override {
-    const TargetLibraryInfo &TLI =
-        getAnalysis<TargetLibraryInfoWrapperPass>().getTLI(F);
+    auto *TLIP = getAnalysisIfAvailable<TargetLibraryInfoWrapperPass>();
+    const TargetLibraryInfo *TLI = TLIP ? &TLIP->getTLI(F) : nullptr;
     DominatorTree *DT = nullptr;
     if (auto *DTWP = getAnalysisIfAvailable<DominatorTreeWrapperPass>())
       DT = &DTWP->getDomTree();
@@ -185,7 +181,6 @@ public:
   }
 
   void getAnalysisUsage(AnalysisUsage &AU) const override {
-    AU.addRequired<TargetLibraryInfoWrapperPass>();
     AU.addPreserved<GlobalsAAWrapperPass>();
     AU.addPreserved<DominatorTreeWrapperPass>();
   }
@@ -195,7 +190,6 @@ public:
 char LowerConstantIntrinsics::ID = 0;
 INITIALIZE_PASS_BEGIN(LowerConstantIntrinsics, "lower-constant-intrinsics",
                       "Lower constant intrinsics", false, false)
-INITIALIZE_PASS_DEPENDENCY(TargetLibraryInfoWrapperPass)
 INITIALIZE_PASS_DEPENDENCY(DominatorTreeWrapperPass)
 INITIALIZE_PASS_END(LowerConstantIntrinsics, "lower-constant-intrinsics",
                     "Lower constant intrinsics", false, false)

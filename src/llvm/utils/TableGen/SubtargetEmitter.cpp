@@ -74,7 +74,6 @@ class SubtargetEmitter {
   std::string Target;
 
   void Enumeration(raw_ostream &OS, DenseMap<Record *, unsigned> &FeatureMap);
-  void EmitSubtargetInfoMacroCalls(raw_ostream &OS);
   unsigned FeatureKeyValues(raw_ostream &OS,
                             const DenseMap<Record *, unsigned> &FeatureMap);
   unsigned CPUKeyValues(raw_ostream &OS,
@@ -123,7 +122,8 @@ class SubtargetEmitter {
 
   void EmitSchedModel(raw_ostream &OS);
   void EmitHwModeCheck(const std::string &ClassName, raw_ostream &OS);
-  void ParseFeaturesFunction(raw_ostream &OS);
+  void ParseFeaturesFunction(raw_ostream &OS, unsigned NumFeatures,
+                             unsigned NumProcs);
 
 public:
   SubtargetEmitter(RecordKeeper &R, CodeGenTarget &TGT)
@@ -191,42 +191,6 @@ static void printFeatureMask(raw_ostream &OS, RecVec &FeatureList,
     OS << "ULL, ";
   }
   OS << "} } }";
-}
-
-/// Emit some information about the SubtargetFeature as calls to a macro so
-/// that they can be used from C++.
-void SubtargetEmitter::EmitSubtargetInfoMacroCalls(raw_ostream &OS) {
-  OS << "\n#ifdef GET_SUBTARGETINFO_MACRO\n";
-
-  std::vector<Record *> FeatureList =
-      Records.getAllDerivedDefinitions("SubtargetFeature");
-  llvm::sort(FeatureList, LessRecordFieldName());
-
-  for (const Record *Feature : FeatureList) {
-    const StringRef Attribute = Feature->getValueAsString("Attribute");
-    const StringRef Value = Feature->getValueAsString("Value");
-
-    // Only handle boolean features for now, excluding BitVectors and enums.
-    const bool IsBool = (Value == "false" || Value == "true") &&
-                        !StringRef(Attribute).contains('[');
-    if (!IsBool)
-      continue;
-
-    // Some features default to true, with values set to false if enabled.
-    const char *Default = Value == "false" ? "true" : "false";
-
-    // Define the getter with lowercased first char: xxxYyy() { return XxxYyy; }
-    const std::string Getter =
-        Attribute.substr(0, 1).lower() + Attribute.substr(1).str();
-
-    OS << "GET_SUBTARGETINFO_MACRO(" << Attribute << ", " << Default << ", "
-       << Getter << ")\n";
-  }
-  OS << "#undef GET_SUBTARGETINFO_MACRO\n";
-  OS << "#endif // GET_SUBTARGETINFO_MACRO\n\n";
-
-  OS << "\n#ifdef GET_SUBTARGETINFO_MC_DESC\n";
-  OS << "#undef GET_SUBTARGETINFO_MC_DESC\n\n";
 }
 
 //
@@ -1469,6 +1433,7 @@ static void emitPredicateProlog(const RecordKeeper &Records, raw_ostream &OS) {
   for (Record *P : Prologs)
     Stream << P->getValueAsString("Code") << '\n';
 
+  Stream.flush();
   OS << Buffer;
 }
 
@@ -1527,6 +1492,7 @@ static void emitPredicates(const CodeGenSchedTransition &T,
   }
 
   SS << "return " << T.ToClassIdx << "; // " << SC.Name << '\n';
+  SS.flush();
   OS << Buffer;
 }
 
@@ -1560,7 +1526,9 @@ static void collectVariantClasses(const CodeGenSchedModels &SchedModels,
     if (OnlyExpandMCInstPredicates) {
       // Ignore this variant scheduling class no transitions use any meaningful
       // MCSchedPredicate definitions.
-      if (llvm::none_of(SC.Transitions, hasMCSchedPredicates))
+      if (!any_of(SC.Transitions, [](const CodeGenSchedTransition &T) {
+            return hasMCSchedPredicates(T);
+          }))
         continue;
     }
 
@@ -1582,7 +1550,8 @@ static void collectProcessorIndices(const CodeGenSchedClass &SC,
 }
 
 static bool isAlwaysTrue(const CodeGenSchedTransition &T) {
-  return llvm::all_of(T.PredTerm, isTruePredicate);
+  return llvm::all_of(T.PredTerm,
+                      [](const Record *R) { return isTruePredicate(R); });
 }
 
 void SubtargetEmitter::emitSchedModelHelpersImpl(
@@ -1717,9 +1686,13 @@ void SubtargetEmitter::EmitHwModeCheck(const std::string &ClassName,
   OS << "  return 0;\n}\n";
 }
 
-// Produces a subtarget specific function for parsing
+//
+// ParseFeaturesFunction - Produces a subtarget specific function for parsing
 // the subtarget features string.
-void SubtargetEmitter::ParseFeaturesFunction(raw_ostream &OS) {
+//
+void SubtargetEmitter::ParseFeaturesFunction(raw_ostream &OS,
+                                             unsigned NumFeatures,
+                                             unsigned NumProcs) {
   std::vector<Record*> Features =
                        Records.getAllDerivedDefinitions("SubtargetFeature");
   llvm::sort(Features, LessRecord());
@@ -1835,7 +1808,8 @@ void SubtargetEmitter::run(raw_ostream &OS) {
   OS << "} // end namespace llvm\n\n";
   OS << "#endif // GET_SUBTARGETINFO_ENUM\n\n";
 
-  EmitSubtargetInfoMacroCalls(OS);
+  OS << "\n#ifdef GET_SUBTARGETINFO_MC_DESC\n";
+  OS << "#undef GET_SUBTARGETINFO_MC_DESC\n\n";
 
   OS << "namespace llvm {\n";
 #if 0
@@ -1889,7 +1863,7 @@ void SubtargetEmitter::run(raw_ostream &OS) {
 
   OS << "#include \"llvm/Support/Debug.h\"\n";
   OS << "#include \"llvm/Support/raw_ostream.h\"\n\n";
-  ParseFeaturesFunction(OS);
+  ParseFeaturesFunction(OS, NumFeatures, NumProcs);
 
   OS << "#endif // GET_SUBTARGETINFO_TARGET_DESC\n\n";
 

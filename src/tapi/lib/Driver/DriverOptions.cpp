@@ -37,7 +37,7 @@ namespace {
 /// \brief Create OptTable class for parsing actual command line arguments.
 class DriverOptTable : public OptTable {
 public:
-  DriverOptTable() : OptTable(infoTable, std::size(infoTable)) {}
+  DriverOptTable() : OptTable(infoTable, array_lengthof(infoTable)) {}
 };
 
 } // end anonymous namespace.

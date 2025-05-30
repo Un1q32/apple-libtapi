@@ -69,7 +69,7 @@ class DemandedBits;
 class DominatorTree;
 class Function;
 class Loop;
-class LoopAccessInfoManager;
+class LoopAccessInfo;
 class LoopInfo;
 class OptimizationRemarkEmitter;
 class ProfileSummaryInfo;
@@ -79,38 +79,6 @@ class TargetTransformInfo;
 
 extern cl::opt<bool> EnableLoopInterleaving;
 extern cl::opt<bool> EnableLoopVectorization;
-
-/// A marker to determine if extra passes after loop vectorization should be
-/// run.
-struct ShouldRunExtraVectorPasses
-    : public AnalysisInfoMixin<ShouldRunExtraVectorPasses> {
-  static AnalysisKey Key;
-  struct Result {
-    bool invalidate(Function &F, const PreservedAnalyses &PA,
-                    FunctionAnalysisManager::Invalidator &) {
-      // Check whether the analysis has been explicitly invalidated. Otherwise,
-      // it remains preserved.
-      auto PAC = PA.getChecker<ShouldRunExtraVectorPasses>();
-      return !PAC.preservedWhenStateless();
-    }
-  };
-
-  Result run(Function &F, FunctionAnalysisManager &FAM) { return Result(); }
-};
-
-/// A pass manager to run a set of extra function simplification passes after
-/// vectorization, if requested. LoopVectorize caches the
-/// ShouldRunExtraVectorPasses analysis to request extra simplifications, if
-/// they could be beneficial.
-struct ExtraVectorPassManager : public FunctionPassManager {
-  PreservedAnalyses run(Function &F, FunctionAnalysisManager &AM) {
-    auto PA = PreservedAnalyses::all();
-    if (AM.getCachedResult<ShouldRunExtraVectorPasses>(F))
-      PA.intersect(FunctionPassManager::run(F, AM));
-    PA.abandon<ShouldRunExtraVectorPasses>();
-    return PA;
-  }
-};
 
 struct LoopVectorizeOptions {
   /// If false, consider all loops for interleaving.
@@ -180,20 +148,19 @@ public:
   DemandedBits *DB;
   AAResults *AA;
   AssumptionCache *AC;
-  LoopAccessInfoManager *LAIs;
+  std::function<const LoopAccessInfo &(Loop &)> *GetLAA;
   OptimizationRemarkEmitter *ORE;
   ProfileSummaryInfo *PSI;
 
   PreservedAnalyses run(Function &F, FunctionAnalysisManager &AM);
-  void printPipeline(raw_ostream &OS,
-                     function_ref<StringRef(StringRef)> MapClassName2PassName);
 
   // Shim for old PM.
   LoopVectorizeResult
   runImpl(Function &F, ScalarEvolution &SE_, LoopInfo &LI_,
           TargetTransformInfo &TTI_, DominatorTree &DT_,
           BlockFrequencyInfo &BFI_, TargetLibraryInfo *TLI_, DemandedBits &DB_,
-          AAResults &AA_, AssumptionCache &AC_, LoopAccessInfoManager &LAIs_,
+          AAResults &AA_, AssumptionCache &AC_,
+          std::function<const LoopAccessInfo &(Loop &)> &GetLAA_,
           OptimizationRemarkEmitter &ORE_, ProfileSummaryInfo *PSI_);
 
   bool processLoop(Loop *L);

@@ -13,6 +13,7 @@
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/TableGen/Record.h"
 #include "llvm/TableGen/TableGenBackend.h"
+#include <cctype>
 #include <cstring>
 #include <map>
 #include <memory>
@@ -34,14 +35,29 @@ static raw_ostream &write_cstring(raw_ostream &OS, llvm::StringRef Str) {
   return OS;
 }
 
-static std::string getOptionPrefixedName(const Record &R) {
+static std::string getOptionSpelling(const Record &R, size_t &PrefixLength) {
   std::vector<StringRef> Prefixes = R.getValueAsListOfStrings("Prefixes");
   StringRef Name = R.getValueAsString("Name");
 
-  if (Prefixes.empty())
+  if (Prefixes.empty()) {
+    PrefixLength = 0;
     return Name.str();
+  }
 
-  return (Prefixes[0] + Twine(Name)).str();
+  PrefixLength = Prefixes[0].size();
+  return (Twine(Prefixes[0]) + Twine(Name)).str();
+}
+
+static std::string getOptionSpelling(const Record &R) {
+  size_t PrefixLength;
+  return getOptionSpelling(R, PrefixLength);
+}
+
+static void emitNameUsingSpelling(raw_ostream &OS, const Record &R) {
+  size_t PrefixLength;
+  OS << "&";
+  write_cstring(OS, StringRef(getOptionSpelling(R, PrefixLength)));
+  OS << "[" << PrefixLength << "]";
 }
 
 class MarshallingInfo {
@@ -89,6 +105,8 @@ struct SimpleEnumValueTable {
   }
 
   void emit(raw_ostream &OS) const {
+    write_cstring(OS, StringRef(getOptionSpelling(R)));
+    OS << ", ";
     OS << ShouldParse;
     OS << ", ";
     OS << ShouldAlwaysEmit;
@@ -155,7 +173,7 @@ static MarshallingInfo createMarshallingInfo(const Record &R) {
   Ret.NormalizedValuesScope = R.getValueAsString("NormalizedValuesScope");
   Ret.ImpliedCheck = R.getValueAsString("ImpliedCheck");
   Ret.ImpliedValue =
-      R.getValueAsOptionalString("ImpliedValue").value_or(Ret.DefaultValue);
+      R.getValueAsOptionalString("ImpliedValue").getValueOr(Ret.DefaultValue);
 
   Ret.ShouldParse = R.getValueAsString("ShouldParse");
   Ret.Normalizer = R.getValueAsString("Normalizer");
@@ -293,8 +311,8 @@ void EmitOptParser(RecordKeeper &Records, raw_ostream &OS) {
     std::vector<StringRef> RPrefixes = R.getValueAsListOfStrings("Prefixes");
     OS << Prefixes[PrefixKeyT(RPrefixes.begin(), RPrefixes.end())] << ", ";
 
-    // The option prefixed name.
-    write_cstring(OS, getOptionPrefixedName(R));
+    // The option string.
+    emitNameUsingSpelling(OS, R);
 
     // The option identifier name.
     OS << ", " << getOptionName(R);

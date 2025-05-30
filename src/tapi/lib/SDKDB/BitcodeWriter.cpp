@@ -25,7 +25,6 @@
 #include "llvm/Support/EndianStream.h"
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/OnDiskHashTable.h"
-#include "llvm/Support/Path.h"
 
 using namespace llvm;
 
@@ -273,7 +272,7 @@ public:
       return;
     processAPIRecord(record);
     processObjCContainer(record);
-    strTable.add(record.superClass);
+    strTable.add(record.superClass.name);
   }
 
   void visitObjCCategory(const ObjCCategoryRecord &record) override {
@@ -281,7 +280,7 @@ public:
       return;
     processAPIRecord(record);
     processObjCContainer(record);
-    strTable.add(record.interface);
+    strTable.add(record.interface.name);
   }
 
   void visitObjCProtocol(const ObjCProtocolRecord &record) override {
@@ -756,8 +755,6 @@ void SDKDBWriter::writeBlockInfoBlock() {
     // SuperClass Name.
     abbv->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::VBR, 8));
     abbv->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::VBR, 6));
-    // Exception attribute.
-    abbv->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::Fixed, 1));
     if (writer->EmitBlockInfoAbbrev(OBJC_CLASS_BLOCK_ID, abbv) !=
         OBJC_CLASS_INFO_ABBREV)
       llvm_unreachable("Unexpected abbrev ordering!");
@@ -867,8 +864,6 @@ void SDKDBWriter::writeBlockInfoBlock() {
     auto abbv = std::make_shared<BitCodeAbbrev>();
     abbv->Add(BitCodeAbbrevOp(objc_ivar_block::INFO));
     addAPIRecordAbbrev(abbv.get());
-    // access control.
-    abbv->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::Fixed, 3));
     if (writer->EmitBlockInfoAbbrev(OBJC_IVAR_BLOCK_ID, abbv) !=
         OBJC_IVAR_ABBREV)
       llvm_unreachable("Unexpected abbrev ordering!");
@@ -1103,9 +1098,9 @@ void SDKDBWriter::writeBinaryInfoBlock(const BinaryInfo &info) {
     writer->EmitRecordWithAbbrev(API_PARENT_UMBRELLA_ABBREV, scratchRecord);
   }
 
-  if (info.currentVersion.rawValue() || info.compatibilityVersion.rawValue()) {
-    scratchRecord = {api_block::DYLIB_VERSION, info.currentVersion.rawValue(),
-                     info.compatibilityVersion.rawValue()};
+  if (info.currentVersion._version || info.compatibilityVersion._version) {
+    scratchRecord = {api_block::DYLIB_VERSION, info.currentVersion._version,
+                     info.compatibilityVersion._version};
     writer->EmitRecordWithAbbrev(API_DYLIB_VERSION_ABBREV, scratchRecord);
   }
 
@@ -1171,7 +1166,7 @@ void APICollector::processObjCContainer(const ObjCContainerRecord &record) {
     processAPIRecord(*ivar);
 
   for (auto protocol : record.protocols)
-    strTable.add(protocol);
+    strTable.add(protocol.name);
 }
 
 void APISerializer::visitGlobal(const GlobalRecord &record) {
@@ -1199,10 +1194,9 @@ void APISerializer::visitObjCInterface(const ObjCInterfaceRecord &record) {
     return;
 
   BCBlockRAII restoreBlock(writer, OBJC_CLASS_BLOCK_ID, /*abbrevLen=*/4);
-  unsigned superOffset = stringBuilder.getOffset(record.superClass);
+  unsigned superOffset = stringBuilder.getOffset(record.superClass.name);
   scratchRecord.push_back(superOffset);
-  scratchRecord.push_back(record.superClass.size());
-  scratchRecord.push_back(record.hasExceptionAttribute);
+  scratchRecord.push_back(record.superClass.name.size());
   writer.EmitRecordWithAbbrev(OBJC_CLASS_INFO_ABBREV, scratchRecord);
   writeAvailabilityBlock(record.availability, objc_class_block::AVAILABILITY,
                          OBJC_CLASS_AVAILABILITY_ABBREV);
@@ -1221,9 +1215,9 @@ void APISerializer::visitObjCCategory(const ObjCCategoryRecord &record) {
     return;
 
   BCBlockRAII restoreBlock(writer, OBJC_CATEGORY_BLOCK_ID, /*abbrevLen=*/4);
-  unsigned interfaceOffset = stringBuilder.getOffset(record.interface);
+  unsigned interfaceOffset = stringBuilder.getOffset(record.interface.name);
   scratchRecord.push_back(interfaceOffset);
-  scratchRecord.push_back(record.interface.size());
+  scratchRecord.push_back(record.interface.name.size());
   writer.EmitRecordWithAbbrev(OBJC_CATEGORY_INFO_ABBREV, scratchRecord);
   writeAvailabilityBlock(record.availability, objc_category_block::AVAILABILITY,
                          OBJC_CATEGORY_AVAILABILITY_ABBREV);
@@ -1308,16 +1302,12 @@ bool APISerializer::loadRecordIntoScratch(unsigned abbrev,
 
   unsigned nameOffset = stringBuilder.getOffset(record.name);
   unsigned nameSize = record.name.size();
-  // Maskout the high bits of flags to prevent version mismatch.
-  // FIXME: The 3 bit restriction should be removed in the next major
-  // update.
-  const unsigned flags = (uint8_t)record.flags & 0x1f;
   scratchRecord = {abbrev,
                    nameOffset,
                    nameSize,
                    (unsigned)record.access,
                    (unsigned)record.linkage,
-                   flags};
+                   (unsigned)record.flags};
   return true;
 }
 
@@ -1326,7 +1316,7 @@ void APISerializer::writeAvailabilityBlock(const AvailabilityInfo &info,
   if (info.isDefault())
     return;
 
-  scratchRecord = {id, info._introduced.rawValue(), info._obsoleted.rawValue(),
+  scratchRecord = {id, info._introduced._version, info._obsoleted._version,
                    info._unavailable, info._isSPIAvailable};
   writer.EmitRecordWithAbbrev(abbrev, scratchRecord);
 }
@@ -1362,8 +1352,8 @@ void APISerializer::writeObjCContainer(const ObjCContainerRecord &record,
     writeObjCInstanceVariable(*ivar);
 
   for (auto protocol : record.protocols) {
-    unsigned nameOffset = stringBuilder.getOffset(protocol);
-    scratchRecord = {protocolID, nameOffset, protocol.size()};
+    unsigned nameOffset = stringBuilder.getOffset(protocol.name);
+    scratchRecord = {protocolID, nameOffset, protocol.name.size()};
     writer.EmitRecordWithAbbrev(protocolAbbrev, scratchRecord);
   }
 }
@@ -1409,7 +1399,6 @@ void APISerializer::writeObjCInstanceVariable(
     return;
 
   BCBlockRAII restoreBlock(writer, OBJC_IVAR_BLOCK_ID, /*abbrevLen=*/3);
-  scratchRecord.push_back((unsigned)record.accessControl);
   writer.EmitRecordWithAbbrev(OBJC_IVAR_ABBREV, scratchRecord);
   writeAvailabilityBlock(record.availability, objc_ivar_block::AVAILABILITY,
                          OBJC_IVAR_AVAILABILITY_ABBREV);

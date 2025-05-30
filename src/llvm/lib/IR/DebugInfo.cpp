@@ -14,16 +14,17 @@
 #include "llvm-c/DebugInfo.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
+#include "llvm/ADT/None.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/IR/BasicBlock.h"
 #include "llvm/IR/Constants.h"
-#include "llvm/IR/DIBuilder.h"
-#include "llvm/IR/DebugInfo.h"
 #include "llvm/IR/DebugInfoMetadata.h"
 #include "llvm/IR/DebugLoc.h"
+#include "llvm/IR/DebugInfo.h"
+#include "llvm/IR/DIBuilder.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/GVMaterializer.h"
 #include "llvm/IR/Instruction.h"
@@ -161,7 +162,7 @@ void DebugInfoFinder::processModule(const Module &M) {
 void DebugInfoFinder::processCompileUnit(DICompileUnit *CU) {
   if (!addCompileUnit(CU))
     return;
-  for (auto *DIG : CU->getGlobalVariables()) {
+  for (auto DIG : CU->getGlobalVariables()) {
     if (!addGlobalVariable(DIG))
       continue;
     auto *GV = DIG->getVariable();
@@ -421,11 +422,12 @@ static MDNode *stripDebugLocFromLoopID(MDNode *N) {
 
   // If there is only the debug location without any actual loop metadata, we
   // can remove the metadata.
-  if (llvm::all_of(llvm::drop_begin(N->operands()),
-                   [&Visited, &DILocationReachable](const MDOperand &Op) {
-                     return isDILocationReachable(Visited, DILocationReachable,
-                                                  Op.get());
-                   }))
+  if (std::all_of(
+          N->op_begin() + 1, N->op_end(),
+          [&Visited, &DILocationReachable](const MDOperand &Op) {
+            return isDILocationReachable(Visited, DILocationReachable,
+                                         Op.get());
+          }))
     return nullptr;
 
   return updateLoopMetadataDebugLocationsImpl(
@@ -445,7 +447,8 @@ bool llvm::stripDebugInfo(Function &F) {
 
   DenseMap<MDNode *, MDNode *> LoopIDsMap;
   for (BasicBlock &BB : F) {
-    for (Instruction &I : llvm::make_early_inc_range(BB)) {
+    for (auto II = BB.begin(), End = BB.end(); II != End;) {
+      Instruction &I = *II++; // We may delete the instruction, increment now.
       if (isa<DbgInfoIntrinsic>(&I)) {
         I.eraseFromParent();
         Changed = true;
@@ -823,14 +826,7 @@ void Instruction::dropLocation() {
 
   // If this isn't a call, drop the location to allow a location from a
   // preceding instruction to propagate.
-  bool MayLowerToCall = false;
-  if (isa<CallBase>(this)) {
-    auto *II = dyn_cast<IntrinsicInst>(this);
-    MayLowerToCall =
-        !II || IntrinsicInst::mayLowerToFunctionCall(II->getIntrinsicID());
-  }
-
-  if (!MayLowerToCall) {
+  if (!isa<CallBase>(this)) {
     setDebugLoc(DebugLoc());
     return;
   }
@@ -911,11 +907,6 @@ void LLVMDisposeDIBuilder(LLVMDIBuilderRef Builder) {
 
 void LLVMDIBuilderFinalize(LLVMDIBuilderRef Builder) {
   unwrap(Builder)->finalize();
-}
-
-void LLVMDIBuilderFinalizeSubprogram(LLVMDIBuilderRef Builder,
-                                     LLVMMetadataRef subprogram) {
-  unwrap(Builder)->finalizeSubprogram(unwrapDI<DISubprogram>(subprogram));
 }
 
 LLVMMetadataRef LLVMDIBuilderCreateCompileUnit(
@@ -1012,43 +1003,41 @@ LLVMDIBuilderCreateImportedModuleFromNamespace(LLVMDIBuilderRef Builder,
                                                     Line));
 }
 
-LLVMMetadataRef LLVMDIBuilderCreateImportedModuleFromAlias(
-    LLVMDIBuilderRef Builder, LLVMMetadataRef Scope,
-    LLVMMetadataRef ImportedEntity, LLVMMetadataRef File, unsigned Line,
-    LLVMMetadataRef *Elements, unsigned NumElements) {
-  auto Elts =
-      (NumElements > 0)
-          ? unwrap(Builder)->getOrCreateArray({unwrap(Elements), NumElements})
-          : nullptr;
+LLVMMetadataRef
+LLVMDIBuilderCreateImportedModuleFromAlias(LLVMDIBuilderRef Builder,
+                                           LLVMMetadataRef Scope,
+                                           LLVMMetadataRef ImportedEntity,
+                                           LLVMMetadataRef File,
+                                           unsigned Line) {
   return wrap(unwrap(Builder)->createImportedModule(
-      unwrapDI<DIScope>(Scope), unwrapDI<DIImportedEntity>(ImportedEntity),
-      unwrapDI<DIFile>(File), Line, Elts));
+                  unwrapDI<DIScope>(Scope),
+                  unwrapDI<DIImportedEntity>(ImportedEntity),
+                  unwrapDI<DIFile>(File), Line));
 }
 
-LLVMMetadataRef LLVMDIBuilderCreateImportedModuleFromModule(
-    LLVMDIBuilderRef Builder, LLVMMetadataRef Scope, LLVMMetadataRef M,
-    LLVMMetadataRef File, unsigned Line, LLVMMetadataRef *Elements,
-    unsigned NumElements) {
-  auto Elts =
-      (NumElements > 0)
-          ? unwrap(Builder)->getOrCreateArray({unwrap(Elements), NumElements})
-          : nullptr;
-  return wrap(unwrap(Builder)->createImportedModule(
-      unwrapDI<DIScope>(Scope), unwrapDI<DIModule>(M), unwrapDI<DIFile>(File),
-      Line, Elts));
+LLVMMetadataRef
+LLVMDIBuilderCreateImportedModuleFromModule(LLVMDIBuilderRef Builder,
+                                            LLVMMetadataRef Scope,
+                                            LLVMMetadataRef M,
+                                            LLVMMetadataRef File,
+                                            unsigned Line) {
+  return wrap(unwrap(Builder)->createImportedModule(unwrapDI<DIScope>(Scope),
+                                                    unwrapDI<DIModule>(M),
+                                                    unwrapDI<DIFile>(File),
+                                                    Line));
 }
 
-LLVMMetadataRef LLVMDIBuilderCreateImportedDeclaration(
-    LLVMDIBuilderRef Builder, LLVMMetadataRef Scope, LLVMMetadataRef Decl,
-    LLVMMetadataRef File, unsigned Line, const char *Name, size_t NameLen,
-    LLVMMetadataRef *Elements, unsigned NumElements) {
-  auto Elts =
-      (NumElements > 0)
-          ? unwrap(Builder)->getOrCreateArray({unwrap(Elements), NumElements})
-          : nullptr;
+LLVMMetadataRef
+LLVMDIBuilderCreateImportedDeclaration(LLVMDIBuilderRef Builder,
+                                       LLVMMetadataRef Scope,
+                                       LLVMMetadataRef Decl,
+                                       LLVMMetadataRef File,
+                                       unsigned Line,
+                                       const char *Name, size_t NameLen) {
   return wrap(unwrap(Builder)->createImportedDeclaration(
-      unwrapDI<DIScope>(Scope), unwrapDI<DINode>(Decl), unwrapDI<DIFile>(File),
-      Line, {Name, NameLen}, Elts));
+                  unwrapDI<DIScope>(Scope),
+                  unwrapDI<DINode>(Decl),
+                  unwrapDI<DIFile>(File), Line, {Name, NameLen}));
 }
 
 LLVMMetadataRef
@@ -1441,14 +1430,14 @@ LLVMDIBuilderCreateSubroutineType(LLVMDIBuilderRef Builder,
 }
 
 LLVMMetadataRef LLVMDIBuilderCreateExpression(LLVMDIBuilderRef Builder,
-                                              uint64_t *Addr, size_t Length) {
-  return wrap(
-      unwrap(Builder)->createExpression(ArrayRef<uint64_t>(Addr, Length)));
+                                              int64_t *Addr, size_t Length) {
+  return wrap(unwrap(Builder)->createExpression(ArrayRef<int64_t>(Addr,
+                                                                  Length)));
 }
 
 LLVMMetadataRef
 LLVMDIBuilderCreateConstantValueExpression(LLVMDIBuilderRef Builder,
-                                           uint64_t Value) {
+                                           int64_t Value) {
   return wrap(unwrap(Builder)->createConstantValueExpression(Value));
 }
 

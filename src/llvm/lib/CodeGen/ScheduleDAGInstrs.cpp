@@ -12,9 +12,9 @@
 //===----------------------------------------------------------------------===//
 
 #include "llvm/CodeGen/ScheduleDAGInstrs.h"
-
 #include "llvm/ADT/IntEqClasses.h"
 #include "llvm/ADT/MapVector.h"
+#include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/SparseSet.h"
 #include "llvm/ADT/iterator_range.h"
@@ -40,6 +40,9 @@
 #include "llvm/Config/llvm-config.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/Function.h"
+#include "llvm/IR/Instruction.h"
+#include "llvm/IR/Instructions.h"
+#include "llvm/IR/Operator.h"
 #include "llvm/IR/Type.h"
 #include "llvm/IR/Value.h"
 #include "llvm/MC/LaneBitmask.h"
@@ -54,6 +57,7 @@
 #include <algorithm>
 #include <cassert>
 #include <iterator>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -61,9 +65,9 @@ using namespace llvm;
 
 #define DEBUG_TYPE "machine-scheduler"
 
-static cl::opt<bool>
-    EnableAASchedMI("enable-aa-sched-mi", cl::Hidden,
-                    cl::desc("Enable use of AA during MI DAG construction"));
+static cl::opt<bool> EnableAASchedMI("enable-aa-sched-mi", cl::Hidden,
+    cl::ZeroOrMore, cl::init(false),
+    cl::desc("Enable use of AA during MI DAG construction"));
 
 static cl::opt<bool> UseTBAA("use-tbaa-in-sched-mi", cl::Hidden,
     cl::init(true), cl::desc("Enable use of TBAA during MI DAG construction"));
@@ -92,12 +96,12 @@ static unsigned getReductionSize() {
   return ReductionSize;
 }
 
-static void dumpSUList(const ScheduleDAGInstrs::SUList &L) {
+static void dumpSUList(ScheduleDAGInstrs::SUList &L) {
 #if !defined(NDEBUG) || defined(LLVM_ENABLE_DUMP)
   dbgs() << "{ ";
-  for (const SUnit *SU : L) {
-    dbgs() << "SU(" << SU->NodeNum << ")";
-    if (SU != L.back())
+  for (const SUnit *su : L) {
+    dbgs() << "SU(" << su->NodeNum << ")";
+    if (su != L.back())
       dbgs() << ", ";
   }
   dbgs() << "}\n";
@@ -125,7 +129,7 @@ static bool getUnderlyingObjectsForInstr(const MachineInstr *MI,
                                          const MachineFrameInfo &MFI,
                                          UnderlyingObjectsVector &Objects,
                                          const DataLayout &DL) {
-  auto AllMMOsOkay = [&]() {
+  auto allMMOsOkay = [&]() {
     for (const MachineMemOperand *MMO : MI->memoperands()) {
       // TODO: Figure out whether isAtomic is really necessary (see D57601).
       if (MMO->isVolatile() || MMO->isAtomic())
@@ -147,7 +151,7 @@ static bool getUnderlyingObjectsForInstr(const MachineInstr *MI,
           return false;
 
         bool MayAlias = PSV->mayAlias(&MFI);
-        Objects.emplace_back(PSV, MayAlias);
+        Objects.push_back(UnderlyingObjectsVector::value_type(PSV, MayAlias));
       } else if (const Value *V = MMO->getValue()) {
         SmallVector<Value *, 4> Objs;
         if (!getUnderlyingObjectsForCodeGen(V, Objs))
@@ -155,7 +159,7 @@ static bool getUnderlyingObjectsForInstr(const MachineInstr *MI,
 
         for (Value *V : Objs) {
           assert(isIdentifiedObject(V));
-          Objects.emplace_back(V, true);
+          Objects.push_back(UnderlyingObjectsVector::value_type(V, true));
         }
       } else
         return false;
@@ -163,7 +167,7 @@ static bool getUnderlyingObjectsForInstr(const MachineInstr *MI,
     return true;
   };
 
-  if (!AllMMOsOkay()) {
+  if (!allMMOsOkay()) {
     Objects.clear();
     return false;
   }
@@ -267,10 +271,15 @@ void ScheduleDAGInstrs::addPhysRegDataDeps(SUnit *SU, unsigned OperIdx) {
       if (!ImplicitPseudoDef && !ImplicitPseudoUse) {
         Dep.setLatency(SchedModel.computeOperandLatency(SU->getInstr(), OperIdx,
                                                         RegUse, UseOp));
+        ST.adjustSchedDependency(SU, OperIdx, UseSU, UseOp, Dep);
       } else {
         Dep.setLatency(0);
+        // FIXME: We could always let target to adjustSchedDependency(), and
+        // remove this condition, but that currently asserts in Hexagon BE.
+        if (SU->getInstr()->isBundle() || (RegUse && RegUse->isBundle()))
+          ST.adjustSchedDependency(SU, OperIdx, UseSU, UseOp, Dep);
       }
-      ST.adjustSchedDependency(SU, OperIdx, UseSU, UseOp, Dep);
+
       UseSU->addPred(Dep);
     }
   }
@@ -402,10 +411,11 @@ void ScheduleDAGInstrs::addVRegDefDeps(SUnit *SU, unsigned OperIdx) {
       // register in later operands. The lanes of other defs will now be live
       // after this instruction, so these should not be treated as killed by the
       // instruction even though they appear to be killed in this one operand.
-      for (const MachineOperand &OtherMO :
-           llvm::drop_begin(MI->operands(), OperIdx + 1))
+      for (int I = OperIdx + 1, E = MI->getNumOperands(); I != E; ++I) {
+        const MachineOperand &OtherMO = MI->getOperand(I);
         if (OtherMO.isReg() && OtherMO.isDef() && OtherMO.getReg() == Reg)
           KillLaneMask &= ~getLaneMaskForMO(OtherMO);
+      }
     }
 
     // Clear undef flag, we'll re-add it later once we know which subregister
@@ -530,9 +540,9 @@ void ScheduleDAGInstrs::addVRegUseDeps(SUnit *SU, unsigned OperIdx) {
 
 /// Returns true if MI is an instruction we are unable to reason about
 /// (like a call or something with unmodeled side effects).
-static inline bool isGlobalMemoryObject(MachineInstr *MI) {
+static inline bool isGlobalMemoryObject(AAResults *AA, MachineInstr *MI) {
   return MI->isCall() || MI->hasUnmodeledSideEffects() ||
-         (MI->hasOrderedMemoryRef() && !MI->isDereferenceableInvariantLoad());
+         (MI->hasOrderedMemoryRef() && !MI->isDereferenceableInvariantLoad(AA));
 }
 
 void ScheduleDAGInstrs::addChainDependency (SUnit *SUa, SUnit *SUb,
@@ -676,9 +686,9 @@ void ScheduleDAGInstrs::addChainDependencies(SUnit *SU,
 void ScheduleDAGInstrs::addBarrierChain(Value2SUsMap &map) {
   assert(BarrierChain != nullptr);
 
-  for (auto &[V, SUs] : map) {
-    (void)V;
-    for (auto *SU : SUs)
+  for (auto &I : map) {
+    SUList &sus = I.second;
+    for (auto *SU : sus)
       SU->addPredBarrier(BarrierChain);
   }
   map.clear();
@@ -793,16 +803,18 @@ void ScheduleDAGInstrs::buildSchedGraph(AAResults *AA,
        MII != MIE; --MII) {
     MachineInstr &MI = *std::prev(MII);
     if (DbgMI) {
-      DbgValues.emplace_back(DbgMI, &MI);
+      DbgValues.push_back(std::make_pair(DbgMI, &MI));
       DbgMI = nullptr;
     }
 
-    if (MI.isDebugValue() || MI.isDebugPHI()) {
+    if (MI.isDebugValue() || MI.isDebugRef() || MI.isDebugPHI()) {
       DbgMI = &MI;
       continue;
     }
+    if (MI.isDebugLabel())
+      continue;
 
-    if (MI.isDebugLabel() || MI.isDebugRef() || MI.isPseudoProbe())
+    if (MI.isPseudoProbe())
       continue;
 
     SUnit *SU = MISUnitMap[&MI];
@@ -880,7 +892,7 @@ void ScheduleDAGInstrs::buildSchedGraph(AAResults *AA,
     // actual addresses).
 
     // This is a barrier event that acts as a pivotal node in the DAG.
-    if (isGlobalMemoryObject(&MI)) {
+    if (isGlobalMemoryObject(AA, &MI)) {
 
       // Become the barrier chain.
       if (BarrierChain)
@@ -917,7 +929,7 @@ void ScheduleDAGInstrs::buildSchedGraph(AAResults *AA,
 
     // If it's not a store or a variant load, we're done.
     if (!MI.mayStore() &&
-        !(MI.mayLoad() && !MI.isDereferenceableInvariantLoad()))
+        !(MI.mayLoad() && !MI.isDereferenceableInvariantLoad(AA)))
       continue;
 
     // Always add dependecy edge to BarrierChain if present.
@@ -1019,21 +1031,21 @@ raw_ostream &llvm::operator<<(raw_ostream &OS, const PseudoSourceValue* PSV) {
 }
 
 void ScheduleDAGInstrs::Value2SUsMap::dump() {
-  for (const auto &[ValType, SUs] : *this) {
-    if (ValType.is<const Value*>()) {
-      const Value *V = ValType.get<const Value*>();
+  for (auto &Itr : *this) {
+    if (Itr.first.is<const Value*>()) {
+      const Value *V = Itr.first.get<const Value*>();
       if (isa<UndefValue>(V))
         dbgs() << "Unknown";
       else
         V->printAsOperand(dbgs());
     }
-    else if (ValType.is<const PseudoSourceValue*>())
-      dbgs() << ValType.get<const PseudoSourceValue*>();
+    else if (Itr.first.is<const PseudoSourceValue*>())
+      dbgs() <<  Itr.first.get<const PseudoSourceValue*>();
     else
       llvm_unreachable("Unknown Value type.");
 
     dbgs() << " : ";
-    dumpSUList(SUs);
+    dumpSUList(Itr.second);
   }
 }
 
@@ -1045,16 +1057,12 @@ void ScheduleDAGInstrs::reduceHugeMemNodeMaps(Value2SUsMap &stores,
   // Insert all SU's NodeNums into a vector and sort it.
   std::vector<unsigned> NodeNums;
   NodeNums.reserve(stores.size() + loads.size());
-  for (const auto &[V, SUs] : stores) {
-    (void)V;
-    for (const auto *SU : SUs)
+  for (auto &I : stores)
+    for (auto *SU : I.second)
       NodeNums.push_back(SU->NodeNum);
-  }
-  for (const auto &[V, SUs] : loads) {
-    (void)V;
-    for (const auto *SU : SUs)
+  for (auto &I : loads)
+    for (auto *SU : I.second)
       NodeNums.push_back(SU->NodeNum);
-  }
   llvm::sort(NodeNums);
 
   // The N last elements in NodeNums will be removed, and the SU with
@@ -1111,7 +1119,7 @@ void ScheduleDAGInstrs::fixupKills(MachineBasicBlock &MBB) {
   LiveRegs.addLiveOuts(MBB);
 
   // Examine block from end to start...
-  for (MachineInstr &MI : llvm::reverse(MBB)) {
+  for (MachineInstr &MI : make_range(MBB.rbegin(), MBB.rend())) {
     if (MI.isDebugOrPseudoInstr())
       continue;
 
@@ -1312,7 +1320,7 @@ public:
 
   /// Adds a connection for cross edges.
   void visitCrossEdge(const SDep &PredDep, const SUnit *Succ) {
-    ConnectionPairs.emplace_back(PredDep.getSUnit(), Succ);
+    ConnectionPairs.push_back(std::make_pair(PredDep.getSUnit(), Succ));
   }
 
   /// Sets each node's subtree ID to the representative ID and record
@@ -1340,12 +1348,12 @@ public:
       LLVM_DEBUG(dbgs() << "  SU(" << Idx << ") in tree "
                         << R.DFSNodeData[Idx].SubtreeID << '\n');
     }
-    for (const auto &[Pred, Succ] : ConnectionPairs) {
-      unsigned PredTree = SubtreeClasses[Pred->NodeNum];
-      unsigned SuccTree = SubtreeClasses[Succ->NodeNum];
+    for (const std::pair<const SUnit*, const SUnit*> &P : ConnectionPairs) {
+      unsigned PredTree = SubtreeClasses[P.first->NodeNum];
+      unsigned SuccTree = SubtreeClasses[P.second->NodeNum];
       if (PredTree == SuccTree)
         continue;
-      unsigned Depth = Pred->getDepth();
+      unsigned Depth = P.first->getDepth();
       addConnection(PredTree, SuccTree, Depth);
       addConnection(SuccTree, PredTree, Depth);
     }
@@ -1412,7 +1420,7 @@ public:
   bool isComplete() const { return DFSStack.empty(); }
 
   void follow(const SUnit *SU) {
-    DFSStack.emplace_back(SU, SU->Preds.begin());
+    DFSStack.push_back(std::make_pair(SU, SU->Preds.begin()));
   }
   void advance() { ++DFSStack.back().second; }
 

@@ -38,8 +38,6 @@ namespace llvm {
   FunctionPass *createMicroMipsSizeReducePass();
   FunctionPass *createMipsExpandPseudoPass();
   FunctionPass *createMipsPreLegalizeCombiner();
-  FunctionPass *createMipsPostLegalizeCombiner(bool IsOptNone);
-  FunctionPass *createMipsMulMulBugPass();
 
   InstructionSelector *createMipsInstructionSelector(const MipsTargetMachine &,
                                                      MipsSubtarget &,
@@ -49,8 +47,6 @@ namespace llvm {
   void initializeMipsBranchExpansionPass(PassRegistry &);
   void initializeMicroMipsSizeReducePass(PassRegistry &);
   void initializeMipsPreLegalizerCombinerPass(PassRegistry&);
-  void initializeMipsPostLegalizerCombinerPass(PassRegistry &);
-  void initializeMipsMulMulBugFixPass(PassRegistry&);
 } // end namespace llvm;
 
 #endif

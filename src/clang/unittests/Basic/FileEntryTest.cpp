@@ -12,22 +12,25 @@
 #include "gtest/gtest.h"
 
 using namespace llvm;
+using namespace clang;
 
-namespace clang {
+namespace {
 
-class FileEntryTestHelper {
-  StringMap<llvm::ErrorOr<FileEntryRef::MapValue>> Files;
-  StringMap<llvm::ErrorOr<DirectoryEntry &>> Dirs;
+using FileMap = StringMap<llvm::ErrorOr<FileEntryRef::MapValue>>;
+using DirMap = StringMap<llvm::ErrorOr<DirectoryEntry &>>;
+
+struct RefMaps {
+  FileMap Files;
+  DirMap Dirs;
 
   SmallVector<std::unique_ptr<FileEntry>, 5> FEs;
   SmallVector<std::unique_ptr<DirectoryEntry>, 5> DEs;
   DirectoryEntryRef DR;
 
-public:
-  FileEntryTestHelper() : DR(addDirectory("dir")) {}
+  RefMaps() : DR(addDirectory("dir")) {}
 
   DirectoryEntryRef addDirectory(StringRef Name) {
-    DEs.emplace_back(new DirectoryEntry());
+    DEs.push_back(std::make_unique<DirectoryEntry>());
     return DirectoryEntryRef(*Dirs.insert({Name, *DEs.back()}).first);
   }
   DirectoryEntryRef addDirectoryAlias(StringRef Name, DirectoryEntryRef Base) {
@@ -37,7 +40,7 @@ public:
   }
 
   FileEntryRef addFile(StringRef Name) {
-    FEs.emplace_back(new FileEntry());
+    FEs.push_back(std::make_unique<FileEntry>());
     return FileEntryRef(
         *Files.insert({Name, FileEntryRef::MapValue(*FEs.back().get(), DR)})
              .first);
@@ -50,46 +53,38 @@ public:
                             const_cast<FileEntry &>(Base.getFileEntry()), DR)})
              .first);
   }
-  FileEntryRef addFileRedirect(StringRef Name, FileEntryRef Base) {
-    return FileEntryRef(
-        *Files
-             .insert({Name, FileEntryRef::MapValue(
-                                const_cast<FileEntryRef::MapEntry &>(
-                                    Base.getMapEntry()))})
-             .first);
-  }
 };
 
-namespace {
+TEST(FileEntryTest, Constructor) {
+  FileEntry FE;
+  EXPECT_EQ(0, FE.getSize());
+  EXPECT_EQ(0, FE.getModificationTime());
+  EXPECT_EQ(nullptr, FE.getDir());
+  EXPECT_EQ(0U, FE.getUniqueID().getDevice());
+  EXPECT_EQ(0U, FE.getUniqueID().getFile());
+  EXPECT_EQ(false, FE.isNamedPipe());
+  EXPECT_EQ(false, FE.isValid());
+}
+
 TEST(FileEntryTest, FileEntryRef) {
-  FileEntryTestHelper Refs;
+  RefMaps Refs;
   FileEntryRef R1 = Refs.addFile("1");
   FileEntryRef R2 = Refs.addFile("2");
   FileEntryRef R1Also = Refs.addFileAlias("1-also", R1);
-  FileEntryRef R1Redirect = Refs.addFileRedirect("1-redirect", R1);
-  FileEntryRef R1Redirect2 = Refs.addFileRedirect("1-redirect2", R1Redirect);
 
   EXPECT_EQ("1", R1.getName());
   EXPECT_EQ("2", R2.getName());
   EXPECT_EQ("1-also", R1Also.getName());
-  EXPECT_EQ("1", R1Redirect.getName());
-  EXPECT_EQ("1", R1Redirect2.getName());
-
-  EXPECT_EQ("1", R1.getNameAsRequested());
-  EXPECT_EQ("1-redirect", R1Redirect.getNameAsRequested());
-  EXPECT_EQ("1-redirect2", R1Redirect2.getNameAsRequested());
 
   EXPECT_NE(&R1.getFileEntry(), &R2.getFileEntry());
   EXPECT_EQ(&R1.getFileEntry(), &R1Also.getFileEntry());
-  EXPECT_EQ(&R1.getFileEntry(), &R1Redirect.getFileEntry());
-  EXPECT_EQ(&R1Redirect.getFileEntry(), &R1Redirect2.getFileEntry());
 
   const FileEntry *CE1 = R1;
   EXPECT_EQ(CE1, &R1.getFileEntry());
 }
 
 TEST(FileEntryTest, OptionalFileEntryRefDegradesToFileEntryPtr) {
-  FileEntryTestHelper Refs;
+  RefMaps Refs;
   OptionalFileEntryRefDegradesToFileEntryPtr M0;
   OptionalFileEntryRefDegradesToFileEntryPtr M1 = Refs.addFile("1");
   OptionalFileEntryRefDegradesToFileEntryPtr M2 = Refs.addFile("2");
@@ -107,12 +102,10 @@ TEST(FileEntryTest, OptionalFileEntryRefDegradesToFileEntryPtr) {
 }
 
 TEST(FileEntryTest, equals) {
-  FileEntryTestHelper Refs;
+  RefMaps Refs;
   FileEntryRef R1 = Refs.addFile("1");
   FileEntryRef R2 = Refs.addFile("2");
   FileEntryRef R1Also = Refs.addFileAlias("1-also", R1);
-  FileEntryRef R1Redirect = Refs.addFileRedirect("1-redirect", R1);
-  FileEntryRef R1Redirect2 = Refs.addFileRedirect("1-redirect2", R1Redirect);
 
   EXPECT_EQ(R1, &R1.getFileEntry());
   EXPECT_EQ(&R1.getFileEntry(), R1);
@@ -120,8 +113,6 @@ TEST(FileEntryTest, equals) {
   EXPECT_NE(R1, &R2.getFileEntry());
   EXPECT_NE(&R2.getFileEntry(), R1);
   EXPECT_NE(R1, R2);
-  EXPECT_EQ(R1, R1Redirect);
-  EXPECT_EQ(R1, R1Redirect2);
 
   OptionalFileEntryRefDegradesToFileEntryPtr M1 = R1;
 
@@ -132,24 +123,19 @@ TEST(FileEntryTest, equals) {
 }
 
 TEST(FileEntryTest, isSameRef) {
-  FileEntryTestHelper Refs;
+  RefMaps Refs;
   FileEntryRef R1 = Refs.addFile("1");
   FileEntryRef R2 = Refs.addFile("2");
   FileEntryRef R1Also = Refs.addFileAlias("1-also", R1);
-  FileEntryRef R1Redirect = Refs.addFileRedirect("1-redirect", R1);
-  FileEntryRef R1Redirect2 = Refs.addFileRedirect("1-redirect2", R1Redirect);
 
   EXPECT_TRUE(R1.isSameRef(FileEntryRef(R1)));
   EXPECT_TRUE(R1.isSameRef(FileEntryRef(R1.getMapEntry())));
   EXPECT_FALSE(R1.isSameRef(R2));
   EXPECT_FALSE(R1.isSameRef(R1Also));
-  EXPECT_FALSE(R1.isSameRef(R1Redirect));
-  EXPECT_FALSE(R1.isSameRef(R1Redirect2));
-  EXPECT_FALSE(R1Redirect.isSameRef(R1Redirect2));
 }
 
 TEST(FileEntryTest, DenseMapInfo) {
-  FileEntryTestHelper Refs;
+  RefMaps Refs;
   FileEntryRef R1 = Refs.addFile("1");
   FileEntryRef R2 = Refs.addFile("2");
   FileEntryRef R1Also = Refs.addFileAlias("1-also", R1);
@@ -178,7 +164,7 @@ TEST(FileEntryTest, DenseMapInfo) {
 }
 
 TEST(DirectoryEntryTest, isSameRef) {
-  FileEntryTestHelper Refs;
+  RefMaps Refs;
   DirectoryEntryRef R1 = Refs.addDirectory("1");
   DirectoryEntryRef R2 = Refs.addDirectory("2");
   DirectoryEntryRef R1Also = Refs.addDirectoryAlias("1-also", R1);
@@ -190,7 +176,7 @@ TEST(DirectoryEntryTest, isSameRef) {
 }
 
 TEST(DirectoryEntryTest, DenseMapInfo) {
-  FileEntryTestHelper Refs;
+  RefMaps Refs;
   DirectoryEntryRef R1 = Refs.addDirectory("1");
   DirectoryEntryRef R2 = Refs.addDirectory("2");
   DirectoryEntryRef R1Also = Refs.addDirectoryAlias("1-also", R1);
@@ -219,4 +205,3 @@ TEST(DirectoryEntryTest, DenseMapInfo) {
 }
 
 } // end namespace
-} // namespace clang

@@ -1,8 +1,9 @@
 //===--- IfSwitchConversion.cpp -  ----------------------------------------===//
 //
-// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
-// See https://llvm.org/LICENSE.txt for license information.
-// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//                     The LLVM Compiler Infrastructure
+//
+// This file is distributed under the University of Illinois Open Source
+// License. See LICENSE.TXT for details.
 //
 //===----------------------------------------------------------------------===//
 //
@@ -113,17 +114,17 @@ static bool isConditionValid(const Expr *E, ASTContext &Context,
                              Optional<llvm::FoldingSetNodeID> &MatchedLHSNodeID,
                              RHSValueSet &RHSValues) {
   auto Equals = matchBinOp(E, BO_EQ);
-  if (!Equals) {
+  if (!Equals.hasValue()) {
     auto LogicalOr = matchBinOp(E, BO_LOr);
-    if (!LogicalOr)
+    if (!LogicalOr.hasValue())
       return false;
-    return isConditionValid(LogicalOr->first, Context,
+    return isConditionValid(LogicalOr.getValue().first, Context,
                             MatchedLHSNodeID, RHSValues) &&
-           isConditionValid(LogicalOr->second, Context,
+           isConditionValid(LogicalOr.getValue().second, Context,
                             MatchedLHSNodeID, RHSValues);
   }
-  const Expr *LHS = Equals->first;
-  const Expr *RHS = Equals->second;
+  const Expr *LHS = Equals.getValue().first;
+  const Expr *RHS = Equals.getValue().second;
   if (!LHS->getType()->isIntegralOrEnumerationType() ||
       !RHS->getType()->isIntegralOrEnumerationType())
     return false;
@@ -140,8 +141,8 @@ static bool isConditionValid(const Expr *E, ASTContext &Context,
   // LHS must be identical to the other LHS expressions.
   llvm::FoldingSetNodeID LHSNodeID;
   LHS->Profile(LHSNodeID, Context, /*Canonical=*/false);
-  if (MatchedLHSNodeID) {
-    if (*MatchedLHSNodeID != LHSNodeID)
+  if (MatchedLHSNodeID.hasValue()) {
+    if (MatchedLHSNodeID.getValue() != LHSNodeID)
       return false;
   } else
     MatchedLHSNodeID = std::move(LHSNodeID);
@@ -220,28 +221,28 @@ RefactoringOperationResult clang::tooling::initiateIfSwitchConversionOperation(
 /// Returns the first LHS expression in the if's condition.
 const Expr *getConditionFirstLHS(const Expr *E) {
   auto Equals = matchBinOp(E, BO_EQ);
-  if (!Equals) {
+  if (!Equals.hasValue()) {
     auto LogicalOr = matchBinOp(E, BO_LOr);
-    if (!LogicalOr)
+    if (!LogicalOr.hasValue())
       return nullptr;
-    return getConditionFirstLHS(LogicalOr->first);
+    return getConditionFirstLHS(LogicalOr.getValue().first);
   }
-  return Equals->first;
+  return Equals.getValue().first;
 }
 
 /// Gathers all of the RHS operands of the == expressions in the if's condition.
 void gatherCaseValues(const Expr *E,
                       SmallVectorImpl<const Expr *> &CaseValues) {
   auto Equals = matchBinOp(E, BO_EQ);
-  if (Equals) {
-    CaseValues.push_back(Equals->second);
+  if (Equals.hasValue()) {
+    CaseValues.push_back(Equals.getValue().second);
     return;
   }
   auto LogicalOr = matchBinOp(E, BO_LOr);
-  if (!LogicalOr)
+  if (!LogicalOr.hasValue())
     return;
-  gatherCaseValues(LogicalOr->first, CaseValues);
-  gatherCaseValues(LogicalOr->second, CaseValues);
+  gatherCaseValues(LogicalOr.getValue().first, CaseValues);
+  gatherCaseValues(LogicalOr.getValue().second, CaseValues);
 }
 
 /// Return true iff the given body should be terminated with a 'break' statement

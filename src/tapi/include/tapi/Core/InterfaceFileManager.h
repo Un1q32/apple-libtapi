@@ -14,9 +14,9 @@
 #ifndef TAPI_CORE_INTERFACE_FILE_MANAGER_H
 #define TAPI_CORE_INTERFACE_FILE_MANAGER_H
 
+#include "tapi/Core/InterfaceFile.h"
 #include "tapi/Core/Registry.h"
 #include "tapi/Defines.h"
-#include "llvm/TextAPI/InterfaceFile.h"
 #include <map>
 
 TAPI_NAMESPACE_INTERNAL_BEGIN
@@ -25,25 +25,15 @@ class FileManager;
 
 class InterfaceFileManager {
 public:
-  InterfaceFileManager(FileManager &fm, bool isVolatile);
-  Expected<APIs &> readFile(const std::string &path);
+  InterfaceFileManager(FileManager &fm);
+  Expected<InterfaceFile *> readFile(const std::string &path);
   Error writeFile(const std::string &path, const InterfaceFile *file,
-                  FileType fileType) const;
+                  VersionedFileType fileType) const;
 
 private:
   FileManager &_fm;
   Registry _registry;
-  std::map<std::string, APIs> _libraries;
-  bool isVolatile;
-
-  enum class WriteAction {
-    SkipWrite = 0,
-    NewFile,
-    ReplaceFile,
-  };
-
-  WriteAction shouldWrite(const std::string &path, const InterfaceFile *file,
-                          FileType fileType) const;
+  std::map<std::string, std::unique_ptr<InterfaceFile>> _libraries;
 };
 
 TAPI_NAMESPACE_INTERNAL_END

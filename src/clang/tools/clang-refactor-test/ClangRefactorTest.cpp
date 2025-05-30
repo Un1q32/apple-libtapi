@@ -1,8 +1,9 @@
 //===--- ClangRefactorTest.cpp - ------------------------------------------===//
 //
-// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
-// See https://llvm.org/LICENSE.txt for license information.
-// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//                     The LLVM Compiler Infrastructure
+//
+// This file is distributed under the University of Illinois Open Source
+// License. See LICENSE.TXT for details.
 //
 //===----------------------------------------------------------------------===//
 //
@@ -840,8 +841,8 @@ int listRefactoringActions(CXTranslationUnit TU) {
                 "<file:line:column-line:column> format\n";
       return 1;
     }
-    auto Begin = SelectionRange->Begin;
-    auto End = SelectionRange->End;
+    auto Begin = SelectionRange.getValue().Begin;
+    auto End = SelectionRange.getValue().End;
     CXFile File = clang_getFile(TU, Begin.FileName.c_str());
     Range =
         clang_getRange(clang_getLocation(TU, File, Begin.Line, Begin.Column),
@@ -1172,7 +1173,7 @@ int initiateAndPerformAction(CXTranslationUnit TU, ArrayRef<const char *> Args,
              "format\n";
       return 1;
     }
-    Ranges.push_back(*ParsedLineRange);
+    Ranges.push_back(ParsedLineRange.getValue());
   }
   for (const auto &Range : opts::initiateAndPerform::AtLocations) {
     if (!StringRef(Range).contains(':')) {
@@ -1205,7 +1206,7 @@ int initiateAndPerformAction(CXTranslationUnit TU, ArrayRef<const char *> Args,
                 "the selection specifier in the source\n";
       return 1;
     }
-    SelectionRanges.push_back(*ParsedRange);
+    SelectionRanges.push_back(ParsedRange.getValue());
   }
   if (Ranges.empty() && SelectionRanges.empty()) {
     errs() << "error: -in or -at options must be specified at least once!";
@@ -1242,8 +1243,8 @@ int initiateAndPerformAction(CXTranslationUnit TU, ArrayRef<const char *> Args,
                           Location.Line, Column);
     CXSourceRange Range;
     if (SelectionRange) {
-      auto Begin = SelectionRange->Begin;
-      auto End = SelectionRange->End;
+      auto Begin = SelectionRange.getValue().Begin;
+      auto End = SelectionRange.getValue().End;
       CXFile File = clang_getFile(TU, Begin.FileName.c_str());
       Range =
           clang_getRange(clang_getLocation(TU, File, Begin.Line, Begin.Column),
@@ -1259,20 +1260,21 @@ int initiateAndPerformAction(CXTranslationUnit TU, ArrayRef<const char *> Args,
     if (const char *Reason = clang_getCString(FailureReason))
       ReasonString = Reason;
     clang_disposeString(FailureReason);
-    if (InitiationFailureReason && *InitiationFailureReason != ReasonString) {
+    if (InitiationFailureReason.hasValue() &&
+        InitiationFailureReason.getValue() != ReasonString) {
       errs() << "error: inconsistent results in a single action range!\n";
       return true;
     }
     InitiationFailureReason = std::move(ReasonString);
     if (Err == CXError_RefactoringActionUnavailable) {
-      if (Initiated && *Initiated) {
+      if (Initiated.hasValue() && Initiated.getValue()) {
         errs() << "error: inconsistent results in a single action range!\n";
         return true;
       }
       Initiated = false;
     } else if (Err != CXError_Success)
       return true;
-    else if (Initiated && !*Initiated) {
+    else if (Initiated.hasValue() && !Initiated.getValue()) {
       errs() << "error: inconsistent results in a single action range!\n";
       return true;
     } else
@@ -1300,9 +1302,9 @@ int initiateAndPerformAction(CXTranslationUnit TU, ArrayRef<const char *> Args,
                ? SelectionRange ? rangeToString(Range)
                                 : locationToString(clang_getRangeStart(Range))
                : "<unknown>");
-      if (!LocationCandidateInformation)
+      if (!LocationCandidateInformation.hasValue())
         LocationCandidateInformation = LocationString;
-      else if (*LocationCandidateInformation != LocationString) {
+      else if (LocationCandidateInformation.getValue() != LocationString) {
         errs() << "error: inconsistent results in a single action range!\n";
         return true;
       }
@@ -1334,10 +1336,11 @@ int initiateAndPerformAction(CXTranslationUnit TU, ArrayRef<const char *> Args,
       return 1;
   }
 
-  if (!*Initiated) {
+  if (!Initiated.getValue()) {
     errs() << "Failed to initiate the refactoring action";
-    if (InitiationFailureReason && !InitiationFailureReason->empty())
-      errs() << " (" << *InitiationFailureReason << ')';
+    if (InitiationFailureReason.hasValue() &&
+        !InitiationFailureReason.getValue().empty())
+      errs() << " (" << InitiationFailureReason.getValue() << ')';
     errs() << "!\n";
     return 1;
   }
@@ -1345,7 +1348,7 @@ int initiateAndPerformAction(CXTranslationUnit TU, ArrayRef<const char *> Args,
     outs() << "Initiated the '" << opts::initiateAndPerform::ActionName
            << "' action";
     if (!opts::initiateAndPerform::LocationAgnostic)
-      outs() << ' ' << *LocationCandidateInformation;
+      outs() << ' ' << LocationCandidateInformation.getValue();
     outs() << "\n";
   }
   return 0;

@@ -15,7 +15,6 @@
 
 #include "tapi/Core/API.h"
 #include "tapi/Diagnostics/Diagnostics.h"
-#include "tapi/SDKDB/CompareConfigFileReader.h"
 #include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallVector.h"
@@ -99,7 +98,6 @@ public:
   /// Helper function to add to frontendAPIs.
   EnumRecord *addEnum(const EnumRecord &record);
   TypedefRecord *addTypeDef(const TypedefRecord &record);
-  ObjCProtocolRecord *addObjCProtocol(const ObjCProtocolRecord &record);
 
 private:
   friend class SDKDBBuilder;
@@ -111,9 +109,6 @@ private:
 
     T getRecord() const { return record; }
     const BinaryInfo *getBinaryInfo() const { return info; }
-    StringRef getInstallName() const {
-      return info ? info->installName : "unknown";
-    }
     StringRef getProjectName() const { return project; }
 
     bool isPoison() const { return poison; }
@@ -185,14 +180,6 @@ private:
                                    bool isInstanceMethod,
                                    ObjCInterfaceRecord *interface);
 
-  /// get objc property access.
-  APIAccess getAccessForObjCProperty(APIAccess access, StringRef name,
-                                     bool isClassProperty,
-                                     ObjCContainerRecord *container);
-  APIAccess getAccessForObjCProperty(APIAccess access, StringRef name,
-                                     bool isClassProperty,
-                                     ObjCInterfaceRecord *interface);
-
   /// find and update the global.
   bool findAndUpdateGlobal(Twine name, const APIRecord &record);
 
@@ -212,19 +199,7 @@ private:
   const llvm::Triple triple;
   API frontendAPI;
   SDKDBBuilder *builder;
-
-  /// Map from project name to its APIs
   std::map<std::string, std::vector<API>> apiCache;
-
-  /// Map from install name to the contributing project name
-  llvm::StringMap<StringRef> installNames;
-
-  std::set<CompareConfigFileReader::Change> const *expectedChanges = nullptr;
-  bool isExpectedChange(const CompareConfigFileReader::Change &change) const {
-    if (expectedChanges)
-      return expectedChanges->count(change);
-    return false;
-  }
 
   llvm::BumpPtrAllocator danglingAPIAllocator;
 };
@@ -303,10 +278,6 @@ public:
     return maybePublicSelector.count(selector);
   }
 
-  bool isMaybePublicProperty(StringRef property) const {
-    return maybePublicProperty.count(property);
-  }
-
   void addProjectWithError(StringRef project) {
     projectWithError.emplace_back(project.data(), project.size());
   }
@@ -357,13 +328,6 @@ public:
   void buildLookupTables();
   bool diagnoseDifferences(SDKDBBuilder &baseline);
   void setReportNewAPIasError(bool val);
-  void setNoNewAPI(bool val);
-  void setDiagnoseFrontendAPI(bool val) { shouldDiagnoseFrontendAPI = val; }
-  bool diagnoseFrontendAPI() const { return shouldDiagnoseFrontendAPI; }
-  void
-  setCompareConfigFileReader(std::unique_ptr<CompareConfigFileReader> reader) {
-    compareConfigFileReader = std::move(reader);
-  }
 
 private:
   DiagnosticsEngine &diag;
@@ -371,12 +335,8 @@ private:
   std::string buildVersion;
   llvm::SmallVector<SDKDB, 4> databases;
   llvm::StringSet<> maybePublicSelector;
-  llvm::StringSet<> maybePublicProperty;
   // Projects that contributes to the SDKDB but has errors when scanning roots.
   std::vector<std::string> projectWithError;
-  // Do not try to compare enums and typedefs by default.
-  bool shouldDiagnoseFrontendAPI = false;
-  std::unique_ptr<CompareConfigFileReader> compareConfigFileReader;
 };
 
 TAPI_NAMESPACE_INTERNAL_END

@@ -18,65 +18,22 @@
 #include "tapi/Defines.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/StringRef.h"
-#include "llvm/Support/Process.h"
-#include "llvm/TextAPI/InterfaceFile.h"
 
 TAPI_NAMESPACE_INTERNAL_BEGIN
 
 class FileManager;
-class API;
 
-#define MACCATALYST_PREFIX_PATH "/System/iOSSupport"
-#define DRIVERKIT_PREFIX_PATH "/System/DriverKit"
-#define CRYPTEXES_PREFIX_PATH "/System/Cryptexes/OS"
-
-/// Return true if the install name of the dylib is in a public SDK location.
-bool isPublicDylib(StringRef installName);
-
-/// Return true if the install name is in an SDK location (public or private).
-bool isSDKDylib(StringRef installName);
-
-/// Return true if the path is not in any known private SDK location.
-/// To determine whether a library's binary is public, use `isPublicDylib`
-/// instead.
-///
-/// Known private SDK locations:
-///   - /usr/local/*
-///   - /System/Library/PrivateFrameworks/*
-///   - */PrivateHeaders/* inside /System/Library/Frameworks
+/// Return true of the path to the dylib is considered a public location.
+bool isPublicDylib(StringRef path);
+/// Return true of the path is within a location of public framework.
 bool isWithinPublicLocation(StringRef path);
-
-/// Return true if the path has extension of a header.
+/// Return true of the path has extension of a header.
 bool isHeaderFile(StringRef path);
-
 /// Search the path to find the library specificed by installName.
 std::string findLibrary(StringRef installName, FileManager &fm,
                         ArrayRef<std::string> frameworkSearchPaths,
                         ArrayRef<std::string> librarySearchPaths,
                         ArrayRef<std::string> searchPaths);
-
-/// Determine if tapi is running in a B&I context.
-inline bool inBnIEnvironment() {
-  if (auto isBnI = llvm::sys::Process::GetEnv("RC_XBS"))
-    return (isBnI.value() == "YES") &&
-           (!llvm::sys::Process::GetEnv("RC_BUILDIT"));
-  return false;
-}
-
-using APIs = llvm::SmallVector<std::shared_ptr<API>, 4>;
-std::unique_ptr<InterfaceFile> convertToInterfaceFile(const APIs &apis);
-
-/// Use simple struct for passing around symbol information.
-struct SimpleSymbol {
-  StringRef name;
-  llvm::MachO::SymbolKind kind;
-
-  bool operator<(const SimpleSymbol &o) const {
-    return std::tie(name, kind) < std::tie(o.name, o.kind);
-  }
-};
-
-SimpleSymbol parseSymbol(StringRef symbolName);
 
 TAPI_NAMESPACE_INTERNAL_END
 

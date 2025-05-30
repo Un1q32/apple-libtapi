@@ -41,9 +41,9 @@ template <> struct ScalarTraits<FlowStringRef> {
   static QuotingType mustQuote(StringRef name);
 };
 
-using llvm::MachO::PlatformType;
-template <> struct ScalarEnumerationTraits<PlatformType> {
-  static void enumeration(IO &io, PlatformType &platform);
+using llvm::MachO::PlatformKind;
+template <> struct ScalarEnumerationTraits<PlatformKind> {
+  static void enumeration(IO &io, PlatformKind &platform);
 };
 
 using llvm::MachO::Architecture;

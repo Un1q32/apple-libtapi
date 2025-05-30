@@ -1,15 +1,15 @@
 //===--- IndexUnitWriter.cpp - Index unit serialization -------------------===//
 //
-// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
-// See https://llvm.org/LICENSE.txt for license information.
-// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//                     The LLVM Compiler Infrastructure
+//
+// This file is distributed under the University of Illinois Open Source
+// License. See LICENSE.TXT for details.
 //
 //===----------------------------------------------------------------------===//
 
 #include "clang/Index/IndexUnitWriter.h"
 #include "IndexDataStoreUtils.h"
 #include "clang/Basic/FileManager.h"
-#include "clang/Basic/PathRemapper.h"
 #include "llvm/ADT/APInt.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/Hashing.h"
@@ -26,19 +26,17 @@ using namespace clang::index;
 using namespace clang::index::store;
 using namespace llvm;
 
+
 class IndexUnitWriter::PathStorage {
-  FileManager &FileMgr;
   std::string WorkDir;
   std::string SysrootPath;
   SmallString<512> PathsBuf;
   StringMap<DirBitPath, BumpPtrAllocator> Dirs;
   std::vector<FileBitPath> FileBitPaths;
   DenseMap<const FileEntry *, size_t> FileToIndex;
-  const PathRemapper &Remapper;
 
 public:
-  PathStorage(FileManager &fileMgr, StringRef workDir, StringRef sysrootPath,
-      const PathRemapper &remapper) : FileMgr(fileMgr), Remapper(remapper) {
+  PathStorage(StringRef workDir, StringRef sysrootPath) {
     WorkDir = std::string(workDir);
     if (sysrootPath == "/")
       sysrootPath = StringRef();
@@ -58,9 +56,7 @@ public:
 
     if (IsNew) {
       StringRef Filename = sys::path::filename(FE->getName());
-      SmallString<256> AbsDirPath(sys::path::parent_path(FE->getName()));
-      FileMgr.makeAbsolutePath(AbsDirPath);
-      DirBitPath Dir = getDirBitPath(AbsDirPath.str());
+      DirBitPath Dir = getDirBitPath(sys::path::parent_path(FE->getName()));
       FileBitPaths.emplace_back(Dir.PrefixKind, Dir.Dir,
                                 BitPathComponent(getPathOffset(Filename),
                                                  Filename.size()));
@@ -94,16 +90,8 @@ private:
         while (!dirStr.empty() && dirStr[0] == '/')
           dirStr = dirStr.drop_front();
       }
-
-      if (dirPath.PrefixKind != UNIT_PATH_PREFIX_NONE) {
-        // No need to remap since it's already relative to another directory.
-        dirPath.Dir.Offset = getPathOffset(dirStr);
-        dirPath.Dir.Size = dirStr.size();
-      } else {  // Remap the path before storing.
-        std::string Remapped = Remapper.remapPath(dirStr);
-        dirPath.Dir.Offset = getPathOffset(Remapped);
-        dirPath.Dir.Size = Remapped.size();
-      }
+      dirPath.Dir.Offset = getPathOffset(dirStr);
+      dirPath.Dir.Size = dirStr.size();
     }
     return dirPath;
   }
@@ -128,26 +116,20 @@ IndexUnitWriter::IndexUnitWriter(FileManager &FileMgr,
                                  bool IsDebugCompilation,
                                  StringRef TargetTriple,
                                  StringRef SysrootPath,
-                                 const PathRemapper &Remapper,
                                  writer::ModuleInfoWriterCallback GetInfoForModule)
-: FileMgr(FileMgr), Remapper(Remapper) {
+: FileMgr(FileMgr) {
   this->UnitsPath = StorePath;
   store::appendUnitSubDir(this->UnitsPath);
   this->ProviderIdentifier = std::string(ProviderIdentifier);
   this->ProviderVersion = std::string(ProviderVersion);
-  SmallString<256> AbsOutputFile(OutputFile);
-  if (OutputFile != "-")  // Can't make stdout absolute, should stay as "-".
-    FileMgr.makeAbsolutePath(AbsOutputFile);
-  this->OutputFile = std::string(AbsOutputFile.str());
+  this->OutputFile = std::string(OutputFile);
   this->ModuleName = std::string(ModuleName);
   this->MainFile = MainFile;
   this->IsSystemUnit = IsSystem;
   this->IsModuleUnit = IsModuleUnit;
   this->IsDebugCompilation = IsDebugCompilation;
   this->TargetTriple = std::string(TargetTriple);
-  SmallString<256> AbsSysroot(SysrootPath);
-  FileMgr.makeAbsolutePath(AbsSysroot);
-  this->SysrootPath = std::string(AbsSysroot.str());
+  this->SysrootPath = std::string(SysrootPath);
   this->GetInfoForModuleFn = GetInfoForModule;
 }
 
@@ -224,7 +206,7 @@ void IndexUnitWriter::getUnitNameForOutputFile(StringRef FilePath,
                                                SmallVectorImpl<char> &Str) {
   SmallString<256> AbsPath(FilePath);
   FileMgr.makeAbsolutePath(AbsPath);
-  return getUnitNameForAbsoluteOutputFile(AbsPath, Str, Remapper);
+  return getUnitNameForAbsoluteOutputFile(AbsPath, Str);
 }
 
 void IndexUnitWriter::getUnitPathForOutputFile(StringRef FilePath,
@@ -251,7 +233,7 @@ Optional<bool> IndexUnitWriter::isUnitUpToDateForOutputFile(StringRef FilePath,
     return false;
   }
 
-  if (!TimeCompareFilePath)
+  if (!TimeCompareFilePath.hasValue())
     return true;
 
   llvm::sys::fs::file_status CompareStat;
@@ -271,14 +253,11 @@ Optional<bool> IndexUnitWriter::isUnitUpToDateForOutputFile(StringRef FilePath,
 }
 
 void IndexUnitWriter::getUnitNameForAbsoluteOutputFile(StringRef FilePath,
-                                                   SmallVectorImpl<char> &Str,
-                                                 const PathRemapper &Remapper) {
+                                                   SmallVectorImpl<char> &Str) {
   StringRef Fname = sys::path::filename(FilePath);
   Str.append(Fname.begin(), Fname.end());
   Str.push_back('-');
-  // Need to be sure we use the remapped path to keep things hermetic.
-  std::string RemappedPath = Remapper.remapPath(FilePath);
-  llvm::hash_code PathHashVal = llvm::hash_value(RemappedPath);
+  llvm::hash_code PathHashVal = llvm::hash_value(FilePath);
   llvm::APInt(64, PathHashVal).toString(Str, 36, /*Signed=*/false);
 }
 
@@ -359,7 +338,7 @@ bool IndexUnitWriter::write(std::string &Error) {
   Stream.Emit('X', 8);
   Stream.Emit('U', 8);
 
-  PathStorage PathStore(FileMgr, WorkDir, SysrootPath, Remapper);
+  PathStorage PathStore(WorkDir, SysrootPath);
 
   writeBlockInfo(Stream);
   writeVersionInfo(Stream);
@@ -431,15 +410,12 @@ void IndexUnitWriter::writeUnitInfo(llvm::BitstreamWriter &Stream,
   RecordData Record;
   Record.push_back(UNIT_INFO);
   Record.push_back(IsSystemUnit);
-  std::string RemappedWorkDir = Remapper.remapPath(WorkDir);
-  Record.push_back(PathStore.getPathOffset(RemappedWorkDir));
-  Record.push_back(RemappedWorkDir.size());
-  std::string RemappedOutputFile = Remapper.remapPath(OutputFile);
-  Record.push_back(PathStore.getPathOffset(RemappedOutputFile));
-  Record.push_back(RemappedOutputFile.size());
-  std::string RemappedSysrootPath = Remapper.remapPath(SysrootPath);
-  Record.push_back(PathStore.getPathOffset(RemappedSysrootPath));
-  Record.push_back(RemappedSysrootPath.size());
+  Record.push_back(PathStore.getPathOffset(WorkDir));
+  Record.push_back(WorkDir.size());
+  Record.push_back(PathStore.getPathOffset(OutputFile));
+  Record.push_back(OutputFile.size());
+  Record.push_back(PathStore.getPathOffset(SysrootPath));
+  Record.push_back(SysrootPath.size());
   Record.push_back(PathStore.getPathIndex(MainFile) + 1); // Make 1-based with 0=invalid
   Record.push_back(IsDebugCompilation);
   Record.push_back(IsModuleUnit);

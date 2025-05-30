@@ -19,6 +19,9 @@ else
 fi
 generator="Unix Makefiles"
 
+# Base SVN URL for the sources.
+Base_url="http://llvm.org/svn/llvm-project"
+
 Release=""
 Release_no_dot=""
 RC=""
@@ -29,19 +32,16 @@ do_debug="no"
 do_asserts="no"
 do_compare="yes"
 do_rt="yes"
-do_clang_tools="yes"
 do_libs="yes"
 do_libcxxabi="yes"
 do_libunwind="yes"
 do_test_suite="yes"
 do_openmp="yes"
-do_bolt="no"
 do_lld="yes"
 do_lldb="yes"
 do_polly="yes"
 do_mlir="yes"
 do_flang="yes"
-do_silent_log="no"
 BuildDir="`pwd`"
 ExtraConfigureFlags=""
 ExportBranch=""
@@ -65,7 +65,6 @@ function usage() {
     echo " -configure-flags FLAGS  Extra flags to pass to the configure step."
     echo " -git-ref sha         Use the specified git ref for testing instead of a release."
     echo " -no-rt               Disable check-out & build Compiler-RT"
-    echo " -no-clang-tools      Disable check-out & build clang-tools-extra"
     echo " -no-libs             Disable check-out & build libcxx/libcxxabi/libunwind"
     echo " -no-libcxxabi        Disable check-out & build libcxxabi"
     echo " -no-libunwind        Disable check-out & build libunwind"
@@ -77,7 +76,6 @@ function usage() {
     echo " -no-polly            Disable check-out & build Polly"
     echo " -no-mlir             Disable check-out & build MLIR"
     echo " -no-flang            Disable check-out & build Flang"
-    echo " -silent-log          Don't output build logs to stdout"
 }
 
 while [ $# -gt 0 ]; do
@@ -149,9 +147,6 @@ while [ $# -gt 0 ]; do
         -no-libs )
             do_libs="no"
             ;;
-        -no-clang-tools )
-            do_clang_tools="no"
-            ;;
         -no-libcxxabi )
             do_libcxxabi="no"
             ;;
@@ -163,12 +158,6 @@ while [ $# -gt 0 ]; do
             ;;
         -no-openmp )
             do_openmp="no"
-            ;;
-        -bolt )
-            do_bolt="yes"
-            ;;
-        -no-bolt )
-            do_bolt="no"
             ;;
         -no-lld )
             do_lld="no"
@@ -187,9 +176,6 @@ while [ $# -gt 0 ]; do
             ;;
         -no-flang )
             do_flang="no"
-            ;;
-        -silent-log )
-            do_silent_log="yes"
             ;;
         -help | --help | -h | --h | -\? )
             usage
@@ -252,28 +238,26 @@ if [ -z "$NumJobs" ]; then
 fi
 
 # Projects list
-projects="llvm clang"
-if [ $do_clang_tools = "yes" ]; then
-  projects="$projects clang-tools-extra"
-fi
-runtimes=""
+projects="llvm clang clang-tools-extra"
 if [ $do_rt = "yes" ]; then
-  runtimes="$runtimes compiler-rt"
+  projects="$projects compiler-rt"
 fi
 if [ $do_libs = "yes" ]; then
-  runtimes="$runtimes libcxx"
+  projects="$projects libcxx"
   if [ $do_libcxxabi = "yes" ]; then
-    runtimes="$runtimes libcxxabi"
+    projects="$projects libcxxabi"
   fi
   if [ $do_libunwind = "yes" ]; then
-    runtimes="$runtimes libunwind"
+    projects="$projects libunwind"
   fi
 fi
+case $do_test_suite in
+  yes|export-only)
+    projects="$projects test-suite"
+    ;;
+esac
 if [ $do_openmp = "yes" ]; then
   projects="$projects openmp"
-fi
-if [ $do_bolt = "yes" ]; then
-  projects="$projects bolt"
 fi
 if [ $do_lld = "yes" ]; then
   projects="$projects lld"
@@ -326,7 +310,7 @@ function check_program_exists() {
   fi
 }
 
-if [ "$System" != "Darwin" ] && [ "$System" != "SunOS" ] && [ "$System" != "AIX" ]; then
+if [ "$System" != "Darwin" -a "$System" != "SunOS" ]; then
   check_program_exists 'chrpath'
 fi
 
@@ -396,7 +380,6 @@ function configure_llvmCore() {
     esac
 
     project_list=${projects// /;}
-    runtime_list=${runtimes// /;}
     echo "# Using C compiler: $c_compiler"
     echo "# Using C++ compiler: $cxx_compiler"
 
@@ -406,19 +389,13 @@ function configure_llvmCore() {
     echo "#" env CC="$c_compiler" CXX="$cxx_compiler" \
         cmake -G "$generator" \
         -DCMAKE_BUILD_TYPE=$BuildType -DLLVM_ENABLE_ASSERTIONS=$Assertions \
-        -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
         -DLLVM_ENABLE_PROJECTS="$project_list" \
-        -DLLVM_LIT_ARGS="-j $NumJobs" \
-        -DLLVM_ENABLE_RUNTIMES="$runtime_list" \
         $ExtraConfigureFlags $BuildDir/llvm-project/llvm \
         2>&1 | tee $LogDir/llvm.configure-Phase$Phase-$Flavor.log
     env CC="$c_compiler" CXX="$cxx_compiler" \
         cmake -G "$generator" \
         -DCMAKE_BUILD_TYPE=$BuildType -DLLVM_ENABLE_ASSERTIONS=$Assertions \
-        -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
         -DLLVM_ENABLE_PROJECTS="$project_list" \
-        -DLLVM_LIT_ARGS="-j $NumJobs" \
-        -DLLVM_ENABLE_RUNTIMES="$runtime_list" \
         $ExtraConfigureFlags $BuildDir/llvm-project/llvm \
         2>&1 | tee $LogDir/llvm.configure-Phase$Phase-$Flavor.log
 
@@ -436,22 +413,16 @@ function build_llvmCore() {
       Verbose="-v"
     fi
 
-    redir="/dev/stdout"
-    if [ $do_silent_log == "yes" ]; then
-      echo "# Silencing build logs because of -silent-log flag..."
-      redir="/dev/null"
-    fi
-
     cd $ObjDir
     echo "# Compiling llvm $Release-$RC $Flavor"
     echo "# ${MAKE} -j $NumJobs $Verbose"
     ${MAKE} -j $NumJobs $Verbose \
-        2>&1 | tee $LogDir/llvm.make-Phase$Phase-$Flavor.log > $redir
+        2>&1 | tee $LogDir/llvm.make-Phase$Phase-$Flavor.log
 
     echo "# Installing llvm $Release-$RC $Flavor"
     echo "# ${MAKE} install"
     DESTDIR="${DestDir}" ${MAKE} install \
-        2>&1 | tee $LogDir/llvm.install-Phase$Phase-$Flavor.log > $redir
+        2>&1 | tee $LogDir/llvm.install-Phase$Phase-$Flavor.log
     cd $BuildDir
 }
 
@@ -476,8 +447,7 @@ function test_llvmCore() {
     if [ $do_test_suite = 'yes' ]; then
       cd $TestSuiteBuildDir
       env CC="$c_compiler" CXX="$cxx_compiler" \
-          cmake $TestSuiteSrcDir -G "$generator" -DTEST_SUITE_LIT=$Lit \
-                -DTEST_SUITE_HOST_CC=$build_compiler
+          cmake $TestSuiteSrcDir -G "$generator" -DTEST_SUITE_LIT=$Lit
 
       if ! ( ${MAKE} -j $NumJobs $KeepGoing check \
           2>&1 | tee $LogDir/llvm.check-Phase$Phase-$Flavor.log ) ; then
@@ -490,7 +460,7 @@ function test_llvmCore() {
 # Clean RPATH. Libtool adds the build directory to the search path, which is
 # not necessary --- and even harmful --- for the binary packages we release.
 function clean_RPATH() {
-  if [ "$System" = "Darwin" ] || [ "$System" = "SunOS" ] || [ "$System" = "AIX" ]; then
+  if [ "$System" = "Darwin" -o "$System" = "SunOS" ]; then
     return
   fi
   local InstallPath="$1"
@@ -538,8 +508,11 @@ fi
 # Setup the test-suite.  Do this early so we can catch failures before
 # we do the full 3 stage build.
 if [ $do_test_suite = "yes" ]; then
-  check_program_exists 'python3'
-  venv="python3 -m venv"
+  venv=virtualenv
+  if ! type -P 'virtualenv' > /dev/null 2>&1 ; then
+    check_program_exists 'python3'
+    venv="python3 -m venv"
+  fi
 
   SandboxDir="$BuildDir/sandbox"
   Lit=$SandboxDir/bin/lit
@@ -573,8 +546,6 @@ for Flavor in $Flavors ; do
 
     c_compiler="$CC"
     cxx_compiler="$CXX"
-    build_compiler="$CC"
-    [[ -z "$build_compiler" ]] && build_compiler="cc"
     llvmCore_phase1_objdir=$BuildDir/Phase1/$Flavor/llvmCore-$Release-$RC.obj
     llvmCore_phase1_destdir=$BuildDir/Phase1/$Flavor/llvmCore-$Release-$RC.install
 

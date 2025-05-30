@@ -22,7 +22,7 @@ namespace interp {
 class Function;
 
 /// Pointer into the code segment.
-class CodePtr final {
+class CodePtr {
 public:
   CodePtr() : Ptr(nullptr) {}
 
@@ -43,12 +43,9 @@ public:
 
   bool operator!=(const CodePtr &RHS) const { return Ptr != RHS.Ptr; }
 
-  operator bool() const { return Ptr; }
-
   /// Reads data and advances the pointer.
-  template <typename T> std::enable_if_t<!std::is_pointer<T>::value, T> read() {
-    using namespace llvm::support;
-    T Value = endian::read<T, endianness::native, 1>(Ptr);
+  template <typename T> T read() {
+    T Value = ReadHelper<T>(Ptr);
     Ptr += sizeof(T);
     return Value;
   }
@@ -56,6 +53,22 @@ public:
 private:
   /// Constructor used by Function to generate pointers.
   CodePtr(const char *Ptr) : Ptr(Ptr) {}
+
+  /// Helper to decode a value or a pointer.
+  template <typename T>
+  static std::enable_if_t<!std::is_pointer<T>::value, T>
+  ReadHelper(const char *Ptr) {
+    using namespace llvm::support;
+    return endian::read<T, endianness::native, 1>(Ptr);
+  }
+
+  template <typename T>
+  static std::enable_if_t<std::is_pointer<T>::value, T>
+  ReadHelper(const char *Ptr) {
+    using namespace llvm::support;
+    auto Punned = endian::read<uintptr_t, endianness::native, 1>(Ptr);
+    return reinterpret_cast<T>(Punned);
+  }
 
 private:
   friend class Function;
@@ -65,7 +78,7 @@ private:
 };
 
 /// Describes the statement/declaration an opcode was generated from.
-class SourceInfo final {
+class SourceInfo {
 public:
   SourceInfo() {}
   SourceInfo(const Stmt *E) : Source(E) {}

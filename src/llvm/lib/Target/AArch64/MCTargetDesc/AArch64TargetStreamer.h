@@ -23,7 +23,6 @@ public:
   ~AArch64TargetStreamer() override;
 
   void finish() override;
-  void emitConstantPools() override;
 
   /// Callback used to implement the ldr= pseudo.
   /// Add a new entry to the constant pool for the current section and return an
@@ -67,7 +66,6 @@ public:
   virtual void emitARM64WinCFIMachineFrame() {}
   virtual void emitARM64WinCFIContext() {}
   virtual void emitARM64WinCFIClearUnwoundToCall() {}
-  virtual void emitARM64WinCFIPACSignLR() {}
 
 private:
   std::unique_ptr<AssemblerConstantPools> ConstantPools;
@@ -121,7 +119,6 @@ public:
   void emitARM64WinCFIMachineFrame() override;
   void emitARM64WinCFIContext() override;
   void emitARM64WinCFIClearUnwoundToCall() override;
-  void emitARM64WinCFIPACSignLR() override;
 
 private:
   void emitARM64WinUnwindCode(unsigned UnwindCode, int Reg, int Offset);

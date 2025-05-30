@@ -53,17 +53,17 @@ template <> struct Repr<64, true> { using Type = int64_t; };
 /// These wrappers are required to shared an interface between APSint and
 /// builtin primitive numeral types, while optimising for storage and
 /// allowing methods operating on primitive type to compile to fast code.
-template <unsigned Bits, bool Signed> class Integral final {
+template <unsigned Bits, bool Signed> class Integral {
 private:
   template <unsigned OtherBits, bool OtherSigned> friend class Integral;
 
   // The primitive representing the integral.
-  using ReprT = typename Repr<Bits, Signed>::Type;
-  ReprT V;
+  using T = typename Repr<Bits, Signed>::Type;
+  T V;
 
   /// Primitive representing limits.
-  static const auto Min = std::numeric_limits<ReprT>::min();
-  static const auto Max = std::numeric_limits<ReprT>::max();
+  static const auto Min = std::numeric_limits<T>::min();
+  static const auto Max = std::numeric_limits<T>::max();
 
   /// Construct an integral from anything that is convertible to storage.
   template <typename T> explicit Integral(T V) : V(V) {}
@@ -107,7 +107,7 @@ public:
     return APSInt(APInt(Bits, static_cast<uint64_t>(V), Signed), !Signed);
   }
   APSInt toAPSInt(unsigned NumBits) const {
-    if constexpr (Signed)
+    if (Signed)
       return APSInt(toAPSInt().sextOrTrunc(NumBits), !Signed);
     else
       return APSInt(toAPSInt().zextOrTrunc(NumBits), !Signed);
@@ -124,27 +124,25 @@ public:
 
   bool isMin() const { return *this == min(bitWidth()); }
 
-  bool isMinusOne() const { return Signed && V == ReprT(-1); }
+  bool isMinusOne() const { return Signed && V == T(-1); }
 
   constexpr static bool isSigned() { return Signed; }
 
-  bool isNegative() const { return V < ReprT(0); }
+  bool isNegative() const { return V < T(0); }
   bool isPositive() const { return !isNegative(); }
 
   ComparisonCategoryResult compare(const Integral &RHS) const {
     return Compare(V, RHS.V);
   }
 
-  unsigned countLeadingZeros() const {
-    return llvm::countLeadingZeros<ReprT>(V);
-  }
+  unsigned countLeadingZeros() const { return llvm::countLeadingZeros<T>(V); }
 
   Integral truncate(unsigned TruncBits) const {
     if (TruncBits >= Bits)
       return *this;
-    const ReprT BitMask = (ReprT(1) << ReprT(TruncBits)) - 1;
-    const ReprT SignBit = ReprT(1) << (TruncBits - 1);
-    const ReprT ExtMask = ~BitMask;
+    const T BitMask = (T(1) << T(TruncBits)) - 1;
+    const T SignBit = T(1) << (TruncBits - 1);
+    const T ExtMask = ~BitMask;
     return Integral((V & BitMask) | (Signed && (V & SignBit) ? ExtMask : 0));
   }
 
@@ -157,11 +155,9 @@ public:
     return Integral(Max);
   }
 
-  template <typename ValT> static Integral from(ValT Value) {
-    if constexpr (std::is_integral<ValT>::value)
-      return Integral(Value);
-    else
-      return Integral::from(static_cast<Integral::ReprT>(Value));
+  template <typename T>
+  static std::enable_if_t<std::is_integral<T>::value, Integral> from(T Value) {
+    return Integral(Value);
   }
 
   template <unsigned SrcBits, bool SrcSign>
@@ -171,7 +167,7 @@ public:
   }
 
   template <bool SrcSign> static Integral from(Integral<0, SrcSign> Value) {
-    if constexpr (SrcSign)
+    if (SrcSign)
       return Integral(Value.V.getSExtValue());
     else
       return Integral(Value.V.getZExtValue());
@@ -184,15 +180,15 @@ public:
   }
 
   static bool inRange(int64_t Value, unsigned NumBits) {
-    return CheckRange<ReprT, Min, Max>(Value);
+    return CheckRange<T, Min, Max>(Value);
   }
 
   static bool increment(Integral A, Integral *R) {
-    return add(A, Integral(ReprT(1)), A.bitWidth(), R);
+    return add(A, Integral(T(1)), A.bitWidth(), R);
   }
 
   static bool decrement(Integral A, Integral *R) {
-    return sub(A, Integral(ReprT(1)), A.bitWidth(), R);
+    return sub(A, Integral(T(1)), A.bitWidth(), R);
   }
 
   static bool add(Integral A, Integral B, unsigned OpBits, Integral *R) {
@@ -205,11 +201,6 @@ public:
 
   static bool mul(Integral A, Integral B, unsigned OpBits, Integral *R) {
     return CheckMulUB(A.V, B.V, R->V);
-  }
-
-  static bool neg(Integral A, Integral *R) {
-    *R = -A;
-    return false;
   }
 
 private:

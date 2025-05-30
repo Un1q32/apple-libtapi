@@ -12,27 +12,24 @@
 //===----------------------------------------------------------------------===//
 
 #include "llvm/LTO/legacy/ThinLTOCodeGenerator.h"
-#include "llvm/CAS/ActionCache.h"
-#include "llvm/CAS/ObjectStore.h"
-#include "llvm/RemoteCachingService/Client.h"
 #include "llvm/Support/CommandLine.h"
 
-#include "llvm/ADT/ScopeExit.h"
 #include "llvm/ADT/Statistic.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/Analysis/AliasAnalysis.h"
 #include "llvm/Analysis/ModuleSummaryAnalysis.h"
 #include "llvm/Analysis/ProfileSummaryInfo.h"
 #include "llvm/Analysis/TargetLibraryInfo.h"
+#include "llvm/Analysis/TargetTransformInfo.h"
 #include "llvm/Bitcode/BitcodeReader.h"
 #include "llvm/Bitcode/BitcodeWriter.h"
 #include "llvm/Bitcode/BitcodeWriterPass.h"
 #include "llvm/Config/llvm-config.h"
 #include "llvm/IR/DebugInfo.h"
 #include "llvm/IR/DiagnosticPrinter.h"
-#include "llvm/IR/LegacyPassManager.h"
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/LLVMRemarkStreamer.h"
+#include "llvm/IR/LegacyPassManager.h"
 #include "llvm/IR/Mangler.h"
 #include "llvm/IR/PassTimingInfo.h"
 #include "llvm/IR/Verifier.h"
@@ -40,7 +37,6 @@
 #include "llvm/LTO/LTO.h"
 #include "llvm/LTO/SummaryBasedOptimizations.h"
 #include "llvm/MC/SubtargetFeature.h"
-#include "llvm/MC/TargetRegistry.h"
 #include "llvm/Object/IRObjectFile.h"
 #include "llvm/Passes/PassBuilder.h"
 #include "llvm/Passes/StandardInstrumentations.h"
@@ -50,22 +46,21 @@
 #include "llvm/Support/Error.h"
 #include "llvm/Support/FileUtilities.h"
 #include "llvm/Support/Path.h"
-#include "llvm/Support/Process.h"
 #include "llvm/Support/SHA1.h"
-#include "llvm/Support/ScopedDurationTimer.h"
 #include "llvm/Support/SmallVectorMemoryBuffer.h"
+#include "llvm/Support/TargetRegistry.h"
 #include "llvm/Support/ThreadPool.h"
 #include "llvm/Support/Threading.h"
 #include "llvm/Support/ToolOutputFile.h"
 #include "llvm/Target/TargetMachine.h"
-#include "llvm/Transforms/IPO/FunctionAttrs.h"
+#include "llvm/Transforms/IPO.h"
 #include "llvm/Transforms/IPO/FunctionImport.h"
 #include "llvm/Transforms/IPO/Internalize.h"
+#include "llvm/Transforms/IPO/PassManagerBuilder.h"
 #include "llvm/Transforms/IPO/WholeProgramDevirt.h"
 #include "llvm/Transforms/ObjCARC.h"
 #include "llvm/Transforms/Utils/FunctionImportUtils.h"
 
-#include <memory>
 #include <numeric>
 
 #if !defined(_MSC_VER) && !defined(__MINGW32__)
@@ -95,32 +90,6 @@ namespace {
 // thred per core, as indicated by the usage of
 // heavyweight_hardware_concurrency() below.
 static cl::opt<int> ThreadCount("threads", cl::init(0));
-static cl::opt<bool> CacheLogging(
-    "thinlto-cache-logging", cl::desc("Enable logging for thinLTO caching"),
-    cl::init((bool)sys::Process::GetEnv("LLVM_THINLTO_CACHE_LOGGING")),
-    cl::Hidden);
-static cl::opt<bool> DeterministicCheck(
-    "thinlto-deterministic-check",
-    cl::desc("Enable deterministic check for thinLTO caching"),
-    cl::init((bool)sys::Process::GetEnv(
-        "LLVM_CACHE_CHECK_REPRODUCIBLE_CACHING_ISSUES")),
-    cl::Hidden);
-
-class LoggingStream {
-public:
-  LoggingStream(raw_ostream &OS) : OS(OS) {}
-  void applyLocked(llvm::function_ref<void(raw_ostream &OS)> Fn) {
-    std::unique_lock<std::mutex> LockGuard(Lock);
-    auto Now = std::chrono::system_clock::now();
-    OS << Now << ": ";
-    Fn(OS);
-    OS.flush();
-  }
-
-private:
-  std::mutex Lock;
-  raw_ostream &OS;
-};
 
 // Simple helper to save temporary files for debug.
 static void saveTempBitcode(const Module &TheModule, StringRef TempDir,
@@ -268,7 +237,38 @@ crossImportIntoModule(Module &TheModule, const ModuleSummaryIndex &Index,
 
 static void optimizeModule(Module &TheModule, TargetMachine &TM,
                            unsigned OptLevel, bool Freestanding,
-                           bool DebugPassManager, ModuleSummaryIndex *Index) {
+                           ModuleSummaryIndex *Index) {
+  // Populate the PassManager
+  PassManagerBuilder PMB;
+  PMB.LibraryInfo = new TargetLibraryInfoImpl(TM.getTargetTriple());
+  if (Freestanding)
+    PMB.LibraryInfo->disableAllFunctions();
+  PMB.Inliner = createFunctionInliningPass();
+  // FIXME: should get it from the bitcode?
+  PMB.OptLevel = OptLevel;
+  PMB.LoopVectorize = true;
+  PMB.SLPVectorize = true;
+  // Already did this in verifyLoadedModule().
+  PMB.VerifyInput = false;
+  PMB.VerifyOutput = false;
+  PMB.ImportSummary = Index;
+
+  legacy::PassManager PM;
+
+  // Add the TTI (required to inform the vectorizer about register size for
+  // instance)
+  PM.add(createTargetTransformInfoWrapperPass(TM.getTargetIRAnalysis()));
+
+  // Add optimizations
+  PMB.populateThinLTOPassManager(PM);
+
+  PM.run(TheModule);
+}
+
+static void optimizeModuleNewPM(Module &TheModule, TargetMachine &TM,
+                                unsigned OptLevel, bool Freestanding,
+                                bool DebugPassManager,
+                                ModuleSummaryIndex *Index) {
   Optional<PGOOptions> PGOOpt;
   LoopAnalysisManager LAM;
   FunctionAnalysisManager FAM;
@@ -289,6 +289,11 @@ static void optimizeModule(Module &TheModule, TargetMachine &TM,
     TLII->disableAllFunctions();
   FAM.registerPass([&] { return TargetLibraryAnalysis(*TLII); });
 
+  AAManager AA = PB.buildDefaultAAPipeline();
+
+  // Register the AA manager first so that our version is the one used.
+  FAM.registerPass([&] { return std::move(AA); });
+
   // Register all the basic analyses with the managers.
   PB.registerModuleAnalyses(MAM);
   PB.registerCGSCCAnalyses(CGAM);
@@ -298,22 +303,22 @@ static void optimizeModule(Module &TheModule, TargetMachine &TM,
 
   ModulePassManager MPM;
 
-  OptimizationLevel OL;
+  PassBuilder::OptimizationLevel OL;
 
   switch (OptLevel) {
   default:
     llvm_unreachable("Invalid optimization level");
   case 0:
-    OL = OptimizationLevel::O0;
+    OL = PassBuilder::OptimizationLevel::O0;
     break;
   case 1:
-    OL = OptimizationLevel::O1;
+    OL = PassBuilder::OptimizationLevel::O1;
     break;
   case 2:
-    OL = OptimizationLevel::O2;
+    OL = PassBuilder::OptimizationLevel::O2;
     break;
   case 3:
-    OL = OptimizationLevel::O3;
+    OL = PassBuilder::OptimizationLevel::O3;
     break;
   }
 
@@ -376,16 +381,18 @@ std::unique_ptr<MemoryBuffer> codegenModule(Module &TheModule,
     // Run codegen now. resulting binary is in OutputBuffer.
     PM.run(TheModule);
   }
-  return std::make_unique<SmallVectorMemoryBuffer>(
-      std::move(OutputBuffer), /*RequiresNullTerminator=*/false);
+  return std::make_unique<SmallVectorMemoryBuffer>(std::move(OutputBuffer));
 }
 
-class FileModuleCacheEntry : public ModuleCacheEntry {
+/// Manage caching for a single Module.
+class ModuleCacheEntry {
+  SmallString<128> EntryPath;
+
 public:
   // Create a cache entry. This compute a unique hash for the Module considering
   // the current list of export/import, and offer an interface to query to
   // access the content in the cache.
-  FileModuleCacheEntry(
+  ModuleCacheEntry(
       StringRef CachePath, const ModuleSummaryIndex &Index, StringRef ModuleID,
       const FunctionImporter::ImportMapTy &ImportList,
       const FunctionImporter::ExportSetTy &ExportList,
@@ -395,30 +402,52 @@ public:
     if (CachePath.empty())
       return;
 
-    Optional<std::string> Key =
-        computeCacheKey(Index, ModuleID, ImportList, ExportList, ResolvedODR,
-                        DefinedGVSummaries, OptLevel, Freestanding, TMBuilder);
-
-    if (!Key)
+    if (!Index.modulePaths().count(ModuleID))
+      // The module does not have an entry, it can't have a hash at all
       return;
+
+    if (all_of(Index.getModuleHash(ModuleID),
+               [](uint32_t V) { return V == 0; }))
+      // No hash entry, no caching!
+      return;
+
+    llvm::lto::Config Conf;
+    Conf.OptLevel = OptLevel;
+    Conf.Options = TMBuilder.Options;
+    Conf.CPU = TMBuilder.MCpu;
+    Conf.MAttrs.push_back(TMBuilder.MAttr);
+    Conf.RelocModel = TMBuilder.RelocModel;
+    Conf.CGOptLevel = TMBuilder.CGOptLevel;
+    Conf.Freestanding = Freestanding;
+    SmallString<40> Key;
+    computeLTOCacheKey(Key, Conf, Index, ModuleID, ImportList, ExportList,
+                       ResolvedODR, DefinedGVSummaries);
 
     // This choice of file name allows the cache to be pruned (see pruneCache()
     // in include/llvm/Support/CachePruning.h).
-    sys::path::append(EntryPath, CachePath, "llvmcache-" + *Key);
+    sys::path::append(EntryPath, CachePath, "llvmcache-" + Key);
   }
 
-  std::string getEntryPath() final { return EntryPath.str().str(); }
+  // Access the path to this entry in the cache.
+  StringRef getEntryPath() { return EntryPath; }
 
   // Try loading the buffer for this cache entry.
-  ErrorOr<std::unique_ptr<MemoryBuffer>> tryLoadingBuffer() final {
+  ErrorOr<std::unique_ptr<MemoryBuffer>> tryLoadingBuffer() {
     if (EntryPath.empty())
       return std::error_code();
-
-    return MemoryBuffer::getFile(EntryPath);
+    SmallString<64> ResultPath;
+    Expected<sys::fs::file_t> FDOrErr = sys::fs::openNativeFileForRead(
+        Twine(EntryPath), sys::fs::OF_UpdateAtime, &ResultPath);
+    if (!FDOrErr)
+      return errorToErrorCode(FDOrErr.takeError());
+    ErrorOr<std::unique_ptr<MemoryBuffer>> MBOrErr = MemoryBuffer::getOpenFile(
+        *FDOrErr, EntryPath, /*FileSize=*/-1, /*RequiresNullTerminator=*/false);
+    sys::fs::closeFile(*FDOrErr);
+    return MBOrErr;
   }
 
   // Cache the Produced object file
-  void write(const MemoryBuffer &OutputBuffer) final {
+  void write(const MemoryBuffer &OutputBuffer) {
     if (EntryPath.empty())
       return;
 
@@ -446,324 +475,6 @@ public:
       consumeError(std::move(Err));
     }
   }
-
-  Error writeObject(const MemoryBuffer &OutputBuffer,
-                    StringRef OutputPath) final {
-    // Clear output file if exists for hard-linking.
-    sys::fs::remove(OutputPath);
-    // Cache is enabled, hard-link the entry (or copy if hard-link fails).
-    std::string CacheEntryPath = getEntryPath();
-    if (!CacheEntryPath.empty()) {
-      auto Err = sys::fs::create_hard_link(CacheEntryPath, OutputPath);
-      if (!Err)
-        return Error::success();
-      // Hard linking failed, try to copy.
-      Err = sys::fs::copy_file(CacheEntryPath, OutputPath);
-      if (!Err)
-        return Error::success();
-      // Copy failed (could be because the CacheEntry was removed from the cache
-      // in the meantime by another process), fall back and try to write down
-      // the buffer to the output.
-      errs() << "remark: can't link or copy from cached entry '"
-             << CacheEntryPath << "' to '" << OutputPath << "'\n";
-    }
-    // Fallback to default.
-    return ModuleCacheEntry::writeObject(OutputBuffer, OutputPath);
-  }
-
-  Optional<std::unique_ptr<MemoryBuffer>> getMappedBuffer() final {
-    if (getEntryPath().empty())
-      return None;
-
-    auto ReloadedBufferOrErr = tryLoadingBuffer();
-    if (auto EC = ReloadedBufferOrErr.getError()) {
-      // On error, keep the preexisting buffer and print a diagnostic.
-      errs() << "remark: can't reload cached file '" << getEntryPath()
-             << "': " << EC.message() << "\n";
-    }
-    return std::move(*ReloadedBufferOrErr);
-  }
-
-private:
-  SmallString<128> EntryPath;
-};
-
-class CASModuleCacheEntry : public ModuleCacheEntry {
-public:
-  // Create a cache entry. This compute a unique hash for the Module considering
-  // the current list of export/import, and offer an interface to query to
-  // access the content in the cache.
-  CASModuleCacheEntry(
-      cas::ObjectStore &CAS, cas::ActionCache &Cache,
-      const ModuleSummaryIndex &Index, StringRef ModuleID,
-      const FunctionImporter::ImportMapTy &ImportList,
-      const FunctionImporter::ExportSetTy &ExportList,
-      const std::map<GlobalValue::GUID, GlobalValue::LinkageTypes> &ResolvedODR,
-      const GVSummaryMapTy &DefinedGVSummaries, unsigned OptLevel,
-      bool Freestanding, const TargetMachineBuilder &TMBuilder,
-      std::function<void(llvm::function_ref<void(raw_ostream &OS)>)> Logger)
-      : CAS(CAS), Cache(Cache), Logger(std::move(Logger)) {
-    Optional<std::string> Key =
-        computeCacheKey(Index, ModuleID, ImportList, ExportList, ResolvedODR,
-                        DefinedGVSummaries, OptLevel, Freestanding, TMBuilder);
-
-    if (!Key)
-      return;
-
-    // Create the key by inserting cache key (SHA1) into CAS to create a ID for
-    // the correct context.
-    // TODO: We can have an alternative hashing function that doesn't
-    // need to store the key into CAS to get the CacheKey.
-    auto CASKey = CAS.createProxy(None, *Key);
-    if (!CASKey)
-      report_fatal_error(CASKey.takeError());
-
-    ID = CASKey->getID();
-  }
-
-  std::string getEntryPath() final {
-    if (!ID)
-      return "";
-
-    return ID->toString();
-  }
-
-  // Try loading the buffer for this cache entry.
-  ErrorOr<std::unique_ptr<MemoryBuffer>> tryLoadingBuffer() final {
-    if (!ID)
-      return std::error_code();
-
-    Optional<cas::CASID> MaybeKeyID;
-    {
-      ScopedDurationTimer ScopedTime([&](double Seconds) {
-        if (Logger) {
-          Logger([&](raw_ostream &OS) {
-            OS << "LTO cache lookup '" << ID << "' in "
-               << llvm::format("%.6fs", Seconds) << "\n";
-          });
-        }
-      });
-
-      if (Error E = Cache.get(*ID, /*Globally=*/true).moveInto(MaybeKeyID))
-        return errorToErrorCode(std::move(E));
-    }
-
-    if (!MaybeKeyID)
-      return std::error_code();
-
-    ScopedDurationTimer ScopedTime([&](double Seconds) {
-      if (Logger) {
-        Logger([&](raw_ostream &OS) {
-          OS << "LTO cache load '" << ID << "' in "
-             << llvm::format("%.6fs", Seconds) << "\n";
-        });
-      }
-    });
-
-    auto MaybeObject = CAS.getProxy(*MaybeKeyID);
-    if (!MaybeObject)
-      return errorToErrorCode(MaybeObject.takeError());
-
-    return MaybeObject->getMemoryBuffer("", /*NullTerminated=*/true);
-  }
-
-  // Cache the Produced object file
-  void write(const MemoryBuffer &OutputBuffer) final {
-    if (!ID)
-      return;
-
-    std::optional<cas::ObjectProxy> Proxy;
-    {
-      ScopedDurationTimer ScopedTime([&](double Seconds) {
-        if (Logger) {
-          Logger([&](raw_ostream &OS) {
-            OS << "LTO cache save '" << ID << "' in "
-               << llvm::format("%.6fs", Seconds) << "\n";
-          });
-        }
-      });
-
-      if (Error E = CAS.createProxy(None, OutputBuffer.getBuffer())
-                        .moveInto(Proxy))
-        report_fatal_error(std::move(E));
-    }
-
-    ScopedDurationTimer ScopedTime([&](double Seconds) {
-      if (Logger) {
-        Logger([&](raw_ostream &OS) {
-          OS << "LTO cache update '" << ID << "' in "
-             << llvm::format("%.6fs", Seconds) << "\n";
-        });
-      }
-    });
-
-    if (auto Err = Cache.put(*ID, Proxy->getID(), /*Globally=*/true))
-      report_fatal_error(std::move(Err));
-  }
-
-private:
-  cas::ObjectStore &CAS;
-  cas::ActionCache &Cache;
-  Optional<cas::CASID> ID;
-  std::function<void(llvm::function_ref<void(raw_ostream &OS)>)> Logger;
-};
-
-class RemoteModuleCacheEntry : public ModuleCacheEntry {
-public:
-  // Create a cache entry. This compute a unique hash for the Module considering
-  // the current list of export/import, and offer an interface to query to
-  // access the content in the cache.
-  RemoteModuleCacheEntry(
-      cas::remote::ClientServices &Service, const ModuleSummaryIndex &Index,
-      StringRef ModuleID, StringRef OutputPath,
-      const FunctionImporter::ImportMapTy &ImportList,
-      const FunctionImporter::ExportSetTy &ExportList,
-      const std::map<GlobalValue::GUID, GlobalValue::LinkageTypes> &ResolvedODR,
-      const GVSummaryMapTy &DefinedGVSummaries, unsigned OptLevel,
-      bool Freestanding, const TargetMachineBuilder &TMBuilder,
-      std::function<void(llvm::function_ref<void(raw_ostream &OS)>)> Logger)
-      : Service(Service), OutputPath(OutputPath.str()),
-        Logger(std::move(Logger)) {
-    Optional<std::string> Key =
-        computeCacheKey(Index, ModuleID, ImportList, ExportList, ResolvedODR,
-                        DefinedGVSummaries, OptLevel, Freestanding, TMBuilder);
-
-    if (!Key)
-      return;
-
-    ID = *Key;
-  }
-
-  std::string getEntryPath() final { return ID; }
-
-  // Try loading the buffer for this cache entry.
-  ErrorOr<std::unique_ptr<MemoryBuffer>> tryLoadingBuffer() final {
-    if (ID.empty())
-      return std::error_code();
-
-    // Lookup the output value from KVDB.
-    Optional<cas::remote::KeyValueDBClient::ValueTy> GetResponse;
-    {
-      ScopedDurationTimer ScopedTime([&](double Seconds) {
-        if (Logger) {
-          Logger([&](raw_ostream &OS) {
-            OS << "LTO cache lookup '" << ID << "' in "
-               << llvm::format("%.6fs", Seconds) << "\n";
-          });
-        }
-      });
-
-      if (Error E = Service.KVDB->getValueSync(ID).moveInto(GetResponse))
-        return errorToErrorCode(std::move(E));
-    }
-
-    // Cache Miss.
-    if (!GetResponse)
-      return std::error_code();
-
-    // Malformed output. Error.
-    auto Result = GetResponse->find("Output");
-    if (Result == GetResponse->end())
-      return std::make_error_code(std::errc::message_size);
-
-    if (DeterministicCheck)
-      PresumedOutput = Result->getValue();
-
-    ScopedDurationTimer ScopedTime([&](double Seconds) {
-      if (Logger) {
-        Logger([&](raw_ostream &OS) {
-          OS << "LTO cache load '" << ID << "' in "
-             << llvm::format("%.6fs", Seconds) << "\n";
-        });
-      }
-    });
-
-    // Request the output buffer.
-    auto LoadResponse = Service.CASDB->loadSync(Result->getValue(), OutputPath);
-    if (!LoadResponse)
-      return errorToErrorCode(LoadResponse.takeError());
-
-    // Object not found. Treat it as a miss.
-    if (LoadResponse->KeyNotFound)
-      return std::error_code();
-
-    ProducedOutput = true;
-    return MemoryBuffer::getFile(OutputPath);
-  }
-
-  // Cache the Produced object file
-  void write(const MemoryBuffer &OutputBuffer) final {
-    if (ID.empty())
-      return;
-
-    if (!ProducedOutput)
-      cantFail(ModuleCacheEntry::writeObject(OutputBuffer, OutputPath));
-
-    ProducedOutput = true;
-    std::optional<std::string> SaveResponse;
-    {
-      ScopedDurationTimer ScopedTime([&](double Seconds) {
-        if (Logger) {
-          Logger([&](raw_ostream &OS) {
-            OS << "LTO cache save '" << ID << "' in "
-               << llvm::format("%.6fs", Seconds) << "\n";
-          });
-        }
-      });
-
-      if (Error E =
-              Service.CASDB->saveFileSync(OutputPath).moveInto(SaveResponse))
-        report_fatal_error(std::move(E));
-    }
-
-    // Only check determinism when the cache lookup succeeded before.
-    if (DeterministicCheck && PresumedOutput) {
-      if (*PresumedOutput != *SaveResponse)
-        report_fatal_error(
-            (Twine) "ThinLTO deterministic check failed: " + *PresumedOutput +
-            " (expected) vs. " + *SaveResponse + " (actual)");
-    }
-
-    ScopedDurationTimer ScopedTime([&](double Seconds) {
-      if (Logger) {
-        Logger([&](raw_ostream &OS) {
-          OS << "LTO cache update '" << ID << "' in "
-             << llvm::format("%.6fs", Seconds) << "\n";
-        });
-      }
-    });
-
-    cas::remote::KeyValueDBClient::ValueTy CompResult;
-    CompResult["Output"] = *SaveResponse;
-    if (auto Err = Service.KVDB->putValueSync(ID, CompResult))
-      report_fatal_error(std::move(Err));
-  }
-
-  Error writeObject(const MemoryBuffer &OutputBuffer,
-                    StringRef OutputPath) final {
-    // There is nothing to do here.
-    return Error::success();
-  }
-
-  Optional<std::unique_ptr<MemoryBuffer>> getMappedBuffer() final {
-    if (!ProducedOutput)
-      return None;
-
-    ErrorOr<std::unique_ptr<MemoryBuffer>> MBOrErr =
-        MemoryBuffer::getFile(OutputPath);
-    if (!MBOrErr)
-      return None;
-
-    return std::move(*MBOrErr);
-  }
-
-private:
-  cas::remote::ClientServices &Service;
-  std::string ID;
-  std::string OutputPath;
-  bool ProducedOutput = false;
-  Optional<std::string> PresumedOutput;
-  std::function<void(llvm::function_ref<void(raw_ostream &OS)>)> Logger;
 };
 
 static std::unique_ptr<MemoryBuffer>
@@ -776,11 +487,7 @@ ProcessThinLTOModule(Module &TheModule, ModuleSummaryIndex &Index,
                      const ThinLTOCodeGenerator::CachingOptions &CacheOptions,
                      bool DisableCodeGen, StringRef SaveTempsDir,
                      bool Freestanding, unsigned OptLevel, unsigned count,
-                     bool DebugPassManager) {
-  // See comment at call to updateVCallVisibilityInIndex() for why
-  // WholeProgramVisibilityEnabledInLTO is false.
-  updatePublicTypeTestCalls(TheModule,
-                            /* WholeProgramVisibilityEnabledInLTO */ false);
+                     bool UseNewPM, bool DebugPassManager) {
 
   // "Benchmark"-like optimization: single-source case
   bool SingleModule = (ModuleMap.size() == 1);
@@ -796,7 +503,7 @@ ProcessThinLTOModule(Module &TheModule, ModuleSummaryIndex &Index,
     promoteModule(TheModule, Index, ClearDSOLocalOnDeclarations);
 
     // Apply summary-based prevailing-symbol resolution decisions.
-    thinLTOFinalizeInModule(TheModule, DefinedGlobals, /*PropagateAttrs=*/true);
+    thinLTOResolvePrevailingInModule(TheModule, DefinedGlobals);
 
     // Save temps: after promotion.
     saveTempBitcode(TheModule, SaveTempsDir, count, ".1.promoted.bc");
@@ -820,8 +527,11 @@ ProcessThinLTOModule(Module &TheModule, ModuleSummaryIndex &Index,
     saveTempBitcode(TheModule, SaveTempsDir, count, ".3.imported.bc");
   }
 
-  optimizeModule(TheModule, TM, OptLevel, Freestanding, DebugPassManager,
-                 &Index);
+  if (UseNewPM)
+    optimizeModuleNewPM(TheModule, TM, OptLevel, Freestanding, DebugPassManager,
+                        &Index);
+  else
+    optimizeModule(TheModule, TM, OptLevel, Freestanding, &Index);
 
   saveTempBitcode(TheModule, SaveTempsDir, count, ".4.opt.bc");
 
@@ -834,8 +544,7 @@ ProcessThinLTOModule(Module &TheModule, ModuleSummaryIndex &Index,
       auto Index = buildModuleSummaryIndex(TheModule, nullptr, &PSI);
       WriteBitcodeToFile(TheModule, OS, true, &Index);
     }
-    return std::make_unique<SmallVectorMemoryBuffer>(
-        std::move(OutputBuffer), /*RequiresNullTerminator=*/false);
+    return std::make_unique<SmallVectorMemoryBuffer>(std::move(OutputBuffer));
   }
 
   return codegenModule(TheModule, TM);
@@ -893,113 +602,12 @@ static void initTMBuilder(TargetMachineBuilder &TMBuilder,
 
 } // end anonymous namespace
 
-Optional<std::string> ModuleCacheEntry::computeCacheKey(
-    const ModuleSummaryIndex &Index, StringRef ModuleID,
-    const FunctionImporter::ImportMapTy &ImportList,
-    const FunctionImporter::ExportSetTy &ExportList,
-    const std::map<GlobalValue::GUID, GlobalValue::LinkageTypes> &ResolvedODR,
-    const GVSummaryMapTy &DefinedGVSummaries, unsigned OptLevel,
-    bool Freestanding, const TargetMachineBuilder &TMBuilder) {
-  if (!Index.modulePaths().count(ModuleID))
-    // The module does not have an entry, it can't have a hash at all
-    return None;
-
-  if (all_of(Index.getModuleHash(ModuleID), [](uint32_t V) { return V == 0; }))
-    // No hash entry, no caching!
-    return None;
-
-  llvm::lto::Config Conf;
-  Conf.OptLevel = OptLevel;
-  Conf.Options = TMBuilder.Options;
-  Conf.CPU = TMBuilder.MCpu;
-  Conf.MAttrs.push_back(TMBuilder.MAttr);
-  Conf.RelocModel = TMBuilder.RelocModel;
-  Conf.CGOptLevel = TMBuilder.CGOptLevel;
-  Conf.Freestanding = Freestanding;
-  SmallString<40> Key;
-  computeLTOCacheKey(Key, Conf, Index, ModuleID, ImportList, ExportList,
-                     ResolvedODR, DefinedGVSummaries);
-
-  return Key.str().str();
-}
-
-Error ModuleCacheEntry::writeObject(const MemoryBuffer &OutputBuffer,
-                                    StringRef OutputPath) {
-  std::error_code Err;
-  raw_fd_ostream OS(OutputPath, Err, sys::fs::CD_CreateAlways);
-  if (Err)
-    return createStringError(Err, Twine("Can't open output '") + OutputPath);
-  OS << OutputBuffer.getBuffer();
-  return Error::success();
-}
-
-Error ThinLTOCodeGenerator::setCacheDir(std::string Path) {
-  // CacheDir can only be set once.
-  if (!CacheOptions.Path.empty())
-    return Error::success();
-
-  StringRef PathStr = Path;
-  // The environment overwrites the option parameter.
-  if (PathStr.consume_front("cas:")) {
-    CacheOptions.Type = CachingOptions::CacheType::CAS;
-    // Create ObjectStore and ActionCache.
-    auto MaybeCAS = cas::createOnDiskCAS(PathStr);
-    if (!MaybeCAS)
-      return MaybeCAS.takeError();
-    CacheOptions.CAS = std::move(*MaybeCAS);
-    auto MaybeCache = cas::createOnDiskActionCache(PathStr);
-    if (!MaybeCache)
-      return MaybeCache.takeError();
-    CacheOptions.Cache = std::move(*MaybeCache);
-    CacheOptions.Path = PathStr.str();
-  } else if (PathStr.consume_front("grpc:")) {
-    CacheOptions.Type = CachingOptions::CacheType::RemoteService;
-    auto MaybeService =
-        cas::remote::createCompilationCachingRemoteClient(PathStr);
-    if (!MaybeService)
-      return MaybeService.takeError();
-    CacheOptions.Service = std::move(*MaybeService);
-    CacheOptions.Path = PathStr.str();
-  } else {
-    CacheOptions.Type = CachingOptions::CacheType::CacheDirectory;
-    CacheOptions.Path = std::move(Path);
-  }
-
-  return Error::success();
-}
-
-std::unique_ptr<ModuleCacheEntry> ThinLTOCodeGenerator::createModuleCacheEntry(
-    const ModuleSummaryIndex &Index, StringRef ModuleID, StringRef OutputPath,
-    const FunctionImporter::ImportMapTy &ImportList,
-    const FunctionImporter::ExportSetTy &ExportList,
-    const std::map<GlobalValue::GUID, GlobalValue::LinkageTypes> &ResolvedODR,
-    const GVSummaryMapTy &DefinedGVSummaries, unsigned OptLevel,
-    bool Freestanding, const TargetMachineBuilder &TMBuilder,
-    std::function<void(llvm::function_ref<void(raw_ostream &OS)>)> Logger) {
-  switch (CacheOptions.Type) {
-  case CachingOptions::CacheType::CacheDirectory:
-    return std::make_unique<FileModuleCacheEntry>(
-        CacheOptions.Path, Index, ModuleID, ImportList, ExportList, ResolvedODR,
-        DefinedGVSummaries, OptLevel, Freestanding, TMBuilder);
-  case CachingOptions::CacheType::CAS:
-    return std::make_unique<CASModuleCacheEntry>(
-        *CacheOptions.CAS, *CacheOptions.Cache, Index, ModuleID, ImportList,
-        ExportList, ResolvedODR, DefinedGVSummaries, OptLevel, Freestanding,
-        TMBuilder, std::move(Logger));
-  case CachingOptions::CacheType::RemoteService:
-    return std::make_unique<RemoteModuleCacheEntry>(
-        *CacheOptions.Service, Index, ModuleID, OutputPath, ImportList,
-        ExportList, ResolvedODR, DefinedGVSummaries, OptLevel, Freestanding,
-        TMBuilder, std::move(Logger));
-  }
-}
-
 void ThinLTOCodeGenerator::addModule(StringRef Identifier, StringRef Data) {
   MemoryBufferRef Buffer(Data, Identifier);
 
   auto InputOrError = lto::InputFile::create(Buffer);
   if (!InputOrError)
-    report_fatal_error(Twine("ThinLTO cannot create input file: ") +
+    report_fatal_error("ThinLTO cannot create input file: " +
                        toString(InputOrError.takeError()));
 
   auto TripleStr = (*InputOrError)->getTargetTriple();
@@ -1034,7 +642,7 @@ std::unique_ptr<TargetMachine> TargetMachineBuilder::create() const {
   const Target *TheTarget =
       TargetRegistry::lookupTarget(TheTriple.str(), ErrMsg);
   if (!TheTarget) {
-    report_fatal_error(Twine("Can't load target for this Triple: ") + ErrMsg);
+    report_fatal_error("Can't load target for this Triple: " + ErrMsg);
   }
 
   // Use MAttr as the default set of features.
@@ -1117,16 +725,6 @@ static void computeDeadSymbolsInIndex(
                                   /* ImportEnabled = */ true);
 }
 
-static std::string computeThinLTOOutputPath(unsigned count,
-                                            StringRef SavedObjectsDirectoryPath,
-                                            TargetMachineBuilder &TMBuilder) {
-  auto ArchName = TMBuilder.TheTriple.getArchName();
-  SmallString<128> OutputPath(SavedObjectsDirectoryPath);
-  llvm::sys::path::append(OutputPath,
-                          Twine(count) + "." + ArchName + ".thinlto.o");
-  return OutputPath.c_str(); // Ensure the string is null terminated.
-}
-
 /**
  * Perform promotion and renaming of exported internal functions.
  * Index is updated to reflect linkage changes from weak resolution.
@@ -1164,9 +762,8 @@ void ThinLTOCodeGenerator::promote(Module &TheModule, ModuleSummaryIndex &Index,
   resolvePrevailingInIndex(Index, ResolvedODR, GUIDPreservedSymbols,
                            PrevailingCopy);
 
-  thinLTOFinalizeInModule(TheModule,
-                          ModuleToDefinedGVSummaries[ModuleIdentifier],
-                          /*PropagateAttrs=*/false);
+  thinLTOResolvePrevailingInModule(
+      TheModule, ModuleToDefinedGVSummaries[ModuleIdentifier]);
 
   // Promote the exported values in the index, so that they are promoted
   // in the module.
@@ -1340,9 +937,8 @@ void ThinLTOCodeGenerator::internalize(Module &TheModule,
   promoteModule(TheModule, Index, /*ClearDSOLocalOnDeclarations=*/false);
 
   // Internalization
-  thinLTOFinalizeInModule(TheModule,
-                          ModuleToDefinedGVSummaries[ModuleIdentifier],
-                          /*PropagateAttrs=*/false);
+  thinLTOResolvePrevailingInModule(
+      TheModule, ModuleToDefinedGVSummaries[ModuleIdentifier]);
 
   thinLTOInternalizeModule(TheModule,
                            ModuleToDefinedGVSummaries[ModuleIdentifier]);
@@ -1356,74 +952,62 @@ void ThinLTOCodeGenerator::optimize(Module &TheModule) {
 
   // Optimize now
   optimizeModule(TheModule, *TMBuilder.create(), OptLevel, Freestanding,
-                 DebugPassManager, nullptr);
+                 nullptr);
 }
 
 /// Write out the generated object file, either from CacheEntryPath or from
 /// OutputBuffer, preferring hard-link when possible.
 /// Returns the path to the generated file in SavedObjectsDirectoryPath.
 std::string
-ThinLTOCodeGenerator::writeGeneratedObject(StringRef OutputPath,
-                                           ModuleCacheEntry *CacheEntry,
+ThinLTOCodeGenerator::writeGeneratedObject(int count, StringRef CacheEntryPath,
                                            const MemoryBuffer &OutputBuffer) {
+  auto ArchName = TMBuilder.TheTriple.getArchName();
+  SmallString<128> OutputPath(SavedObjectsDirectoryPath);
+  llvm::sys::path::append(OutputPath,
+                          Twine(count) + "." + ArchName + ".thinlto.o");
+  OutputPath.c_str(); // Ensure the string is null terminated.
+  if (sys::fs::exists(OutputPath))
+    sys::fs::remove(OutputPath);
+
   // We don't return a memory buffer to the linker, just a list of files.
-  if (CacheEntry) {
-    Error Err = CacheEntry->writeObject(OutputBuffer, OutputPath);
-    if (Err)
-      report_fatal_error(std::move(Err));
-    return OutputPath.str();
+  if (!CacheEntryPath.empty()) {
+    // Cache is enabled, hard-link the entry (or copy if hard-link fails).
+    auto Err = sys::fs::create_hard_link(CacheEntryPath, OutputPath);
+    if (!Err)
+      return std::string(OutputPath.str());
+    // Hard linking failed, try to copy.
+    Err = sys::fs::copy_file(CacheEntryPath, OutputPath);
+    if (!Err)
+      return std::string(OutputPath.str());
+    // Copy failed (could be because the CacheEntry was removed from the cache
+    // in the meantime by another process), fall back and try to write down the
+    // buffer to the output.
+    errs() << "remark: can't link or copy from cached entry '" << CacheEntryPath
+           << "' to '" << OutputPath << "'\n";
   }
   // No cache entry, just write out the buffer.
   std::error_code Err;
-  raw_fd_ostream OS(OutputPath, Err, sys::fs::CD_CreateAlways);
+  raw_fd_ostream OS(OutputPath, Err, sys::fs::OF_None);
   if (Err)
-    report_fatal_error(Twine("Can't open output '") + OutputPath + "'\n");
+    report_fatal_error("Can't open output '" + OutputPath + "'\n");
   OS << OutputBuffer.getBuffer();
   return std::string(OutputPath.str());
 }
 
 // Main entry point for the ThinLTO processing
 void ThinLTOCodeGenerator::run() {
-  timeTraceProfilerBegin("ThinLink", StringRef(""));
-  auto TimeTraceScopeExit = llvm::make_scope_exit([]() {
-    if (llvm::timeTraceProfilerEnabled())
-      llvm::timeTraceProfilerEnd();
-  });
   // Prepare the resulting object vector
   assert(ProducedBinaries.empty() && "The generator should not be reused");
-
-  // When using RemoteService caching, we will always create a saved object
-  // directory for remote service to pass back the cached object file.
-  // First, we need to remember whether the caller requests buffer API or file
-  // API based on if the SavedObjectsDirectoryPath was set or not.
-  bool UseBufferAPI = SavedObjectsDirectoryPath.empty();
-  std::string TempDirectory;
-  if (CacheOptions.Type == CachingOptions::CacheType::RemoteService &&
-      SavedObjectsDirectoryPath.empty()) {
-    SmallString<128> TempPath;
-    std::error_code EC = llvm::sys::fs::createUniqueDirectory("temp", TempPath);
-    if (EC)
-      report_fatal_error("cannot create temp directory");
-    SavedObjectsDirectoryPath = TempPath.c_str();
-    TempDirectory = SavedObjectsDirectoryPath;
-  }
-
-  if (UseBufferAPI)
+  if (SavedObjectsDirectoryPath.empty())
     ProducedBinaries.resize(Modules.size());
-
-  if (!SavedObjectsDirectoryPath.empty()) {
+  else {
     sys::fs::create_directories(SavedObjectsDirectoryPath);
     bool IsDir;
     sys::fs::is_directory(SavedObjectsDirectoryPath, IsDir);
     if (!IsDir)
-      report_fatal_error(Twine("Unexistent dir: '") + SavedObjectsDirectoryPath + "'");
+      report_fatal_error("Unexistent dir: '" + SavedObjectsDirectoryPath + "'");
     ProducedBinaryFiles.resize(Modules.size());
   }
-
-  auto CleanTempDirAtExit = make_scope_exit([&]() {
-    if (!TempDirectory.empty())
-      llvm::sys::fs::remove_directories(TempDirectory);
-  });
 
   if (CodeGenOnly) {
     // Perform only parallel codegen and return.
@@ -1434,20 +1018,17 @@ void ThinLTOCodeGenerator::run() {
         LLVMContext Context;
         Context.setDiscardValueNames(LTODiscardValueNames);
 
-        std::string OutputPath = computeThinLTOOutputPath(
-            count, SavedObjectsDirectoryPath, TMBuilder);
-
         // Parse module now
         auto TheModule = loadModuleFromInput(Mod.get(), Context, false,
                                              /*IsImporting*/ false);
 
         // CodeGen
         auto OutputBuffer = codegenModule(*TheModule, *TMBuilder.create());
-        if (UseBufferAPI)
+        if (SavedObjectsDirectoryPath.empty())
           ProducedBinaries[count] = std::move(OutputBuffer);
         else
           ProducedBinaryFiles[count] =
-              writeGeneratedObject(OutputPath, nullptr, *OutputBuffer);
+              writeGeneratedObject(count, "", *OutputBuffer);
       }, count++);
     }
 
@@ -1465,7 +1046,7 @@ void ThinLTOCodeGenerator::run() {
     if (EC)
       report_fatal_error(Twine("Failed to open ") + SaveTempPath +
                          " to save optimized bitcode\n");
-    writeIndexToFile(*Index, OS);
+    WriteIndexToFile(*Index, OS);
   }
 
 
@@ -1497,8 +1078,6 @@ void ThinLTOCodeGenerator::run() {
   // Currently there is no support for enabling whole program visibility via a
   // linker option in the old LTO API, but this call allows it to be specified
   // via the internal option. Must be done before WPD below.
-  if (hasWholeProgramVisibility(/* WholeProgramVisibilityEnabledInLTO */ false))
-    Index->setWithWholeProgramVisibility();
   updateVCallVisibilityInIndex(*Index,
                                /* WholeProgramVisibilityEnabledInLTO */ false,
                                // FIXME: This needs linker information via a
@@ -1545,8 +1124,6 @@ void ThinLTOCodeGenerator::run() {
       *Index, IsExported(ExportLists, GUIDPreservedSymbols),
       IsPrevailing(PrevailingCopy));
 
-  thinLTOPropagateFunctionAttrs(*Index, IsPrevailing(PrevailingCopy));
-
   // Make sure that every module has an entry in the ExportLists, ImportList,
   // GVSummary and ResolvedODR maps to enable threaded access to these maps
   // below.
@@ -1564,12 +1141,6 @@ void ThinLTOCodeGenerator::run() {
     ModulesVec.push_back(&Mod->getSingleBitcodeModule());
   std::vector<int> ModulesOrdering = lto::generateModulesOrdering(ModulesVec);
 
-  if (llvm::timeTraceProfilerEnabled())
-    llvm::timeTraceProfilerEnd();
-
-  TimeTraceScopeExit.release();
-  LoggingStream CacheLogOS(llvm::errs());
-
   // Parallel optimizer + codegen
   {
     ThreadPool Pool(heavyweight_hardware_concurrency(ThreadCount));
@@ -1577,61 +1148,32 @@ void ThinLTOCodeGenerator::run() {
       auto &Mod = Modules[IndexCount];
       Pool.async([&](int count) {
         auto ModuleIdentifier = Mod->getName();
-        ScopedDurationTimer ScopedTime([&](double Seconds) {
-          if (CacheLogging) {
-            CacheLogOS.applyLocked([&](raw_ostream &OS) {
-              OS << "LTO processing '" << ModuleIdentifier << "' in "
-                 << llvm::format("%.6fs", Seconds) << "\n";
-            });
-          }
-        });
-
         auto &ExportList = ExportLists[ModuleIdentifier];
 
         auto &DefinedGVSummaries = ModuleToDefinedGVSummaries[ModuleIdentifier];
 
-        // Compute the output name.
-        std::string OutputPath = computeThinLTOOutputPath(
-            count, SavedObjectsDirectoryPath, TMBuilder);
-
         // The module may be cached, this helps handling it.
-        auto CacheEntry = createModuleCacheEntry(
-            *Index, ModuleIdentifier, OutputPath, ImportLists[ModuleIdentifier],
-            ExportList, ResolvedODR[ModuleIdentifier], DefinedGVSummaries,
-            OptLevel, Freestanding, TMBuilder,
-            [&CacheLogOS](llvm::function_ref<void(raw_ostream & OS)> Log) {
-              if (CacheLogging)
-                CacheLogOS.applyLocked(Log);
-            });
-        auto CacheEntryPath = CacheEntry->getEntryPath();
+        ModuleCacheEntry CacheEntry(CacheOptions.Path, *Index, ModuleIdentifier,
+                                    ImportLists[ModuleIdentifier], ExportList,
+                                    ResolvedODR[ModuleIdentifier],
+                                    DefinedGVSummaries, OptLevel, Freestanding,
+                                    TMBuilder);
+        auto CacheEntryPath = CacheEntry.getEntryPath();
 
         {
-          if (CacheLogging)
-            CacheLogOS.applyLocked([&](raw_ostream &OS) {
-              OS << "Look up cache entry for " << ModuleIdentifier << "\n";
-            });
-
-          auto ErrOrBuffer = CacheEntry->tryLoadingBuffer();
+          auto ErrOrBuffer = CacheEntry.tryLoadingBuffer();
           LLVM_DEBUG(dbgs() << "Cache " << (ErrOrBuffer ? "hit" : "miss")
                             << " '" << CacheEntryPath << "' for buffer "
                             << count << " " << ModuleIdentifier << "\n");
-          if (CacheLogging)
-            CacheLogOS.applyLocked([&](raw_ostream &OS) {
-              OS << "Cache " << (ErrOrBuffer ? "hit" : "miss") << " '"
-                 << CacheEntryPath << "' for buffer " << count << " "
-                 << ModuleIdentifier << "\n";
-            });
 
           if (ErrOrBuffer) {
             // Cache Hit!
-            if (UseBufferAPI)
+            if (SavedObjectsDirectoryPath.empty())
               ProducedBinaries[count] = std::move(ErrOrBuffer.get());
             else
               ProducedBinaryFiles[count] = writeGeneratedObject(
-                  OutputPath, CacheEntry.get(), *ErrOrBuffer.get());
-
-            if (!DeterministicCheck)
-              return;
+                  count, CacheEntryPath, *ErrOrBuffer.get());
+            return;
           }
         }
 
@@ -1661,33 +1203,34 @@ void ThinLTOCodeGenerator::run() {
             ExportList, GUIDPreservedSymbols,
             ModuleToDefinedGVSummaries[ModuleIdentifier], CacheOptions,
             DisableCodeGen, SaveTempsDir, Freestanding, OptLevel, count,
-            DebugPassManager);
-
-        if (CacheLogging)
-          CacheLogOS.applyLocked([&](raw_ostream &OS) {
-            OS << "Update cached result for " << ModuleIdentifier << "\n";
-          });
+            UseNewPM, DebugPassManager);
 
         // Commit to the cache (if enabled)
-        CacheEntry->write(*OutputBuffer);
+        CacheEntry.write(*OutputBuffer);
 
-        if (UseBufferAPI) {
+        if (SavedObjectsDirectoryPath.empty()) {
           // We need to generated a memory buffer for the linker.
-          auto ReloadedBuffer = CacheEntry->getMappedBuffer();
-          // When cache is enabled, reload from the cache if possible.
-          // Releasing the buffer from the heap and reloading it from the
-          // cache file with mmap helps us to lower memory pressure.
-          // The freed memory can be used for the next input file.
-          // The final binary link will read from the VFS cache (hopefully!)
-          // or from disk (if the memory pressure was too high).
-          if (ReloadedBuffer)
-            OutputBuffer = std::move(*ReloadedBuffer);
-
+          if (!CacheEntryPath.empty()) {
+            // When cache is enabled, reload from the cache if possible.
+            // Releasing the buffer from the heap and reloading it from the
+            // cache file with mmap helps us to lower memory pressure.
+            // The freed memory can be used for the next input file.
+            // The final binary link will read from the VFS cache (hopefully!)
+            // or from disk (if the memory pressure was too high).
+            auto ReloadedBufferOrErr = CacheEntry.tryLoadingBuffer();
+            if (auto EC = ReloadedBufferOrErr.getError()) {
+              // On error, keep the preexisting buffer and print a diagnostic.
+              errs() << "remark: can't reload cached file '" << CacheEntryPath
+                     << "': " << EC.message() << "\n";
+            } else {
+              OutputBuffer = std::move(*ReloadedBufferOrErr);
+            }
+          }
           ProducedBinaries[count] = std::move(OutputBuffer);
           return;
         }
-        ProducedBinaryFiles[count] =
-            writeGeneratedObject(OutputPath, CacheEntry.get(), *OutputBuffer);
+        ProducedBinaryFiles[count] = writeGeneratedObject(
+            count, CacheEntryPath, *OutputBuffer);
       }, IndexCount);
     }
   }

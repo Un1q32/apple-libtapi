@@ -696,9 +696,7 @@ public:
                   bool UseDebugInfo = false, bool OnlyLocalDecls = false,
                   CaptureDiagsKind CaptureDiagnostics = CaptureDiagsKind::None,
                   bool AllowASTWithCompilerErrors = false,
-                  bool UserFilesAreVolatile = false,
-                  IntrusiveRefCntPtr<llvm::vfs::FileSystem> VFS =
-                      llvm::vfs::getRealFileSystem());
+                  bool UserFilesAreVolatile = false);
 
 private:
   /// Helper function for \c LoadFromCompilerInvocation() and
@@ -817,7 +815,7 @@ public:
   ///
   // FIXME: Move OnlyLocalDecls, UseBumpAllocator to setters on the ASTUnit, we
   // shouldn't need to specify them at construction time.
-  static std::unique_ptr<ASTUnit> LoadFromCommandLine(
+  static ASTUnit *LoadFromCommandLine(
       const char **ArgBegin, const char **ArgEnd,
       std::shared_ptr<PCHContainerOperations> PCHContainerOps,
       IntrusiveRefCntPtr<DiagnosticsEngine> Diags, StringRef ResourceFilesPath,

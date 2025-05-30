@@ -26,10 +26,16 @@
 #include "llvm/CodeGen/MachineFunctionPass.h"
 #include "llvm/CodeGen/MachineInstrBuilder.h"
 #include "llvm/CodeGen/MachineLoopInfo.h"
+#include "llvm/CodeGen/MachineModuleInfo.h"
 #include "llvm/CodeGen/MachineRegisterInfo.h"
 #include "llvm/CodeGen/Passes.h"
 #include "llvm/CodeGen/TargetInstrInfo.h"
+#include "llvm/IR/CFG.h"
+#include "llvm/IR/Constant.h"
 #include "llvm/IR/Dominators.h"
+#include "llvm/IR/Function.h"
+#include "llvm/IR/Instructions.h"
+#include "llvm/IR/Type.h"
 #include "llvm/InitializePasses.h"
 #include "llvm/Pass.h"
 #include "llvm/Transforms/Utils/BasicBlockUtils.h"
@@ -125,8 +131,8 @@ bool UnreachableMachineBlockElim::runOnMachineFunction(MachineFunction &F) {
           for (unsigned i = start->getNumOperands() - 1; i >= 2; i-=2)
             if (start->getOperand(i).isMBB() &&
                 start->getOperand(i).getMBB() == &BB) {
-              start->removeOperand(i);
-              start->removeOperand(i-1);
+              start->RemoveOperand(i);
+              start->RemoveOperand(i-1);
             }
 
           start++;
@@ -138,26 +144,27 @@ bool UnreachableMachineBlockElim::runOnMachineFunction(MachineFunction &F) {
   }
 
   // Actually remove the blocks now.
-  for (MachineBasicBlock *BB : DeadBlocks) {
+  for (unsigned i = 0, e = DeadBlocks.size(); i != e; ++i) {
     // Remove any call site information for calls in the block.
-    for (auto &I : BB->instrs())
+    for (auto &I : DeadBlocks[i]->instrs())
       if (I.shouldUpdateCallSiteInfo())
-        BB->getParent()->eraseCallSiteInfo(&I);
+        DeadBlocks[i]->getParent()->eraseCallSiteInfo(&I);
 
-    BB->eraseFromParent();
+    DeadBlocks[i]->eraseFromParent();
   }
 
   // Cleanup PHI nodes.
-  for (MachineBasicBlock &BB : F) {
+  for (MachineFunction::iterator I = F.begin(), E = F.end(); I != E; ++I) {
+    MachineBasicBlock *BB = &*I;
     // Prune unneeded PHI entries.
-    SmallPtrSet<MachineBasicBlock*, 8> preds(BB.pred_begin(),
-                                             BB.pred_end());
-    MachineBasicBlock::iterator phi = BB.begin();
-    while (phi != BB.end() && phi->isPHI()) {
+    SmallPtrSet<MachineBasicBlock*, 8> preds(BB->pred_begin(),
+                                             BB->pred_end());
+    MachineBasicBlock::iterator phi = BB->begin();
+    while (phi != BB->end() && phi->isPHI()) {
       for (unsigned i = phi->getNumOperands() - 1; i >= 2; i-=2)
         if (!preds.count(phi->getOperand(i).getMBB())) {
-          phi->removeOperand(i);
-          phi->removeOperand(i-1);
+          phi->RemoveOperand(i);
+          phi->RemoveOperand(i-1);
           ModifiedPHI = true;
         }
 
@@ -182,7 +189,7 @@ bool UnreachableMachineBlockElim::runOnMachineFunction(MachineFunction &F) {
             // insert a COPY instead of simply replacing the output
             // with the input.
             const TargetInstrInfo *TII = F.getSubtarget().getInstrInfo();
-            BuildMI(BB, BB.getFirstNonPHI(), phi->getDebugLoc(),
+            BuildMI(*BB, BB->getFirstNonPHI(), phi->getDebugLoc(),
                     TII->get(TargetOpcode::COPY), OutputReg)
                 .addReg(InputReg, getRegState(Input), InputSub);
           }

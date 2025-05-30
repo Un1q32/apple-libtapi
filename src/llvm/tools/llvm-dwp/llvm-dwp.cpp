@@ -19,14 +19,11 @@
 #include "llvm/MC/MCContext.h"
 #include "llvm/MC/MCInstrInfo.h"
 #include "llvm/MC/MCObjectWriter.h"
-#include "llvm/MC/MCRegisterInfo.h"
-#include "llvm/MC/MCSubtargetInfo.h"
 #include "llvm/MC/MCTargetOptionsCommandFlags.h"
-#include "llvm/MC/TargetRegistry.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/InitLLVM.h"
-#include "llvm/Support/MemoryBuffer.h"
+#include "llvm/Support/TargetRegistry.h"
 #include "llvm/Support/TargetSelect.h"
 #include "llvm/Support/ToolOutputFile.h"
 
@@ -36,13 +33,13 @@ using namespace llvm::object;
 static mc::RegisterMCTargetOptionsFlags MCTargetOptionsFlags;
 
 cl::OptionCategory DwpCategory("Specific Options");
-static cl::list<std::string>
-    InputFiles(cl::Positional, cl::desc("<input files>"), cl::cat(DwpCategory));
+static cl::list<std::string> InputFiles(cl::Positional, cl::ZeroOrMore,
+                                        cl::desc("<input files>"),
+                                        cl::cat(DwpCategory));
 
 static cl::list<std::string> ExecFilenames(
-    "e",
-    cl::desc(
-        "Specify the executable/library files to get the list of *.dwo from"),
+    "e", cl::ZeroOrMore,
+    cl::desc("Specify the executable/library files to get the list of *.dwo from"),
     cl::value_desc("filename"), cl::cat(DwpCategory));
 
 static cl::opt<std::string> OutputFilename(cl::Required, "o",
@@ -71,10 +68,7 @@ getDWOFilenames(StringRef ExecFilename) {
     if (!DWOCompDir.empty()) {
       SmallString<16> DWOPath(std::move(DWOName));
       sys::fs::make_absolute(DWOCompDir, DWOPath);
-      if (!sys::fs::exists(DWOPath) && sys::fs::exists(DWOName))
-        DWOPaths.push_back(std::move(DWOName));
-      else
-        DWOPaths.emplace_back(DWOPath.data(), DWOPath.size());
+      DWOPaths.emplace_back(DWOPath.data(), DWOPath.size());
     } else {
       DWOPaths.push_back(std::move(DWOName));
     }
@@ -111,13 +105,7 @@ int main(int argc, char **argv) {
   for (const auto &ExecFilename : ExecFilenames) {
     auto DWOs = getDWOFilenames(ExecFilename);
     if (!DWOs) {
-      logAllUnhandledErrors(
-          handleErrors(DWOs.takeError(),
-                       [&](std::unique_ptr<ECError> EC) -> Error {
-                         return createFileError(ExecFilename,
-                                                Error(std::move(EC)));
-                       }),
-          WithColor::error());
+      logAllUnhandledErrors(DWOs.takeError(), WithColor::error());
       return 1;
     }
     DWOFilenames.insert(DWOFilenames.end(),
@@ -133,13 +121,7 @@ int main(int argc, char **argv) {
 
   auto ErrOrTriple = readTargetTriple(DWOFilenames.front());
   if (!ErrOrTriple) {
-    logAllUnhandledErrors(
-        handleErrors(ErrOrTriple.takeError(),
-                     [&](std::unique_ptr<ECError> EC) -> Error {
-                       return createFileError(DWOFilenames.front(),
-                                              Error(std::move(EC)));
-                     }),
-        WithColor::error());
+    logAllUnhandledErrors(ErrOrTriple.takeError(), WithColor::error());
     return 1;
   }
 
@@ -180,7 +162,7 @@ int main(int argc, char **argv) {
   if (!MII)
     return error("no instr info info for target " + TripleName, Context);
 
-  MCCodeEmitter *MCE = TheTarget->createMCCodeEmitter(*MII, MC);
+  MCCodeEmitter *MCE = TheTarget->createMCCodeEmitter(*MII, *MRI, MC);
   if (!MCE)
     return error("no code emitter for target " + TripleName, Context);
 
@@ -211,7 +193,7 @@ int main(int argc, char **argv) {
     return 1;
   }
 
-  MS->finish();
+  MS->Finish();
   OutFile.keep();
   return 0;
 }

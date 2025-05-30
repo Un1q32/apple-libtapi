@@ -10,10 +10,6 @@
 #ifndef __IMMINTRIN_H
 #define __IMMINTRIN_H
 
-#if !defined(__i386__) && !defined(__x86_64__)
-#error "This header is only meant to be used on x86 and x64 architecture"
-#endif
-
 #include <x86gprintrin.h>
 
 #if !(defined(_MSC_VER) || defined(__SCE__)) || __has_feature(modules) ||      \
@@ -215,16 +211,6 @@
 #endif
 
 #if !(defined(_MSC_VER) || defined(__SCE__)) || __has_feature(modules) ||      \
-    defined(__AVX512FP16__)
-#include <avx512fp16intrin.h>
-#endif
-
-#if !(defined(_MSC_VER) || defined(__SCE__)) || __has_feature(modules) ||      \
-    (defined(__AVX512VL__) && defined(__AVX512FP16__))
-#include <avx512vlfp16intrin.h>
-#endif
-
-#if !(defined(_MSC_VER) || defined(__SCE__)) || __has_feature(modules) ||      \
     defined(__AVX512BF16__)
 #include <avx512bf16intrin.h>
 #endif
@@ -272,37 +258,20 @@ _rdpid_u32(void) {
 static __inline__ int __attribute__((__always_inline__, __nodebug__, __target__("rdrnd")))
 _rdrand16_step(unsigned short *__p)
 {
-  return (int)__builtin_ia32_rdrand16_step(__p);
+  return __builtin_ia32_rdrand16_step(__p);
 }
 
 static __inline__ int __attribute__((__always_inline__, __nodebug__, __target__("rdrnd")))
 _rdrand32_step(unsigned int *__p)
 {
-  return (int)__builtin_ia32_rdrand32_step(__p);
+  return __builtin_ia32_rdrand32_step(__p);
 }
 
 #ifdef __x86_64__
 static __inline__ int __attribute__((__always_inline__, __nodebug__, __target__("rdrnd")))
 _rdrand64_step(unsigned long long *__p)
 {
-  return (int)__builtin_ia32_rdrand64_step(__p);
-}
-#else
-// We need to emulate the functionality of 64-bit rdrand with 2 32-bit
-// rdrand instructions.
-static __inline__ int __attribute__((__always_inline__, __nodebug__, __target__("rdrnd")))
-_rdrand64_step(unsigned long long *__p)
-{
-  unsigned int __lo, __hi;
-  unsigned int __res_lo = __builtin_ia32_rdrand32_step(&__lo);
-  unsigned int __res_hi = __builtin_ia32_rdrand32_step(&__hi);
-  if (__res_lo && __res_hi) {
-    *__p = ((unsigned long long)__hi << 32) | (unsigned long long)__lo;
-    return 1;
-  } else {
-    *__p = 0;
-    return 0;
-  }
+  return __builtin_ia32_rdrand64_step(__p);
 }
 #endif
 #endif /* __RDRND__ */
@@ -373,50 +342,50 @@ _writegsbase_u64(unsigned long long __V)
 static __inline__ short __attribute__((__always_inline__, __nodebug__, __target__("movbe")))
 _loadbe_i16(void const * __P) {
   struct __loadu_i16 {
-    unsigned short __v;
+    short __v;
   } __attribute__((__packed__, __may_alias__));
-  return (short)__builtin_bswap16(((const struct __loadu_i16*)__P)->__v);
+  return __builtin_bswap16(((const struct __loadu_i16*)__P)->__v);
 }
 
 static __inline__ void __attribute__((__always_inline__, __nodebug__, __target__("movbe")))
 _storebe_i16(void * __P, short __D) {
   struct __storeu_i16 {
-    unsigned short __v;
+    short __v;
   } __attribute__((__packed__, __may_alias__));
-  ((struct __storeu_i16*)__P)->__v = __builtin_bswap16((unsigned short)__D);
+  ((struct __storeu_i16*)__P)->__v = __builtin_bswap16(__D);
 }
 
 static __inline__ int __attribute__((__always_inline__, __nodebug__, __target__("movbe")))
 _loadbe_i32(void const * __P) {
   struct __loadu_i32 {
-    unsigned int __v;
+    int __v;
   } __attribute__((__packed__, __may_alias__));
-  return (int)__builtin_bswap32(((const struct __loadu_i32*)__P)->__v);
+  return __builtin_bswap32(((const struct __loadu_i32*)__P)->__v);
 }
 
 static __inline__ void __attribute__((__always_inline__, __nodebug__, __target__("movbe")))
 _storebe_i32(void * __P, int __D) {
   struct __storeu_i32 {
-    unsigned int __v;
+    int __v;
   } __attribute__((__packed__, __may_alias__));
-  ((struct __storeu_i32*)__P)->__v = __builtin_bswap32((unsigned int)__D);
+  ((struct __storeu_i32*)__P)->__v = __builtin_bswap32(__D);
 }
 
 #ifdef __x86_64__
 static __inline__ long long __attribute__((__always_inline__, __nodebug__, __target__("movbe")))
 _loadbe_i64(void const * __P) {
   struct __loadu_i64 {
-    unsigned long long __v;
+    long long __v;
   } __attribute__((__packed__, __may_alias__));
-  return (long long)__builtin_bswap64(((const struct __loadu_i64*)__P)->__v);
+  return __builtin_bswap64(((const struct __loadu_i64*)__P)->__v);
 }
 
 static __inline__ void __attribute__((__always_inline__, __nodebug__, __target__("movbe")))
 _storebe_i64(void * __P, long long __D) {
   struct __storeu_i64 {
-    unsigned long long __v;
+    long long __v;
   } __attribute__((__packed__, __may_alias__));
-  ((struct __storeu_i64*)__P)->__v = __builtin_bswap64((unsigned long long)__D);
+  ((struct __storeu_i64*)__P)->__v = __builtin_bswap64(__D);
 }
 #endif
 #endif /* __MOVBE */
@@ -556,13 +525,13 @@ extern "C" {
 #if defined(__i386__) || defined(__x86_64__)
 static __inline__ long __DEFAULT_FN_ATTRS
 _InterlockedExchange_HLEAcquire(long volatile *_Target, long _Value) {
-  __asm__ __volatile__(".byte 0xf2 ; lock ; xchg {%0, %1|%1, %0}"
+  __asm__ __volatile__(".byte 0xf2 ; lock ; xchg %0, %1"
                        : "+r" (_Value), "+m" (*_Target) :: "memory");
   return _Value;
 }
 static __inline__ long __DEFAULT_FN_ATTRS
 _InterlockedExchange_HLERelease(long volatile *_Target, long _Value) {
-  __asm__ __volatile__(".byte 0xf3 ; lock ; xchg {%0, %1|%1, %0}"
+  __asm__ __volatile__(".byte 0xf3 ; lock ; xchg %0, %1"
                        : "+r" (_Value), "+m" (*_Target) :: "memory");
   return _Value;
 }
@@ -570,13 +539,13 @@ _InterlockedExchange_HLERelease(long volatile *_Target, long _Value) {
 #if defined(__x86_64__)
 static __inline__ __int64 __DEFAULT_FN_ATTRS
 _InterlockedExchange64_HLEAcquire(__int64 volatile *_Target, __int64 _Value) {
-  __asm__ __volatile__(".byte 0xf2 ; lock ; xchg {%0, %1|%1, %0}"
+  __asm__ __volatile__(".byte 0xf2 ; lock ; xchg %0, %1"
                        : "+r" (_Value), "+m" (*_Target) :: "memory");
   return _Value;
 }
 static __inline__ __int64 __DEFAULT_FN_ATTRS
 _InterlockedExchange64_HLERelease(__int64 volatile *_Target, __int64 _Value) {
-  __asm__ __volatile__(".byte 0xf3 ; lock ; xchg {%0, %1|%1, %0}"
+  __asm__ __volatile__(".byte 0xf3 ; lock ; xchg %0, %1"
                        : "+r" (_Value), "+m" (*_Target) :: "memory");
   return _Value;
 }
@@ -588,7 +557,7 @@ _InterlockedExchange64_HLERelease(__int64 volatile *_Target, __int64 _Value) {
 static __inline__ long __DEFAULT_FN_ATTRS
 _InterlockedCompareExchange_HLEAcquire(long volatile *_Destination,
                               long _Exchange, long _Comparand) {
-  __asm__ __volatile__(".byte 0xf2 ; lock ; cmpxchg {%2, %1|%1, %2}"
+  __asm__ __volatile__(".byte 0xf2 ; lock ; cmpxchg %2, %1"
                        : "+a" (_Comparand), "+m" (*_Destination)
                        : "r" (_Exchange) : "memory");
   return _Comparand;
@@ -596,7 +565,7 @@ _InterlockedCompareExchange_HLEAcquire(long volatile *_Destination,
 static __inline__ long __DEFAULT_FN_ATTRS
 _InterlockedCompareExchange_HLERelease(long volatile *_Destination,
                               long _Exchange, long _Comparand) {
-  __asm__ __volatile__(".byte 0xf3 ; lock ; cmpxchg {%2, %1|%1, %2}"
+  __asm__ __volatile__(".byte 0xf3 ; lock ; cmpxchg %2, %1"
                        : "+a" (_Comparand), "+m" (*_Destination)
                        : "r" (_Exchange) : "memory");
   return _Comparand;
@@ -606,7 +575,7 @@ _InterlockedCompareExchange_HLERelease(long volatile *_Destination,
 static __inline__ __int64 __DEFAULT_FN_ATTRS
 _InterlockedCompareExchange64_HLEAcquire(__int64 volatile *_Destination,
                               __int64 _Exchange, __int64 _Comparand) {
-  __asm__ __volatile__(".byte 0xf2 ; lock ; cmpxchg {%2, %1|%1, %2}"
+  __asm__ __volatile__(".byte 0xf2 ; lock ; cmpxchg %2, %1"
                        : "+a" (_Comparand), "+m" (*_Destination)
                        : "r" (_Exchange) : "memory");
   return _Comparand;
@@ -614,7 +583,7 @@ _InterlockedCompareExchange64_HLEAcquire(__int64 volatile *_Destination,
 static __inline__ __int64 __DEFAULT_FN_ATTRS
 _InterlockedCompareExchange64_HLERelease(__int64 volatile *_Destination,
                               __int64 _Exchange, __int64 _Comparand) {
-  __asm__ __volatile__(".byte 0xf3 ; lock ; cmpxchg {%2, %1|%1, %2}"
+  __asm__ __volatile__(".byte 0xf3 ; lock ; cmpxchg %2, %1"
                        : "+a" (_Comparand), "+m" (*_Destination)
                        : "r" (_Exchange) : "memory");
   return _Comparand;

@@ -21,13 +21,19 @@
 #include "llvm/Analysis/DemandedBits.h"
 #include "llvm/ADT/APInt.h"
 #include "llvm/ADT/SetVector.h"
+#include "llvm/ADT/StringExtras.h"
 #include "llvm/Analysis/AssumptionCache.h"
 #include "llvm/Analysis/ValueTracking.h"
+#include "llvm/IR/BasicBlock.h"
+#include "llvm/IR/Constants.h"
 #include "llvm/IR/DataLayout.h"
+#include "llvm/IR/DerivedTypes.h"
 #include "llvm/IR/Dominators.h"
 #include "llvm/IR/InstIterator.h"
+#include "llvm/IR/InstrTypes.h"
 #include "llvm/IR/Instruction.h"
 #include "llvm/IR/IntrinsicInst.h"
+#include "llvm/IR/Intrinsics.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/Operator.h"
 #include "llvm/IR/PassManager.h"
@@ -356,7 +362,7 @@ void DemandedBits::performAnalysis() {
       if (Instruction *J = dyn_cast<Instruction>(OI)) {
         Type *T = J->getType();
         if (T->isIntOrIntVectorTy())
-          AliveBits[J] = APInt::getAllOnes(T->getScalarSizeInBits());
+          AliveBits[J] = APInt::getAllOnesValue(T->getScalarSizeInBits());
         else
           Visited.insert(J);
         Worklist.insert(J);
@@ -401,7 +407,7 @@ void DemandedBits::performAnalysis() {
       Type *T = OI->getType();
       if (T->isIntOrIntVectorTy()) {
         unsigned BitWidth = T->getScalarSizeInBits();
-        APInt AB = APInt::getAllOnes(BitWidth);
+        APInt AB = APInt::getAllOnesValue(BitWidth);
         if (InputIsKnownDead) {
           AB = APInt(BitWidth, 0);
         } else {
@@ -411,7 +417,7 @@ void DemandedBits::performAnalysis() {
                                    Known, Known2, KnownBitsComputed);
 
           // Keep track of uses which have no demanded bits.
-          if (AB.isZero())
+          if (AB.isNullValue())
             DeadUses.insert(&OI);
           else
             DeadUses.erase(&OI);
@@ -442,7 +448,8 @@ APInt DemandedBits::getDemandedBits(Instruction *I) {
     return Found->second;
 
   const DataLayout &DL = I->getModule()->getDataLayout();
-  return APInt::getAllOnes(DL.getTypeSizeInBits(I->getType()->getScalarType()));
+  return APInt::getAllOnesValue(
+      DL.getTypeSizeInBits(I->getType()->getScalarType()));
 }
 
 APInt DemandedBits::getDemandedBits(Use *U) {
@@ -454,7 +461,7 @@ APInt DemandedBits::getDemandedBits(Use *U) {
   // We only track integer uses, everything else produces a mask with all bits
   // set
   if (!T->isIntOrIntVectorTy())
-    return APInt::getAllOnes(BitWidth);
+    return APInt::getAllOnesValue(BitWidth);
 
   if (isUseDead(U))
     return APInt(BitWidth, 0);
@@ -462,7 +469,7 @@ APInt DemandedBits::getDemandedBits(Use *U) {
   performAnalysis();
 
   APInt AOut = getDemandedBits(UserI);
-  APInt AB = APInt::getAllOnes(BitWidth);
+  APInt AB = APInt::getAllOnesValue(BitWidth);
   KnownBits Known, Known2;
   bool KnownBitsComputed = false;
 
@@ -497,7 +504,7 @@ bool DemandedBits::isUseDead(Use *U) {
   // is dead. These uses might not be explicitly present in the DeadUses map.
   if (UserI->getType()->isIntOrIntVectorTy()) {
     auto Found = AliveBits.find(UserI);
-    if (Found != AliveBits.end() && Found->second.isZero())
+    if (Found != AliveBits.end() && Found->second.isNullValue())
       return true;
   }
 

@@ -9,7 +9,6 @@
 #include "tapi/Core/APIJSONSerializer.h"
 #include "llvm/Support/JSON.h"
 #include "llvm/Support/raw_ostream.h"
-#include "llvm/TextAPI/PackedVersion.h"
 
 using namespace llvm;
 using namespace llvm::json;
@@ -24,21 +23,25 @@ public:
 
   friend APIJSONSerializer;
 
+  void visitMacroDefinition(const MacroDefinitionRecord &) override;
   void visitGlobal(const GlobalRecord &) override;
   void visitEnum(const EnumRecord &) override;
   void visitObjCInterface(const ObjCInterfaceRecord &) override;
   void visitObjCCategory(const ObjCCategoryRecord &) override;
   void visitObjCProtocol(const ObjCProtocolRecord &) override;
   void visitTypeDef(const TypedefRecord &) override;
+  void visitStruct(const StructRecord &) override;
 
 private:
   const APIJSONOption &options;
+  Array macros;
   Array globals;
   Array interfaces;
   Array categories;
   Array protocols;
   Array enums;
   Array typedefs;
+  Array structs;
 };
 
 class APIJSONParser {
@@ -49,12 +52,14 @@ public:
 
 private:
   // top level parsers.
+  Error parseMacros(Array &macros);
   Error parseGlobals(Array &globals);
   Error parseInterfaces(Array &interfaces);
   Error parseCategories(Array &categories);
   Error parseProtocols(Array &protocols);
   Error parseEnums(Array &enums);
   Error parseTypedefs(Array &types);
+  Error parseStructs(Array &structs);
   Error parseBinaryInfo(Object &binaryInfo);
   Error parsePotentiallyDefinedSelectors(Array &selectors);
 
@@ -70,9 +75,19 @@ private:
   Expected<APIAccess> parseAccess(const Object *obj);
   Expected<GVKind> parseGlobalKind(const Object *obj);
   Expected<APILinkage> parseLinkage(const Object *obj);
-  SymbolFlags parseFlags(const Object *obj);
+  APIFlags parseFlags(const Object *obj);
   StringRef parseUSR(const Object *obj);
-  StringRef parseCategoryInterface(const Object *obj);
+  StringRef parseDeclName(const Object *obj);
+  Expected<APIRange> parseRange(const Object *obj, const StringRef file);
+  Expected<DocComment> parseDocComment(const Object *obj);
+  Expected<DeclarationFragments> parseDeclarationFragmentsFrom(const Array *array);
+  Expected<DeclarationFragments> parseDeclarationFragments(const Object *obj);
+  Expected<FunctionSignature> parseFunctionSignature(const Object *obj);
+  Expected<DeclarationFragments> parseSubHeading(const Object *obj);
+  SymbolInfo parseSymbolInfo(const Value *value);
+  SymbolInfo parseSuperClass(const Object *obj);
+  SymbolInfo parseCategoryInterface(const Object *obj);
+  SymbolInfo parseUnderlyingType(const Object *obj);
 
   using PAKind = ObjCPropertyRecord::AttributeKind;
   friend inline APIJSONParser::PAKind operator|=(APIJSONParser::PAKind &a,
@@ -89,6 +104,7 @@ private:
   Error parseProperties(ObjCContainerRecord *container, const Object *object);
   Error parseIvars(ObjCContainerRecord *container, const Object *object);
   Error parseEnumConstants(EnumRecord *record, const Object *object);
+  Error parseStructFields(StructRecord *record, const Object *object);
 
   // references to output.
   API &result;
@@ -142,10 +158,14 @@ static void serializeAvailability(Object &obj, const AvailabilityInfo &avail,
 
   if (avail._introduced != PackedVersion())
     obj["introduced"] = getStringForPackedVersion(avail._introduced);
+  if (!option.noDeprecationInfo && avail._deprecated != PackedVersion())
+    obj["deprecated"] = getStringForPackedVersion(avail._deprecated);
   if (avail._obsoleted != PackedVersion())
     obj["obsoleted"] = getStringForPackedVersion(avail._obsoleted);
   if (avail.isUnavailable())
     obj["unavailable"] = true;
+  if (!option.noDeprecationInfo && avail.isUnconditionallyDeprecated())
+    obj["unconditionallyDeprecated"] = true;
   if (avail.isSPIAvailable())
     obj["SPIAvailable"] = true;
 }
@@ -170,16 +190,155 @@ static void serializeLinkage(Object &obj, APILinkage linkage) {
   }
 }
 
-static void serializeFlags(Object &obj, SymbolFlags flags) {
+static void serializeUSR(Object &obj, StringRef usr,
+                         const APIJSONOption &option) {
+  if (usr.empty() || option.noUSR)
+    return;
+
+  obj["USR"] = usr.str();
+}
+
+static void serializeSymbolInfo(Object &obj, SymbolInfo symbol,
+                                const APIJSONOption &option) {
+  if (symbol.empty())
+    return;
+
+  if (!symbol.name.empty())
+    obj["name"] = symbol.name.str();
+  serializeUSR(obj, symbol.usr, option);
+  if (!symbol.sourceModule.empty())
+    obj["sourceModule"] = symbol.sourceModule.str();
+}
+
+static void serializeFlags(Object &obj, APIFlags flags) {
   serializeBoolean(obj, "weakDefined",
-                   (flags & SymbolFlags::WeakDefined) ==
-                       SymbolFlags::WeakDefined);
+                   (flags & APIFlags::WeakDefined) == APIFlags::WeakDefined);
   serializeBoolean(obj, "weakReferenced",
-                   (flags & SymbolFlags::WeakReferenced) ==
-                       SymbolFlags::WeakReferenced);
+                   (flags & APIFlags::WeakReferenced) ==
+                       APIFlags::WeakReferenced);
   serializeBoolean(obj, "threadLocalValue",
-                   (flags & SymbolFlags::ThreadLocalValue) ==
-                       SymbolFlags::ThreadLocalValue);
+                   (flags & APIFlags::ThreadLocalValue) ==
+                       APIFlags::ThreadLocalValue);
+}
+
+static void serializeRange(Object &obj, const APIRange &range, bool noFile) {
+  Object start, end;
+  APILoc startLoc = range.getBegin(), endLoc = range.getEnd();
+
+  // skip invalid ranges
+  if (startLoc.isInvalid() || endLoc.isInvalid())
+    return;
+
+  if (!noFile) {
+    start["file"] = startLoc.getFilename().str();
+    end["file"] = endLoc.getFilename().str();
+  }
+
+  start["line"] = startLoc.getLine();
+  start["col"] = startLoc.getColumn();
+  end["line"] = endLoc.getLine();
+  end["col"] = endLoc.getColumn();
+
+  obj["start"] = std::move(start);
+  obj["end"] = std::move(end);
+}
+
+static void serializeDocComment(Object &obj, const DocComment &docComment,
+                                const APIJSONOption &option) {
+  if (option.noDocComment || docComment.getCommentLines().empty())
+    return;
+
+  Object lines;
+  Array commentLines;
+  for (const auto &commentLine : docComment.getCommentLines()) {
+    Object range, line;
+    serializeRange(range, commentLine.range, /*noFile=*/true);
+    line["text"] = commentLine.text;
+    line["range"] = std::move(range);
+    commentLines.emplace_back(std::move(line));
+  }
+  lines["lines"] = std::move(commentLines);
+  obj["docComment"] = std::move(lines);
+}
+
+static void serializeDeclName(Object &obj, const APIRecord &var,
+                              const APIJSONOption &option) {
+  if (var.declName.empty() || option.noDeclName)
+    return;
+
+  if (var.declName == var.name)
+    return;
+
+  obj["declName"] = var.declName;
+}
+
+static void
+serializeDeclarationFragmentsInto(Array &fragments,
+                                  const DeclarationFragments &declarationFragments) {
+  for (const auto &declarationFragment : declarationFragments.getFragments()) {
+    Object fragment;
+    fragment["spelling"] = declarationFragment.spelling;
+    fragment["kind"] =
+        DeclarationFragments::getFragmentKindString(declarationFragment.kind);
+    if (!declarationFragment.preciseIdentifier.empty())
+      fragment["preciseIdentifier"] = declarationFragment.preciseIdentifier;
+    fragments.emplace_back(std::move(fragment));
+  }
+}
+
+static void
+serializeDeclarationFragments(Object &obj,
+                              const DeclarationFragments &declarationFragments,
+                              const APIJSONOption &option) {
+  if (option.noDeclFragments || declarationFragments.getFragments().empty())
+    return;
+
+  Array fragments;
+  serializeDeclarationFragmentsInto(fragments, declarationFragments);
+  obj["declarationFragments"] = std::move(fragments);
+}
+
+static void
+serializeFunctionSignature(Object &obj,
+                           const FunctionSignature &functionSignature,
+                           const APIJSONOption &option) {
+  if (option.noDeclFragments || functionSignature.empty())
+    return;
+
+  Object signatureObject;
+
+  Array returnType;
+  serializeDeclarationFragmentsInto(returnType, functionSignature.getReturnType());
+  if (!returnType.empty())
+    signatureObject["returns"] = std::move(returnType);
+
+  Array parameters;
+  for (const auto &parameter : functionSignature.getParameters()) {
+    Object param;
+    param["name"] = parameter.name;
+
+    Array parameterFragments;
+    serializeDeclarationFragmentsInto(parameterFragments, parameter.declarationFragments);
+    param["declarationFragments"] = std::move(parameterFragments);
+
+    parameters.emplace_back(std::move(param));
+  }
+
+  if (!parameters.empty())
+    signatureObject["parameters"] = std::move(parameters);
+
+  obj["functionSignature"] = std::move(signatureObject);
+}
+
+static void serializeSubHeading(Object &obj,
+                                const DeclarationFragments &subHeading,
+                                const APIJSONOption &option) {
+  if (option.noDeclFragments || subHeading.getFragments().empty())
+    return;
+
+  Array fragments;
+  serializeDeclarationFragmentsInto(fragments, subHeading);
+  obj["subHeading"] = std::move(fragments);
 }
 
 static Optional<Object> serializeAPIRecord(const APIRecord &var,
@@ -190,10 +349,15 @@ static Optional<Object> serializeAPIRecord(const APIRecord &var,
   Object obj;
   obj["name"] = var.name;
 
+  serializeDeclName(obj, var, options);
+  serializeUSR(obj, var.usr, options);
   serializeLocation(obj, var.loc, options);
   serializeAvailability(obj, var.availability, options);
   serializeLinkage(obj, var.linkage);
   serializeFlags(obj, var.flags);
+  serializeDocComment(obj, var.docComment, options);
+  serializeDeclarationFragments(obj, var.declarationFragments, options);
+  serializeSubHeading(obj, var.subHeading, options);
 
   // When only public, all APIs in the output are public so there is no need to
   // encode access.
@@ -226,15 +390,17 @@ static Optional<Object> serializeGlobalRecord(const GlobalRecord &var,
 
   switch (var.kind) {
   case GVKind::Function:
-    obj.value()["kind"] = "function";
+    obj.getValue()["kind"] = "function";
     break;
   case GVKind::Variable:
-    obj.value()["kind"] = "variable";
+    obj.getValue()["kind"] = "variable";
     break;
   case GVKind::Unknown:
     // do nothing;
     break;
   }
+
+  serializeFunctionSignature(*obj, var.functionSignature, options);
 
   return std::move(*obj);
 }
@@ -245,6 +411,8 @@ static void serializeMethod(Array &container, const ObjCMethodRecord *method,
   auto obj = serializeAPIRecord(*method, options);
   if (!obj)
     return;
+
+  serializeFunctionSignature(*obj, method->signature, options);
 
   serializeBoolean(*obj, "optional", method->isOptional);
   serializeBoolean(*obj, "dynamic", method->isDynamic);
@@ -266,13 +434,13 @@ static void serializeProperty(Array &container,
   if (property->isClassProperty())
     attributes.emplace_back("class");
   if (!attributes.empty())
-    obj.value()["attr"] = std::move(attributes);
+    obj.getValue()["attr"] = std::move(attributes);
 
   serializeBoolean(*obj, "optional", property->isOptional);
-  obj.value()["getter"] = property->getterName;
+  obj.getValue()["getter"] = property->getterName;
 
   if (!property->isReadOnly())
-    obj.value()["setter"] = property->setterName;
+    obj.getValue()["setter"] = property->setterName;
 
   container.emplace_back(std::move(*obj));
 }
@@ -286,22 +454,33 @@ static void serializeInstanceVariable(Array &container,
 
   switch (ivar->accessControl) {
   case ObjCInstanceVariableRecord::AccessControl::Private:
-    obj.value()["accessControl"] = "private";
+    obj.getValue()["accessControl"] = "private";
     break;
   case ObjCInstanceVariableRecord::AccessControl::Protected:
-    obj.value()["accessControl"] = "protected";
+    obj.getValue()["accessControl"] = "protected";
     break;
   case ObjCInstanceVariableRecord::AccessControl::Public:
-    obj.value()["accessControl"] = "public";
+    obj.getValue()["accessControl"] = "public";
     break;
   case ObjCInstanceVariableRecord::AccessControl::Package:
-    obj.value()["accessControl"] = "package";
+    obj.getValue()["accessControl"] = "package";
     break;
   case ObjCInstanceVariableRecord::AccessControl::None:
     break; // ignore;
   }
 
   container.emplace_back(std::move(*obj));
+}
+
+void APIJSONVisitor::visitMacroDefinition(const MacroDefinitionRecord &record) {
+  if (options.noMacroDefinitions)
+    return;
+
+  auto root = serializeAPIRecord(record, options);
+  if (!root)
+    return;
+
+  macros.emplace_back(std::move(*root));
 }
 
 void APIJSONVisitor::visitGlobal(const GlobalRecord &record) {
@@ -324,9 +503,17 @@ serializeObjCContainer(const ObjCContainerRecord &record,
 
   if (!record.protocols.empty()) {
     Array protocols;
-    for (const auto &protocol : record.protocols)
-      protocols.emplace_back(protocol.str());
-    root.value()["protocols"] = std::move(protocols);
+    for (const auto &protocol : record.protocols) {
+      if (options.noElaboratedSymbolInfo) {
+        if (!protocol.name.empty())
+          protocols.emplace_back(protocol.name.str());
+      } else {
+        Object obj;
+        serializeSymbolInfo(obj, protocol, options);
+        protocols.emplace_back(std::move(obj));
+      }
+    }
+    root.getValue()["protocols"] = std::move(protocols);
   }
 
   if (!record.methods.empty()) {
@@ -338,23 +525,23 @@ serializeObjCContainer(const ObjCContainerRecord &record,
         serializeMethod(classMethodRoot, method, options);
     }
     if (!instanceMethodRoot.empty())
-      root.value()["instanceMethods"] = std::move(instanceMethodRoot);
+      root.getValue()["instanceMethods"] = std::move(instanceMethodRoot);
     if (!classMethodRoot.empty())
-      root.value()["classMethods"] = std::move(classMethodRoot);
+      root.getValue()["classMethods"] = std::move(classMethodRoot);
   }
 
   if (!record.properties.empty()) {
     Array propertyRoot;
     for (const auto *property : record.properties)
       serializeProperty(propertyRoot, property, options);
-    root.value()["properties"] = std::move(propertyRoot);
+    root.getValue()["properties"] = std::move(propertyRoot);
   }
 
   if (!record.ivars.empty()) {
     Array ivarRoot;
     for (const auto *ivar : record.ivars)
       serializeInstanceVariable(ivarRoot, ivar, options);
-    root.value()["ivars"] = std::move(ivarRoot);
+    root.getValue()["ivars"] = std::move(ivarRoot);
   }
 
   return root;
@@ -368,19 +555,24 @@ void APIJSONVisitor::visitObjCInterface(const ObjCInterfaceRecord &interface) {
   if (!root)
     return;
 
-  root.value()["super"] = interface.superClass.str();
+  root.getValue()["super"] = interface.superClass.name.str();
+  if (!options.noElaboratedSymbolInfo) {
+    if (!interface.superClass.usr.empty())
+      root.getValue()["superUSR"] = interface.superClass.usr.str();
+    if (!interface.superClass.sourceModule.empty())
+      root.getValue()["superSourceModule"] =
+          interface.superClass.sourceModule.str();
+  }
 
   serializeLinkage(*root, interface.linkage);
   serializeBoolean(*root, "hasException", interface.hasExceptionAttribute);
 
   if (!interface.categories.empty()) {
     Array categories;
-    for (const auto *category : interface.categories) {
+    for (const auto *category : interface.categories)
       if (!category->name.empty())
         categories.emplace_back(category->name);
-    }
-    if (!categories.empty())
-      root.value()["categories"] = std::move(categories);
+    root.getValue()["categories"] = std::move(categories);
   }
 
   interfaces.emplace_back(std::move(*root));
@@ -391,7 +583,14 @@ void APIJSONVisitor::visitObjCCategory(const ObjCCategoryRecord &category) {
   if (!root)
     return;
 
-  root.value()["interface"] = category.interface.str();
+  root.getValue()["interface"] = category.interface.name.str();
+  if (!options.noElaboratedSymbolInfo) {
+    if (!category.interface.usr.empty())
+      root.getValue()["interfaceUSR"] = category.interface.usr.str();
+    if (!category.interface.sourceModule.empty())
+      root.getValue()["interfaceSourceModule"] =
+          category.interface.sourceModule.str();
+  }
 
   categories.emplace_back(std::move(*root));
 }
@@ -416,7 +615,7 @@ static Optional<Object> serializeEnumRecord(const EnumRecord &record,
         continue;
       constants.emplace_back(std::move(*constantObj));
     }
-    root.value()["constants"] = std::move(constants);
+    root.getValue()["constants"] = std::move(constants);
   }
 
   return std::move(*root);
@@ -432,9 +631,24 @@ void APIJSONVisitor::visitEnum(const EnumRecord &record) {
 
 static Optional<Object> serializeTypedefRecord(const TypedefRecord &record,
                                                const APIJSONOption &options) {
+  // Typedefs of anonymous types have their entries unified with the underlying
+  // type.
+  if (!options.noUnifiedTypedefEntries && record.underlyingType.name.empty())
+    return llvm::None;
+
   auto root = serializeAPIRecord(record, options);
   if (!root)
     return llvm::None;
+
+  if (!options.noElaboratedSymbolInfo && !record.underlyingType.empty()) {
+    if (!record.underlyingType.name.empty())
+      root.getValue()["type"] = record.underlyingType.name.str();
+    if (!record.underlyingType.usr.empty())
+      root.getValue()["typeUSR"] = record.underlyingType.usr.str();
+    if (!record.underlyingType.sourceModule.empty())
+      root.getValue()["typeSourceModule"] =
+          record.underlyingType.sourceModule.str();
+  }
 
   return std::move(*root);
 }
@@ -445,12 +659,43 @@ void APIJSONVisitor::visitTypeDef(const TypedefRecord &record) {
     typedefs.emplace_back(std::move(*root));
 }
 
-static std::string
-getPackedVersionString(const llvm::MachO::PackedVersion version) {
+static std::string getPackedVersionString(PackedVersion version) {
   std::string str;
   raw_string_ostream vers(str);
   vers << version;
   return vers.str();
+}
+
+static Optional<Object> serializeStructRecord(const StructRecord &record,
+                                              const APIJSONOption &options) {
+  auto root = serializeAPIRecord(record, options);
+  if (!root)
+    return llvm::None;
+
+  if (!record.fields.empty()) {
+    Array fields;
+    for (const auto *field : record.fields) {
+      auto fieldObj = serializeAPIRecord(*field, options);
+      if (!fieldObj)
+        continue;
+      fields.emplace_back(std::move(*fieldObj));
+    }
+    root.getValue()["fields"] = std::move(fields);
+  }
+
+  return std::move(*root);
+}
+
+void APIJSONVisitor::visitStruct(const StructRecord &record) {
+  if (options.noStruct ||
+      (options.publicOnly && record.access != APIAccess::Public))
+    return;
+
+  auto root = serializeStructRecord(record, options);
+  if (!root)
+    return;
+
+  structs.emplace_back(std::move(*root));
 }
 
 static void serializeBinaryInfo(Object &root, const BinaryInfo &binaryInfo,
@@ -511,7 +756,7 @@ static void serializePotentiallyDefinedSelectors(
 Object APIJSONSerializer::getJSONObject() const {
   json::Object root;
   if (!options.noTarget)
-    root["target"] = std::move(api.getTriple().str());
+    root["target"] = std::move(api.getTarget().str());
 
   if (!api.getProjectName().empty())
     root["project"] = api.getProjectName().str();
@@ -524,12 +769,15 @@ Object APIJSONSerializer::getJSONObject() const {
       return;
     root[key] = std::move(array);
   };
+  insertNonEmptyArray("macros", visitor.macros);
   insertNonEmptyArray("globals", visitor.globals);
   insertNonEmptyArray("interfaces", visitor.interfaces);
   insertNonEmptyArray("categories", visitor.categories);
   insertNonEmptyArray("protocols", visitor.protocols);
   insertNonEmptyArray("enums", visitor.enums);
   insertNonEmptyArray("typedefs", visitor.typedefs);
+  if (!options.noStruct)
+    insertNonEmptyArray("structs", visitor.structs);
   serializePotentiallyDefinedSelectors(root,
                                        api.getPotentiallyDefinedSelectors());
   if (api.hasBinaryInfo())
@@ -647,18 +895,18 @@ Expected<APILinkage> APIJSONParser::parseLinkage(const Object *obj) {
   return make_error<APIJSONError>("Unknown Linkage " + *linkage);
 }
 
-SymbolFlags APIJSONParser::parseFlags(const Object *obj) {
+APIFlags APIJSONParser::parseFlags(const Object *obj) {
   auto isWeakDefined = parseBinaryField("weakDefined", obj);
   auto isWeakReferenced = parseBinaryField("weakReferenced", obj);
   auto isThreadLocal = parseBinaryField("threadLocalValue", obj);
 
-  auto flags = SymbolFlags::None;
+  auto flags = APIFlags::None;
   if (isWeakDefined)
-    flags |= SymbolFlags::WeakDefined;
+    flags |= APIFlags::WeakDefined;
   if (isWeakReferenced)
-    flags |= SymbolFlags::WeakReferenced;
+    flags |= APIFlags::WeakReferenced;
   if (isThreadLocal)
-    flags |= SymbolFlags::ThreadLocalValue;
+    flags |= APIFlags::ThreadLocalValue;
 
   return flags;
 }
@@ -694,7 +942,7 @@ APIJSONParser::parsePropertyAttribute(const Object *obj) {
 
 Expected<ObjCInstanceVariableRecord::AccessControl>
 APIJSONParser::parseAccessControl(const Object *obj) {
-  auto access = obj->getString("accessControl");
+  auto access = obj->getString("access");
   if (!access)
     return ObjCInstanceVariableRecord::AccessControl::None;
 
@@ -703,15 +951,192 @@ APIJSONParser::parseAccessControl(const Object *obj) {
   if (*access == "protected")
     return ObjCInstanceVariableRecord::AccessControl::Protected;
   if (*access == "public")
-    return ObjCInstanceVariableRecord::AccessControl::Public;
+    return ObjCInstanceVariableRecord::AccessControl::Protected;
   if (*access == "package")
-    return ObjCInstanceVariableRecord::AccessControl::Package;
+    return ObjCInstanceVariableRecord::AccessControl::Protected;
 
   return make_error<APIJSONError>("Unknown access control " + *access);
 }
 
 StringRef APIJSONParser::parseUSR(const Object *obj) {
-  return obj->getString("USR").value_or("");
+  return obj->getString("USR").getValueOr("");
+}
+
+StringRef APIJSONParser::parseDeclName(const Object *obj) {
+  return obj->getString("declName").getValueOr("");
+}
+
+Expected<APIRange> APIJSONParser::parseRange(const Object *obj,
+                                             const StringRef file) {
+  const Object *start = obj->getObject("start"), *end = obj->getObject("end");
+
+  if (!start || !end)
+    return make_error<APIJSONError>("Missing 'start' or 'end' in range");
+
+  auto startLine = start->getInteger("line");
+  auto startCol = start->getInteger("col");
+  APILoc startLoc(file, startLine ? *startLine : 0, startCol ? *startCol : 0);
+
+  auto endLine = end->getInteger("line");
+  auto endCol = end->getInteger("col");
+  APILoc endLoc(file, endLine ? *endLine : 0, endCol ? *endCol : 0);
+
+  return APIRange(startLoc, endLoc);
+}
+
+Expected<DocComment> APIJSONParser::parseDocComment(const Object *obj) {
+  const Object *docCommentObject = obj->getObject("docComment");
+  DocComment docComment;
+  if (!docCommentObject)
+    return docComment;
+
+  const Array *lines = docCommentObject->getArray("lines");
+  if (!lines)
+    return make_error<APIJSONError>("Missing 'lines' in docComment object");
+
+  for (const auto &line : *lines) {
+    const Object *lineObject = line.getAsObject();
+    if (!lineObject)
+      return make_error<APIJSONError>("Expect to be JSON Object");
+
+    auto text =
+        parseString("text", lineObject, "Missing 'text' in docComment line");
+    if (!text)
+      return text.takeError();
+
+    const Object *rangeObject = lineObject->getObject("range");
+    if (!rangeObject)
+      return make_error<APIJSONError>("Missing 'range' in docComment line");
+
+    const StringRef file = obj->getString("file").getValueOr("");
+
+    auto range = parseRange(rangeObject, file);
+    if (!range)
+      return range.takeError();
+
+    docComment.addCommentLine(*text, *range);
+  }
+
+  return docComment;
+}
+
+Expected<DeclarationFragments>
+APIJSONParser::parseDeclarationFragmentsFrom(const Array *array) {
+  DeclarationFragments fragments;
+
+  for (const auto &fragment : *array) {
+    const Object *fragmentObject = fragment.getAsObject();
+    if (!fragmentObject)
+      return make_error<APIJSONError>("Expect to be JSON Object");
+
+    auto spelling = parseString("spelling", fragmentObject,
+                                "Missing 'spelling' in declaration fragment");
+    if (!spelling)
+      return spelling.takeError();
+
+    auto kind = parseString("kind", fragmentObject,
+                            "Missing 'kind' in declaration fragment");
+    if (!kind)
+      return kind.takeError();
+
+    auto preciseIdentifier =
+        fragmentObject->getString("preciseIdentifier").getValueOr("");
+
+    fragments.append(
+        *spelling, DeclarationFragments::parseFragmentKindFromString(*kind),
+        preciseIdentifier);
+  }
+
+  return fragments;
+}
+
+Expected<DeclarationFragments>
+APIJSONParser::parseDeclarationFragments(const Object *obj) {
+  const Array *declFragmentsArray = obj->getArray("declarationFragments");
+  if (!declFragmentsArray)
+    return DeclarationFragments{};
+
+  return parseDeclarationFragmentsFrom(declFragmentsArray);
+}
+
+Expected<FunctionSignature>
+APIJSONParser::parseFunctionSignature(const Object *obj) {
+  FunctionSignature signature;
+  const Object *sigObj = obj->getObject("functionSignature");
+  if (!sigObj)
+    return signature;
+
+  if (const Array *returnType = sigObj->getArray("returns")) {
+    auto returnFragments = parseDeclarationFragmentsFrom(returnType);
+    if (!returnFragments)
+      return returnFragments.takeError();
+    signature.setReturnType(*returnFragments);
+  } else {
+    return make_error<APIJSONError>("Expect to be a JSON Array");
+  }
+
+  if (const Array *params = sigObj->getArray("parameters")) {
+    for (const auto &param : *params) {
+      const Object *paramObj = param.getAsObject();
+      if (!paramObj)
+        return make_error<APIJSONError>("Expect to be a JSON Object");
+
+      auto name = parseString("name", paramObj,
+          "Missing 'name' in function signature parameter");
+
+      if (!name)
+        return name.takeError();
+
+      const Array *paramFragments = paramObj->getArray("declarationFragments");
+
+      if (!paramFragments)
+        return make_error<APIJSONError>("Missing 'declarationFragments' in function signature parameter");
+
+      auto fragments = parseDeclarationFragmentsFrom(paramFragments);
+      if (!fragments)
+        return fragments.takeError();
+
+      signature.addParameter(*name, *fragments);
+    }
+  } else {
+    return make_error<APIJSONError>("Expect to be a JSON Array");
+  }
+
+  return signature;
+}
+
+Expected<DeclarationFragments>
+APIJSONParser::parseSubHeading(const Object *obj) {
+  if (const Array *fragments= obj->getArray("subHeading"))
+    return parseDeclarationFragmentsFrom(fragments);
+  return DeclarationFragments();
+}
+
+Error APIJSONParser::parseMacros(Array &macros) {
+  for (const auto &macro : macros) {
+    auto *object = macro.getAsObject();
+    if (!object)
+      return make_error<APIJSONError>("Expect to be JSON Object");
+
+    auto name = parseName(object);
+    if (!name)
+      return name.takeError();
+    auto access = parseAccess(object);
+    if (!access)
+      return access.takeError();
+    auto loc = parseLocation(object);
+    if (!loc)
+      return loc.takeError();
+    auto usr = parseUSR(object);
+
+    auto declarationFragments = parseDeclarationFragments(object);
+    if (!declarationFragments)
+      return declarationFragments.takeError();
+
+    result.addMacroDefinition(*name, usr, *loc, *access, *declarationFragments);
+  }
+
+  return Error::success();
 }
 
 Error APIJSONParser::parseGlobals(Array &globals) {
@@ -723,6 +1148,7 @@ Error APIJSONParser::parseGlobals(Array &globals) {
     auto name = parseName(object);
     if (!name)
       return name.takeError();
+    auto declName = parseDeclName(object);
     auto access = parseAccess(object);
     if (!access)
       return access.takeError();
@@ -739,16 +1165,72 @@ Error APIJSONParser::parseGlobals(Array &globals) {
     if (!avail)
       return avail.takeError();
     auto flags = parseFlags(object);
+    auto usr = parseUSR(object);
+    auto docComment = parseDocComment(object);
+    if (!docComment)
+      return docComment.takeError();
+    auto declarationFragments = parseDeclarationFragments(object);
+    if (!declarationFragments)
+      return declarationFragments.takeError();
+    auto subHeading = parseSubHeading(object);
+    if (!subHeading)
+      return subHeading.takeError();
+    auto functionSignature = parseFunctionSignature(object);
+    if (!functionSignature)
+      return functionSignature.takeError();
 
-    result.addGlobal(*name, flags, *loc, *avail, *access,
+    result.addGlobal(*name, declName, usr, flags, *loc, *avail, *access,
+                     *docComment, *declarationFragments, *subHeading,
+                     *functionSignature,
                      /*Decl*/ nullptr, *kind, *linkage);
   }
 
   return Error::success();
 }
 
-StringRef APIJSONParser::parseCategoryInterface(const Object *obj) {
-  return result.copyString(obj->getString("interface").value_or(""));
+SymbolInfo APIJSONParser::parseSymbolInfo(const Value *value) {
+  SymbolInfo symbol;
+  if (const Object *obj = value->getAsObject()) {
+    symbol.name = result.copyString(obj->getString("name").getValueOr(""));
+    symbol.usr = result.copyString(parseUSR(obj));
+    symbol.sourceModule =
+        result.copyString(obj->getString("sourceModule").getValueOr(""));
+  } else
+    symbol.name = result.copyString(value->getAsString().getValueOr(""));
+
+  return symbol;
+}
+
+SymbolInfo APIJSONParser::parseSuperClass(const Object *obj) {
+  SymbolInfo super;
+  super.name = result.copyString(obj->getString("super").getValueOr(""));
+  super.usr = result.copyString(obj->getString("superUSR").getValueOr(""));
+  super.sourceModule =
+      result.copyString(obj->getString("superSourceModule").getValueOr(""));
+
+  return super;
+}
+
+SymbolInfo APIJSONParser::parseCategoryInterface(const Object *obj) {
+  SymbolInfo interface;
+  interface.name =
+      result.copyString(obj->getString("interface").getValueOr(""));
+  interface.usr =
+      result.copyString(obj->getString("interfaceUSR").getValueOr(""));
+  interface.sourceModule =
+      result.copyString(obj->getString("interfaceSourceModule").getValueOr(""));
+
+  return interface;
+}
+
+SymbolInfo APIJSONParser::parseUnderlyingType(const Object *obj) {
+  SymbolInfo type;
+  type.name = result.copyString(obj->getString("type").getValueOr(""));
+  type.usr = result.copyString(obj->getString("typeUSR").getValueOr(""));
+  type.sourceModule =
+      result.copyString(obj->getString("typeSourceModule").getValueOr(""));
+
+  return type;
 }
 
 Error APIJSONParser::parseConformedProtocols(ObjCContainerRecord *container,
@@ -757,13 +1239,8 @@ Error APIJSONParser::parseConformedProtocols(ObjCContainerRecord *container,
   if (!protocols)
     return Error::success();
 
-  for (const auto &p : *protocols) {
-    auto protocolStr = p.getAsString();
-    if (!protocolStr)
-      return make_error<APIJSONError>("conformed protocol should be a string");
-    auto protocolName = result.copyString(*protocolStr);
-    container->protocols.emplace_back(protocolName);
-  }
+  for (const auto &p : *protocols)
+    container->protocols.emplace_back(parseSymbolInfo(&p));
 
   return Error::success();
 }
@@ -793,9 +1270,23 @@ Error APIJSONParser::parseMethods(ObjCContainerRecord *container,
       return avail.takeError();
     auto isOptional = parseBinaryField("optional", method);
     auto isDynamic = parseBinaryField("dynamic", method);
+    auto usr = parseUSR(method);
+    auto docComment = parseDocComment(method);
+    if (!docComment)
+      return docComment.takeError();
+    auto declarationFragments = parseDeclarationFragments(method);
+    if (!declarationFragments)
+      return declarationFragments.takeError();
+    auto subHeading = parseSubHeading(object);
+    if (!subHeading)
+      return subHeading.takeError();
+    auto functionSignature = parseFunctionSignature(method);
+    if (!functionSignature)
+      return functionSignature.takeError();
 
-    result.addObjCMethod(container, *name, *loc, *avail, *access,
-                         isInstanceMethod, isOptional, isDynamic,
+    result.addObjCMethod(container, *name, usr, *loc, *avail, *access,
+                         isInstanceMethod, isOptional, isDynamic, *docComment,
+                         *declarationFragments, *subHeading, *functionSignature,
                          /*Decl*/ nullptr);
   }
 
@@ -839,9 +1330,21 @@ Error APIJSONParser::parseProperties(ObjCContainerRecord *container,
       setter = *setterStr;
     }
     auto isOptional = parseBinaryField("optional", property);
+    auto usr = parseUSR(property);
+    auto docComment = parseDocComment(property);
+    if (!docComment)
+      return docComment.takeError();
+    auto declarationFragments = parseDeclarationFragments(property);
+    if (!declarationFragments)
+      return declarationFragments.takeError();
+    auto subHeading = parseSubHeading(object);
+    if (!subHeading)
+      return subHeading.takeError();
 
-    result.addObjCProperty(container, *name, *getter, setter, *loc, *avail,
-                           *access, *attr, isOptional, /*Decl*/ nullptr);
+    result.addObjCProperty(container, *name, usr, *getter, setter, *loc, *avail,
+                           *access, *attr, isOptional, *docComment,
+                           *declarationFragments, *subHeading,
+                           /*Decl*/ nullptr);
   }
 
   return Error::success();
@@ -875,9 +1378,21 @@ Error APIJSONParser::parseIvars(ObjCContainerRecord *container,
     auto linkage = parseLinkage(ivar);
     if (!linkage)
       return linkage.takeError();
+    auto usr = parseUSR(ivar);
+    auto docComment = parseDocComment(ivar);
+    if (!docComment)
+      return docComment.takeError();
+    auto declarationFragments = parseDeclarationFragments(ivar);
+    if (!declarationFragments)
+      return declarationFragments.takeError();
+    auto subHeading = parseSubHeading(object);
+    if (!subHeading)
+      return subHeading.takeError();
 
-    result.addObjCInstanceVariable(container, *name, *loc, *avail, *access,
-                                   *control, *linkage, /*Decl*/ nullptr);
+    result.addObjCInstanceVariable(container, *name, usr, *loc, *avail, *access,
+                                   *control, *linkage, *docComment,
+                                   *declarationFragments, *subHeading,
+                                   /*Decl*/ nullptr);
   }
   return Error::success();
 }
@@ -891,6 +1406,7 @@ Error APIJSONParser::parseInterfaces(Array &interfaces) {
     auto name = parseName(object);
     if (!name)
       return name.takeError();
+    auto declName = parseDeclName(object);
     auto access = parseAccess(object);
     if (!access)
       return access.takeError();
@@ -903,11 +1419,22 @@ Error APIJSONParser::parseInterfaces(Array &interfaces) {
     auto linkage = parseLinkage(object);
     if (!linkage)
       return linkage.takeError();
-    auto super = object->getString("super").value_or("");
+    auto usr = parseUSR(object);
+    auto docComment = parseDocComment(object);
+    if (!docComment)
+      return docComment.takeError();
+    auto declarationFragments = parseDeclarationFragments(object);
+    if (!declarationFragments)
+      return declarationFragments.takeError();
+    auto subHeading = parseSubHeading(object);
+    if (!subHeading)
+      return subHeading.takeError();
+    SymbolInfo super = parseSuperClass(object);
 
-    auto *objcClass =
-        result.addObjCInterface(*name, *loc, *avail, *access, *linkage, super,
-                                /*Decl*/ nullptr);
+    auto *objcClass = result.addObjCInterface(
+        *name, declName, usr, *loc, *avail, *access, *linkage, super,
+        *docComment, *declarationFragments, *subHeading,
+        /*Decl*/ nullptr);
     auto exception = parseBinaryField("hasException", object);
     objcClass->hasExceptionAttribute = exception;
 
@@ -953,10 +1480,21 @@ Error APIJSONParser::parseCategories(Array &categories) {
     auto avail = parseAvailability(object);
     if (!avail)
       return avail.takeError();
-    auto interface = parseCategoryInterface(object);
+    auto usr = parseUSR(object);
+    auto docComment = parseDocComment(object);
+    if (!docComment)
+      return docComment.takeError();
+    auto declarationFragments = parseDeclarationFragments(object);
+    if (!declarationFragments)
+      return declarationFragments.takeError();
+    auto subHeading = parseSubHeading(object);
+    if (!subHeading)
+      return subHeading.takeError();
+    SymbolInfo interface = parseCategoryInterface(object);
 
-    auto *objcCategory = result.addObjCCategory(interface, *name, *loc, *avail,
-                                                *access, /*Decl*/ nullptr);
+    auto *objcCategory = result.addObjCCategory(
+        interface, *name, usr, *loc, *avail, *access, *docComment,
+        *declarationFragments, *subHeading, /*Decl*/ nullptr);
 
     // Don't need to handle categories here.
     auto err = parseConformedProtocols(objcCategory, object);
@@ -1000,9 +1538,20 @@ Error APIJSONParser::parseProtocols(Array &protocols) {
     auto avail = parseAvailability(object);
     if (!avail)
       return avail.takeError();
+    auto usr = parseUSR(object);
+    auto docComment = parseDocComment(object);
+    if (!docComment)
+      return docComment.takeError();
+    auto declarationFragments = parseDeclarationFragments(object);
+    if (!declarationFragments)
+      return declarationFragments.takeError();
+    auto subHeading = parseSubHeading(object);
+    if (!subHeading)
+      return subHeading.takeError();
 
-    auto *objcProtocol =
-        result.addObjCProtocol(*name, *loc, *avail, *access, /*Decl*/ nullptr);
+    auto *objcProtocol = result.addObjCProtocol(
+        *name, usr, *loc, *avail, *access, *docComment, *declarationFragments,
+        *subHeading, /*Decl*/ nullptr);
 
     // Don't need to handle categories here.
     auto err = parseConformedProtocols(objcProtocol, object);
@@ -1041,6 +1590,7 @@ Error APIJSONParser::parseEnumConstants(EnumRecord *record,
     auto name = parseName(constant);
     if (!name)
       return name.takeError();
+    auto declName = parseDeclName(constant);
     auto access = parseAccess(constant);
     if (!access)
       return access.takeError();
@@ -1050,8 +1600,19 @@ Error APIJSONParser::parseEnumConstants(EnumRecord *record,
     auto avail = parseAvailability(constant);
     if (!avail)
       return avail.takeError();
+    auto usr = parseUSR(constant);
+    auto docComment = parseDocComment(constant);
+    if (!docComment)
+      return docComment.takeError();
+    auto declarationFragments = parseDeclarationFragments(constant);
+    if (!declarationFragments)
+      return declarationFragments.takeError();
+    auto subHeading = parseSubHeading(object);
+    if (!subHeading)
+      return subHeading.takeError();
 
-    result.addEnumConstant(record, *name, *loc, *avail, *access,
+    result.addEnumConstant(record, *name, declName, usr, *loc, *avail, *access,
+                           *docComment, *declarationFragments, *subHeading,
                            /*Decl*/ nullptr);
   }
 
@@ -1067,6 +1628,7 @@ Error APIJSONParser::parseEnums(Array &enums) {
     auto name = parseName(object);
     if (!name)
       return name.takeError();
+    auto declName = parseDeclName(object);
     auto access = parseAccess(object);
     if (!access)
       return access.takeError();
@@ -1077,9 +1639,20 @@ Error APIJSONParser::parseEnums(Array &enums) {
     if (!avail)
       return avail.takeError();
     auto usr = parseUSR(object);
+    auto docComment = parseDocComment(object);
+    if (!docComment)
+      return docComment.takeError();
+    auto declarationFragments = parseDeclarationFragments(object);
+    if (!declarationFragments)
+      return declarationFragments.takeError();
+    auto subHeading = parseSubHeading(object);
+    if (!subHeading)
+      return subHeading.takeError();
 
     auto *record =
-        result.addEnum(*name, usr, *loc, *avail, *access, /*Decl*/ nullptr);
+        result.addEnum(*name, declName, usr, *loc, *avail, *access, *docComment,
+                       *declarationFragments, *subHeading,
+                       /*Decl*/ nullptr);
     auto err = parseEnumConstants(record, object);
     if (err)
       return err;
@@ -1105,8 +1678,102 @@ Error APIJSONParser::parseTypedefs(Array &typedefs) {
     auto avail = parseAvailability(object);
     if (!avail)
       return avail.takeError();
+    auto usr = parseUSR(object);
+    auto docComment = parseDocComment(object);
+    if (!docComment)
+      return docComment.takeError();
+    auto declarationFragments = parseDeclarationFragments(object);
+    if (!declarationFragments)
+      return declarationFragments.takeError();
+    auto subHeading = parseSubHeading(object);
+    if (!subHeading)
+      return subHeading.takeError();
+    SymbolInfo underlyingType = parseUnderlyingType(object);
 
-    result.addTypeDef(*name, *loc, *avail, *access, /*Decl*/ nullptr);
+    result.addTypeDef(*name, usr, *loc, *avail, *access, underlyingType,
+                      *docComment, *declarationFragments, *subHeading,
+                      /*Decl*/ nullptr);
+  }
+  return Error::success();
+}
+
+Error APIJSONParser::parseStructFields(StructRecord *record,
+                                       const Object *object) {
+  const auto *fields = object->getArray("fields");
+  if (!fields)
+    return Error::success();
+
+  for (const auto &f : *fields) {
+    const auto *field = f.getAsObject();
+    if (!field)
+      return make_error<APIJSONError>("struct field should be an object");
+    auto name = parseName(field);
+    if (!name)
+      return name.takeError();
+    auto declName = parseDeclName(field);
+    auto access = parseAccess(field);
+    if (!access)
+      return access.takeError();
+    auto loc = parseLocation(field);
+    if (!loc)
+      return loc.takeError();
+    auto avail = parseAvailability(field);
+    if (!avail)
+      return avail.takeError();
+    auto usr = parseUSR(field);
+    auto docComment = parseDocComment(field);
+    if (!docComment)
+      return docComment.takeError();
+    auto declarationFragments = parseDeclarationFragments(object);
+    if (!declarationFragments)
+      return declarationFragments.takeError();
+    auto subHeading = parseSubHeading(object);
+    if (!subHeading)
+      return subHeading.takeError();
+
+    result.addStructField(record, *name, declName, usr, *loc, *avail, *access,
+                          *docComment, *declarationFragments, *subHeading,
+                          /*Decl*/ nullptr);
+  }
+
+  return Error::success();
+}
+
+Error APIJSONParser::parseStructs(Array &structs) {
+  for (const auto &s : structs) {
+    auto *object = s.getAsObject();
+    if (!object)
+      return make_error<APIJSONError>("Expect to be JSON Object");
+
+    auto name = parseName(object);
+    if (!name)
+      return name.takeError();
+    auto access = parseAccess(object);
+    if (!access)
+      return access.takeError();
+    auto loc = parseLocation(object);
+    if (!loc)
+      return loc.takeError();
+    auto avail = parseAvailability(object);
+    if (!avail)
+      return avail.takeError();
+    auto usr = parseUSR(object);
+    auto docComment = parseDocComment(object);
+    if (!docComment)
+      return docComment.takeError();
+    auto declarationFragments = parseDeclarationFragments(object);
+    if (!declarationFragments)
+      return declarationFragments.takeError();
+    auto subHeading = parseSubHeading(object);
+    if (!subHeading)
+      return subHeading.takeError();
+
+    auto *record =
+        result.addStruct(*name, usr, *loc, *avail, *access, *docComment,
+                         *declarationFragments, *subHeading, /*Decl*/ nullptr);
+    auto err = parseStructFields(record, object);
+    if (err)
+      return err;
   }
   return Error::success();
 }
@@ -1180,6 +1847,13 @@ Error APIJSONParser::parsePotentiallyDefinedSelectors(Array &selectors) {
 }
 
 Error APIJSONParser::parse(Object *root) {
+  auto *macros = root->getArray("macros");
+  if (macros) {
+    auto err = parseMacros(*macros);
+    if (err)
+      return err;
+  }
+
   auto *globals = root->getArray("globals");
   if (globals) {
     auto err = parseGlobals(*globals);
@@ -1218,6 +1892,13 @@ Error APIJSONParser::parse(Object *root) {
   auto *typedefs = root->getArray("typedefs");
   if (typedefs) {
     auto err = parseTypedefs(*typedefs);
+    if (err)
+      return err;
+  }
+
+  auto *structs = root->getArray("structs");
+  if (structs) {
+    auto err = parseStructs(*structs);
     if (err)
       return err;
   }

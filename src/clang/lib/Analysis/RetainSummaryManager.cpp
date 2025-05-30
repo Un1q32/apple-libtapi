@@ -71,7 +71,7 @@ Optional<ObjKind> RetainSummaryManager::hasAnyEnabledAttrOf(const Decl *D,
   if (isOneOf<T, CFConsumedAttr, CFReturnsRetainedAttr,
               CFReturnsNotRetainedAttr>()) {
     if (!TrackObjCAndCFObjects)
-      return std::nullopt;
+      return None;
 
     K = ObjKind::CF;
   } else if (isOneOf<T, NSConsumedAttr, NSConsumesSelfAttr,
@@ -79,19 +79,19 @@ Optional<ObjKind> RetainSummaryManager::hasAnyEnabledAttrOf(const Decl *D,
                      NSReturnsNotRetainedAttr, NSConsumesSelfAttr>()) {
 
     if (!TrackObjCAndCFObjects)
-      return std::nullopt;
+      return None;
 
     if (isOneOf<T, NSReturnsRetainedAttr, NSReturnsAutoreleasedAttr,
                 NSReturnsNotRetainedAttr>() &&
         !cocoa::isCocoaObjectRef(QT))
-      return std::nullopt;
+      return None;
     K = ObjKind::ObjC;
   } else if (isOneOf<T, OSConsumedAttr, OSConsumesThisAttr,
                      OSReturnsNotRetainedAttr, OSReturnsRetainedAttr,
                      OSReturnsRetainedOnZeroAttr,
                      OSReturnsRetainedOnNonZeroAttr>()) {
     if (!TrackOSObjects)
-      return std::nullopt;
+      return None;
     K = ObjKind::OS;
   } else if (isOneOf<T, GeneralizedReturnsNotRetainedAttr,
                      GeneralizedReturnsRetainedAttr,
@@ -102,7 +102,7 @@ Optional<ObjKind> RetainSummaryManager::hasAnyEnabledAttrOf(const Decl *D,
   }
   if (D->hasAttr<T>())
     return K;
-  return std::nullopt;
+  return None;
 }
 
 template <class T1, class T2, class... Others>
@@ -397,8 +397,9 @@ const RetainSummary *RetainSummaryManager::getSummaryForObjCOrCFObject(
                                 ArgEffect(DoNothing), ArgEffect(DoNothing));
   } else if (FName.startswith("NSLog")) {
     return getDoNothingSummary();
-  } else if (FName.startswith("NS") && FName.contains("Insert")) {
-    // Allowlist NSXXInsertXX, for example NSMapInsertIfAbsent, since they can
+  } else if (FName.startswith("NS") &&
+             (FName.find("Insert") != StringRef::npos)) {
+    // Whitelist NSXXInsertXX, for example NSMapInsertIfAbsent, since they can
     // be deallocated by NSMapRemove. (radar://11152419)
     ScratchArgs = AF.add(ScratchArgs, 1, ArgEffect(StopTracking));
     ScratchArgs = AF.add(ScratchArgs, 2, ArgEffect(StopTracking));
@@ -724,7 +725,7 @@ RetainSummaryManager::canEval(const CallExpr *CE, const FunctionDecl *FD,
 
   IdentifierInfo *II = FD->getIdentifier();
   if (!II)
-    return std::nullopt;
+    return None;
 
   StringRef FName = II->getName();
   FName = FName.substr(FName.find_first_not_of('_'));
@@ -741,7 +742,7 @@ RetainSummaryManager::canEval(const CallExpr *CE, const FunctionDecl *FD,
         FName == "CMBufferQueueDequeueIfDataReadyAndRetain") {
       // Part of: <rdar://problem/39390714>.
       // These are not retain. They just return something and retain it.
-      return std::nullopt;
+      return None;
     }
     if (CE->getNumArgs() == 1 &&
         (cocoa::isRefType(ResultTy, "CF", FName) ||
@@ -781,7 +782,7 @@ RetainSummaryManager::canEval(const CallExpr *CE, const FunctionDecl *FD,
         return BehaviorSummary::NoOp;
   }
 
-  return std::nullopt;
+  return None;
 }
 
 const RetainSummary *
@@ -791,7 +792,7 @@ RetainSummaryManager::getUnarySummary(const FunctionType* FT,
   // Unary functions have no arg effects by definition.
   ArgEffects ScratchArgs(AF.getEmptyMap());
 
-  // Verify that this is *really* a unary function.  This can
+  // Sanity check that this is *really* a unary function.  This can
   // happen if people do weird things.
   const FunctionProtoType* FTP = dyn_cast<FunctionProtoType>(FT);
   if (!FTP || FTP->getNumParams() != 1)
@@ -885,14 +886,14 @@ RetainSummaryManager::getRetEffectFromAnnotations(QualType RetTy,
       if (auto RE = getRetEffectFromAnnotations(RetTy, PD))
         return RE;
 
-  return std::nullopt;
+  return None;
 }
 
 /// \return Whether the chain of typedefs starting from @c QT
 /// has a typedef with a given name @c Name.
 static bool hasTypedefNamed(QualType QT,
                             StringRef Name) {
-  while (auto *T = QT->getAs<TypedefType>()) {
+  while (auto *T = dyn_cast<TypedefType>(QT)) {
     const auto &Context = T->getDecl()->getASTContext();
     if (T->getDecl()->getIdentifier() == &Context.Idents.get(Name))
       return true;

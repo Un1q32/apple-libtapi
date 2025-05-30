@@ -319,7 +319,7 @@ public:
       // We care about logical not only if we care about comparisons.
       if (!ShouldRetrieveFromComparisons)
         return nullptr;
-      [[fallthrough]];
+      LLVM_FALLTHROUGH;
     // Function pointer/references can be dereferenced before a call.
     // That doesn't make it, however, any different from a regular call.
     // For this reason, dereference operation is a "no-op".
@@ -513,7 +513,7 @@ public:
     if (const Stmt *Terminator = Conditional->getTerminatorStmt()) {
       return NotCalledClarifier{Conditional, SuccWithoutCall}.Visit(Terminator);
     }
-    return std::nullopt;
+    return llvm::None;
   }
 
   llvm::Optional<Clarification> VisitIfStmt(const IfStmt *If) {
@@ -563,7 +563,7 @@ public:
 
   llvm::Optional<Clarification> VisitBinaryOperator(const BinaryOperator *) {
     // We don't want to report on short-curcuit logical operations.
-    return std::nullopt;
+    return llvm::None;
   }
 
   llvm::Optional<Clarification> VisitStmt(const Stmt *Terminator) {
@@ -1008,7 +1008,7 @@ private:
 
       return A->getCompletionHandlerIndex().getASTIndex() == ParamIndex;
     }
-    return std::nullopt;
+    return llvm::None;
   }
 
   /// Return true if the specified selector represents init method.
@@ -1065,7 +1065,7 @@ private:
     // 'swift_async' goes first and overrides anything else.
     if (auto ConventionalAsync =
             isConventionalSwiftAsync(Function, ParamIndex)) {
-      return *ConventionalAsync;
+      return ConventionalAsync.getValue();
     }
 
     return shouldBeCalledOnce(Function->getParamDecl(ParamIndex)) ||
@@ -1082,7 +1082,7 @@ private:
 
     // 'swift_async' goes first and overrides anything else.
     if (auto ConventionalAsync = isConventionalSwiftAsync(Method, ParamIndex)) {
-      return *ConventionalAsync;
+      return ConventionalAsync.getValue();
     }
 
     const ParmVarDecl *Parameter = Method->getParamDecl(ParamIndex);
@@ -1644,7 +1644,7 @@ private:
       return getIndex(*Parameter);
     }
 
-    return std::nullopt;
+    return llvm::None;
   }
 
   llvm::Optional<unsigned> getIndex(const ParmVarDecl &Parameter) const {
@@ -1662,7 +1662,7 @@ private:
       return It - TrackedParams.begin();
     }
 
-    return std::nullopt;
+    return llvm::None;
   }
 
   const ParmVarDecl *getParameter(unsigned Index) const {

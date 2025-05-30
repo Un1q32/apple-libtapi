@@ -34,10 +34,12 @@ static codegen::RegisterCodeGenFlags CGF;
 
 // extra command-line flags needed for LTOCodeGenerator
 static cl::opt<char>
-    OptLevel("O",
-             cl::desc("Optimization level. [-O0, -O1, -O2, or -O3] "
-                      "(default = '-O2')"),
-             cl::Prefix, cl::init('2'));
+OptLevel("O",
+         cl::desc("Optimization level. [-O0, -O1, -O2, or -O3] "
+                  "(default = '-O2')"),
+         cl::Prefix,
+         cl::ZeroOrMore,
+         cl::init('2'));
 
 static cl::opt<bool> EnableFreestanding(
     "lto-freestanding", cl::init(false),
@@ -290,8 +292,6 @@ lto_module_t lto_module_create_in_codegen_context(const void *mem,
       codegen::InitTargetOptionsFromCodeGenFlags(Triple());
   ErrorOr<std::unique_ptr<LTOModule>> M = LTOModule::createFromBuffer(
       unwrap(cg)->getContext(), mem, length, Options, StringRef(path));
-  if (!M)
-    return nullptr;
   return wrap(M->release());
 }
 
@@ -511,10 +511,6 @@ void lto_codegen_set_should_embed_uselists(lto_code_gen_t cg,
   unwrap(cg)->setShouldEmbedUselists(ShouldEmbedUselists);
 }
 
-lto_bool_t lto_module_has_ctor_dtor(lto_module_t mod) {
-  return unwrap(mod)->hasCtorDtor();
-}
-
 // ThinLTO API below
 
 thinlto_code_gen_t thinlto_create_codegen(void) {
@@ -541,16 +537,6 @@ thinlto_code_gen_t thinlto_create_codegen(void) {
     case '3':
       CodeGen->setCodeGenOptLevel(CodeGenOpt::Aggressive);
       break;
-    }
-  }
-  // Set up remote cache if environment is set.
-  if (sys::Process::GetEnv("LLVM_THINLTO_USE_REMOTE_CACHE")) {
-    if (auto CacheSocket =
-            sys::Process::GetEnv("LLVM_CACHE_REMOTE_SERVICE_SOCKET_PATH")) {
-      std::string Path = std::string("grpc:") + *CacheSocket;
-      auto Err = CodeGen->setCacheDir(Path);
-      if (Err)
-        report_fatal_error(std::move(Err));
     }
   }
   return wrap(CodeGen);
@@ -625,10 +611,7 @@ void thinlto_codegen_set_cpu(thinlto_code_gen_t cg, const char *cpu) {
 
 void thinlto_codegen_set_cache_dir(thinlto_code_gen_t cg,
                                    const char *cache_dir) {
-  // FIXME: need to return error somehow.
-  Error Err = unwrap(cg)->setCacheDir(cache_dir);
-  if (Err)
-    sLastErrorString = toString(std::move(Err));
+  return unwrap(cg)->setCacheDir(cache_dir);
 }
 
 void thinlto_codegen_set_cache_pruning_interval(thinlto_code_gen_t cg,

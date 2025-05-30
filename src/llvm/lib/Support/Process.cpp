@@ -42,12 +42,12 @@ Optional<std::string> Process::FindInEnvPath(StringRef EnvName,
   assert(!path::is_absolute(FileName));
   Optional<std::string> FoundPath;
   Optional<std::string> OptPath = Process::GetEnv(EnvName);
-  if (!OptPath)
+  if (!OptPath.hasValue())
     return FoundPath;
 
   const char EnvPathSeparatorStr[] = {Separator, '\0'};
   SmallVector<StringRef, 8> Dirs;
-  SplitString(OptPath.value(), Dirs, EnvPathSeparatorStr);
+  SplitString(OptPath.getValue(), Dirs, EnvPathSeparatorStr);
 
   for (StringRef Dir : Dirs) {
     if (Dir.empty())
@@ -92,7 +92,8 @@ static bool coreFilesPrevented = !LLVM_ENABLE_CRASH_DUMPS;
 
 bool Process::AreCoreFilesPrevented() { return coreFilesPrevented; }
 
-[[noreturn]] void Process::Exit(int RetCode, bool NoCleanup) {
+LLVM_ATTRIBUTE_NORETURN
+void Process::Exit(int RetCode, bool NoCleanup) {
   if (CrashRecoveryContext *CRC = CrashRecoveryContext::GetCurrent())
     CRC->HandleExit(RetCode);
 

@@ -19,10 +19,6 @@
 #include "clang/Basic/LLVM.h"
 #include <vector>
 
-namespace llvm {
-class MemoryBufferRef;
-}
-
 namespace clang {
 class CXLoadedDiagnostic : public CXDiagnosticImpl {
 public:
@@ -92,13 +88,6 @@ public:
   unsigned severity;
   unsigned category;
 };
-
-/// Read a serialized diagnostics \p buffer and create a \c CXDiagnosticSet
-/// object for the loaded diagnostics.
-CXDiagnosticSet loadCXDiagnosticsFromBuffer(llvm::MemoryBufferRef buffer,
-                                            enum CXLoadDiag_Error *error,
-                                            CXString *errorString);
-
-} // namespace clang
+}
 
 #endif

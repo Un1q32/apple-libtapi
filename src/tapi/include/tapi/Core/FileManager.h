@@ -20,11 +20,32 @@
 
 TAPI_NAMESPACE_INTERNAL_BEGIN
 
+class FileSystemStatCacheFactory
+    : public llvm::RefCountedBase<FileSystemStatCacheFactory> {
+public:
+  virtual ~FileSystemStatCacheFactory() {}
+  virtual clang::FileSystemStatCache *create() = 0;
+};
+
+template <typename T>
+llvm::IntrusiveRefCntPtr<FileSystemStatCacheFactory>
+newFileSystemStatCacheFactory() {
+  class SimpleFileSystemStatCacheFactory : public FileSystemStatCacheFactory {
+  public:
+    clang::FileSystemStatCache *create() override { return new T; }
+  };
+
+  return llvm::IntrusiveRefCntPtr<FileSystemStatCacheFactory>(
+      new SimpleFileSystemStatCacheFactory);
+}
+
 /// \brief Basically the clang FileManager with additonal convenience methods
 ///        and a recording stat cache.
 class FileManager final : public clang::FileManager {
 public:
   FileManager(const clang::FileSystemOptions &fileSystemOpts,
+              llvm::IntrusiveRefCntPtr<FileSystemStatCacheFactory>
+                  cacheFactory = nullptr,
               llvm::IntrusiveRefCntPtr<llvm::vfs::FileSystem> fs = nullptr);
 
   /// \brief Check if a particular path exists.
@@ -38,8 +59,12 @@ public:
   /// \brief Check if a particular path is a symlink using directory_iterator.
   bool isSymlink(StringRef path);
 
+  /// \brief Create and add stat cache.
+  void installStatRecorder();
+
 private:
   bool initWithVFS = false;
+  llvm::IntrusiveRefCntPtr<FileSystemStatCacheFactory> cacheFactory;
 };
 
 TAPI_NAMESPACE_INTERNAL_END

@@ -9,19 +9,19 @@
 #include "tapi/Driver/Options.h"
 #include "tapi/Config/Version.h"
 #include "tapi/Core/Path.h"
-#include "tapi/Core/Utils.h"
 #include "tapi/Defines.h"
 #include "tapi/Diagnostics/Diagnostics.h"
 #include "tapi/Driver/DriverOptions.h"
+#include "tapi/Driver/Snapshot.h"
+#include "tapi/Driver/SnapshotFileSystem.h"
+#include "tapi/Driver/StatRecorder.h"
 #include "tapi/LinkerInterfaceFile.h"
-#include "tapi/Version.h"
 #include "clang/Basic/Version.inc"
 #include "clang/Config/config.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Option/ArgList.h"
 #include "llvm/Option/OptSpecifier.h"
-#include "llvm/Support/Path.h"
 #include "llvm/Support/Process.h"
 #include "llvm/Support/Program.h"
 #include "llvm/Support/VirtualFileSystem.h"
@@ -47,7 +47,9 @@ static TAPICommand getTAPICommand(StringRef value) {
       .Case("installapi", TAPICommand::InstallAPI)
       .Case("reexport", TAPICommand::Reexport)
       .Case("sdkdb", TAPICommand::SDKDB)
+      .Case("generate-api-tests", TAPICommand::GenerateAPITests)
       .Case("api-verify", TAPICommand::APIVerify)
+      .Case("extractapi", TAPICommand::ExtractAPI)
       .Default(TAPICommand::Driver);
 }
 
@@ -65,8 +67,12 @@ static StringRef getNameFromTAPICommand(TAPICommand command) {
     return "reexport";
   case TAPICommand::SDKDB:
     return "sdkdb";
+  case TAPICommand::GenerateAPITests:
+    return "generate-api-tests";
   case TAPICommand::APIVerify:
     return "api-verify";
+  case TAPICommand::ExtractAPI:
+    return "extractapi";
   }
 }
 
@@ -114,8 +120,14 @@ static unsigned getIncludeOptionFlagMasks(TAPICommand command) {
   case TAPICommand::SDKDB:
     flags |= TapiFlags::SDKDBOption;
     break;
+  case TAPICommand::GenerateAPITests:
+    flags |= TapiFlags::GenerateAPITestsOption;
+    break;
   case TAPICommand::APIVerify:
     flags |= TapiFlags::APIVerifyOption;
+    break;
+  case TAPICommand::ExtractAPI:
+    flags |= TapiFlags::ExtractAPIOption;
     break;
   }
 
@@ -140,15 +152,15 @@ static std::string getClangResourcesPath(FileManager &fm) {
 
   // Try the default tapi path.
   SmallString<PATH_MAX> path(tapiDir);
-  llvm::sys::path::append(path, "..", CLANG_INSTALL_LIBDIR_BASENAME,
+  llvm::sys::path::append(path, "..", Twine("lib") + CLANG_LIBDIR_SUFFIX,
                           "tapi", TAPI_MAKE_STRING(TAPI_VERSION));
   if (fm.exists(path))
     return path.str().str();
 
   // Try the default clang path. This is used by check-tapi.
   path = tapiDir;
-  llvm::sys::path::append(path, "..", CLANG_INSTALL_LIBDIR_BASENAME, "clang",
-                          CLANG_VERSION_STRING);
+  llvm::sys::path::append(path, "..", Twine("lib") + CLANG_LIBDIR_SUFFIX,
+                          "clang", CLANG_VERSION_STRING);
   if (fm.exists(path))
     return path.str().str();
 
@@ -188,18 +200,18 @@ static std::string getTAPIConfigurationFile(FileManager &fm,
 static Optional<Triple>
 parsePlatformAndDeploymentTarget(DiagnosticsEngine &diag, InputArgList &args) {
   // Handle deployment target.
-  const std::pair<unsigned, PlatformType> platforms[] = {
-      {OPT_mmacos_version_min_EQ, PLATFORM_MACOS},
-      {OPT_mios_version_min_EQ, PLATFORM_IOS},
-      {OPT_mios_simulator_version_min_EQ, PLATFORM_IOSSIMULATOR},
-      {OPT_mtvos_version_min_EQ, PLATFORM_TVOS},
-      {OPT_mtvos_simulator_version_min_EQ, PLATFORM_TVOSSIMULATOR},
-      {OPT_mwatchos_version_min_EQ, PLATFORM_WATCHOS},
-      {OPT_mwatchos_simulator_version_min_EQ, PLATFORM_WATCHOSSIMULATOR},
-      {OPT_mbridgeos_version_min_EQ, PLATFORM_BRIDGEOS},
+  const std::pair<unsigned, PlatformKind> platforms[] = {
+      {OPT_mmacos_version_min_EQ, PlatformKind::macOS},
+      {OPT_mios_version_min_EQ, PlatformKind::iOS},
+      {OPT_mios_simulator_version_min_EQ, PlatformKind::iOSSimulator},
+      {OPT_mtvos_version_min_EQ, PlatformKind::tvOS},
+      {OPT_mtvos_simulator_version_min_EQ, PlatformKind::tvOSSimulator},
+      {OPT_mwatchos_version_min_EQ, PlatformKind::watchOS},
+      {OPT_mwatchos_simulator_version_min_EQ, PlatformKind::watchOSSimulator},
+      {OPT_mbridgeos_version_min_EQ, PlatformKind::bridgeOS},
   };
 
-  PlatformType platform = PLATFORM_UNKNOWN;
+  PlatformKind platform = PlatformKind::unknown;
   std::string osVersion;
   const Arg *first = nullptr;
   for (const auto &target : platforms) {
@@ -218,17 +230,17 @@ parsePlatformAndDeploymentTarget(DiagnosticsEngine &diag, InputArgList &args) {
     osVersion = arg->getValue();
   }
 
-  if (platform == PLATFORM_UNKNOWN) {
+  if (platform == PlatformKind::unknown) {
     // If no deployment target was specified on the command line, check for
     // environment defines.
 
-    const std::pair<const char *, PlatformType> platforms[] = {
-        {"MACOSX_DEPLOYMENT_TARGET", PLATFORM_MACOS},
-        {"IPHONEOS_DEPLOYMENT_TARGET", PLATFORM_IOS},
-        {"TVOS_DEPLOYMENT_TARGET", PLATFORM_TVOS},
-        {"WATCHOS_DEPLOYMENT_TARGET", PLATFORM_WATCHOS},
-        {"BRIDGEOS_DEPLOYMENT_TARGET", PLATFORM_BRIDGEOS},
-        {"DRIVERKIT_DEPLOYMENT_TARGET", PLATFORM_DRIVERKIT},
+    const std::pair<const char *, PlatformKind> platforms[] = {
+        {"MACOSX_DEPLOYMENT_TARGET", PlatformKind::macOS},
+        {"IPHONEOS_DEPLOYMENT_TARGET", PlatformKind::iOS},
+        {"TVOS_DEPLOYMENT_TARGET", PlatformKind::tvOS},
+        {"WATCHOS_DEPLOYMENT_TARGET", PlatformKind::watchOS},
+        {"BRIDGEOS_DEPLOYMENT_TARGET", PlatformKind::bridgeOS},
+        {"DRIVERKIT_DEPLOYMENT_TARGET", PlatformKind::driverKit},
     };
 
     const char *first = nullptr;
@@ -259,6 +271,49 @@ parsePlatformAndDeploymentTarget(DiagnosticsEngine &diag, InputArgList &args) {
   return target;
 }
 
+bool Options::processSnapshotOptions(DiagnosticsEngine &diag,
+                                     InputArgList &args) {
+  // Handle --snapshot.
+  auto *snapshotArg = args.getLastArg(OPT_snapshot);
+  if (snapshotArg)
+    snapshotOptions.snapshotMode = SnapshotMode::ForceCreate;
+
+  // Handle --snapshot-dir=<dir>.
+  if (auto *snapshotDirArg = args.getLastArg(OPT_snapshot_dir))
+    snapshotOptions.snapshotOutputDir = snapshotDirArg->getValue();
+
+  if (auto *arg = args.getLastArg(OPT_load_snapshot)) {
+    if (snapshotArg) {
+      diag.report(clang::diag::err_drv_argument_not_allowed_with)
+          << snapshotArg->getAsString(args) << arg->getAsString(args);
+      return false;
+    }
+
+    snapshotOptions.snapshotMode = SnapshotMode::Load;
+    snapshotOptions.snapshotInputPath = arg->getValue();
+  }
+
+  if (::getenv("TAPI_SNAPSHOT_CREATE") != nullptr)
+    snapshotOptions.snapshotMode = SnapshotMode::ForceCreate;
+
+  if (::getenv("TAPI_USE_CC_LOG_PATH")) {
+    if (auto *path = ::getenv("CC_LOG_DIAGNOSTICS_FILE")) {
+      SmallString<PATH_MAX> snapshotDir(path);
+      sys::path::remove_filename(snapshotDir);
+      sys::path::append(snapshotDir, ".TAPI_SNAPSHOT");
+      snapshotOptions.snapshotOutputDir = snapshotDir.str().str();
+    }
+  }
+
+  if (auto *path = ::getenv("TAPI_SNAPSHOT_DIR"))
+    snapshotOptions.snapshotOutputDir = path;
+
+  if (args.getLastArg(OPT_snapshot_use_own_resource_dir))
+    snapshotOptions.useOwnResourceDir = true;
+
+  return true;
+}
+
 bool Options::processXarchOptions(DiagnosticsEngine &diag, InputArgList &args) {
   for (auto it = args.begin(), e = args.end(); it != e; ++it) {
     auto *arg = *it;
@@ -285,7 +340,6 @@ bool Options::processXarchOptions(DiagnosticsEngine &diag, InputArgList &args) {
     case OPT_reexport_l:
     case OPT_reexport_framework:
     case OPT_reexport_library:
-    case OPT_rpath:
       break;
     default:
       diag.report(clang::diag::err_drv_argument_not_allowed_with)
@@ -308,7 +362,7 @@ bool Options::processXplatformOptions(DiagnosticsEngine &diag,
       continue;
 
     auto platform = getPlatformFromName(arg->getValue(0));
-    if (platform == PLATFORM_UNKNOWN) {
+    if (platform == PlatformKind::unknown) {
       diag.report(diag::err_invalid_platform_name) << arg->getAsString(args);
       return false;
     }
@@ -517,8 +571,9 @@ bool Options::processLinkerOptions(DiagnosticsEngine &diag,
     linkerOptions.allowableClients.clear();
 
   std::vector<Target> targetTriples;
-  for (auto t: frontendOptions.targets)
+  for (auto t: frontendOptions.targets) 
     targetTriples.emplace_back(t);
+
   auto architectures = mapToArchitectureSet(targetTriples);
   for (auto *arg : args.filtered(OPT_allowable_client)) {
     if (argToArchMap.count(arg))
@@ -580,15 +635,6 @@ bool Options::processLinkerOptions(DiagnosticsEngine &diag,
                                                       architectures);
   }
 
-  if (args.hasArgNoClaim(OPT_rpath))
-    linkerOptions.rpaths.clear();
-  for (auto *arg : args.filtered(OPT_rpath)) {
-    if (argToArchMap.count(arg))
-      linkerOptions.rpaths.emplace_back(arg->getValue(), argToArchMap[arg]);
-    else
-      linkerOptions.rpaths.emplace_back(arg->getValue(), architectures);
-  }
-
   // Handle application extension safe flag.
   if (::getenv("LD_NO_ENCRYPT") != nullptr)
     linkerOptions.isApplicationExtensionSafe = true;
@@ -623,7 +669,7 @@ bool Options::processFrontendOptions(DiagnosticsEngine &diag,
     frontendOptions.isysroot = path.str().str();
   } else if (frontendOptions.isysroot.empty()) {
     // Mirror CLANG and obtain the isysroot from the SDKROOT environment
-    // variable, if it wasn't defined by the  command line.
+    // variable, if it wasn't defined by the snapshot or command line.
     if (auto *env = ::getenv("SDKROOT")) {
       // Only use the SDKROOT as the default if it is an absolute path, exists,
       // and it is not the root path.
@@ -647,7 +693,7 @@ bool Options::processFrontendOptions(DiagnosticsEngine &diag,
     frontendOptions.systemFrameworkPaths.emplace_back(
         arg->getValue(), argToPlatformMap.count(arg)
                              ? argToPlatformMap[arg]
-                             : llvm::Optional<PlatformType>{});
+                             : Optional<PlatformKind>{});
 
   // Handle framework paths.
   PathSeq frameworkPaths;
@@ -680,8 +726,7 @@ bool Options::processFrontendOptions(DiagnosticsEngine &diag,
   for (const auto &frameworkPath : defaultFrameworkPaths) {
     SmallString<PATH_MAX> path(frontendOptions.isysroot);
     sys::path::append(path, frameworkPath);
-    frontendOptions.systemFrameworkPaths.emplace_back(
-        std::string(path), llvm::Optional<PlatformType>{});
+    frontendOptions.frameworkPaths.emplace_back(path.str());
   }
 
   // Do basic error checking first for mixing -target and -arch options.
@@ -701,6 +746,11 @@ bool Options::processFrontendOptions(DiagnosticsEngine &diag,
         << argTarget->getAsString(args) << argMinTargetOS->getAsString(args);
     return false;
   }
+
+  // Clear out the target vector, because it might have been initialized by a
+  // snapshot and we want to override the targets.
+  if (argArch || argTarget)
+    frontendOptions.targets.clear();
 
   // Handle -target first.
   if (argTarget) {
@@ -728,7 +778,6 @@ bool Options::processFrontendOptions(DiagnosticsEngine &diag,
       case Triple::IOS:
       case Triple::TvOS:
       case Triple::WatchOS:
-      case Triple::DriverKit:
         break;
       }
 
@@ -750,16 +799,16 @@ bool Options::processFrontendOptions(DiagnosticsEngine &diag,
     Triple target;
     if (argMinTargetOS) {
       target = Triple(Twine("unknown-apple-") + argMinTargetOS->getValue());
-      if (mapToPlatformType(target) == PLATFORM_UNKNOWN) {
+      if (mapToPlatformKind(target) == PlatformKind::unknown) {
         diag.report(clang::diag::err_drv_invalid_os_in_arg)
             << target.getOSName() << argMinTargetOS->getAsString(args);
         return false;
       }
     } else {
       auto result = parsePlatformAndDeploymentTarget(diag, args);
-      if (!result.has_value())
+      if (!result.hasValue())
         return false;
-      target = result.value();
+      target = result.getValue();
     }
 
     for (auto *arg : args.filtered(OPT_arch)) {
@@ -816,7 +865,6 @@ bool Options::processFrontendOptions(DiagnosticsEngine &diag,
     frontendOptions.targetVariants.push_back(variant);
   }
 
-
   // Handle language option.
   if (auto *arg = args.getLastArg(OPT_x)) {
     frontendOptions.language =
@@ -845,13 +893,6 @@ bool Options::processFrontendOptions(DiagnosticsEngine &diag,
   // Handle language std.
   if (auto *arg = args.getLastArg(OPT_std_EQ))
     frontendOptions.language_std = arg->getValue();
-  else {
-    // Project workaround for: rdar://105020631
-    if (frontendOptions.language == clang::Language::ObjCXX || 
-        frontendOptions.language == clang::Language::CXX)
-      frontendOptions.language_std = "c++14";
-  }
-
 
   // Handle SYSTEM include paths.
   if (args.hasArgNoClaim(OPT_isystem))
@@ -908,9 +949,6 @@ bool Options::processFrontendOptions(DiagnosticsEngine &diag,
   if (args.hasArg(OPT_fmodules_validate_system_headers))
     frontendOptions.validateSystemHeaders = true;
 
-  if (auto *arg = args.getLastArg(OPT_product_name))
-    frontendOptions.productName = arg->getValue();
-
   // Handle extra arguments for the parser.
   if (args.hasArgNoClaim(OPT_Xparser))
     frontendOptions.clangExtraArgs.clear();
@@ -957,10 +995,8 @@ bool Options::processDiagnosticsOptions(DiagnosticsEngine &diag,
 /// \brief Handle TAPI related options.
 bool Options::processTAPIOptions(DiagnosticsEngine &diag, InputArgList &args) {
   // Handle file list.
-  if (args.hasArgNoClaim(OPT_file_list_EQ))
-    tapiOptions.fileLists.clear();
-  for (auto *arg : args.filtered(OPT_file_list_EQ))
-    tapiOptions.fileLists.emplace_back(arg->getValue());
+  if (auto *arg = args.getLastArg(OPT_file_list_EQ))
+    tapiOptions.fileList = arg->getValue();
 
   // Handle public/private umbrella header.
   if (auto *arg = args.getLastArg(OPT_public_umbrella_header))
@@ -1039,10 +1075,6 @@ bool Options::processTAPIOptions(DiagnosticsEngine &diag, InputArgList &args) {
                     OPT_swift_installapi_interface))
     return false;
 
-  // Handle verify swift.
-  if (args.hasArg(OPT_verify_swift))
-    tapiOptions.verifySwift = true;
-
   // Handle verify against.
   if (auto *arg = args.getLastArg(OPT_verify_against))
     tapiOptions.verifyAgainst = arg->getValue();
@@ -1067,7 +1099,7 @@ bool Options::processTAPIOptions(DiagnosticsEngine &diag, InputArgList &args) {
   if (args.hasArg(OPT_fprofile_instr_generate))
     tapiOptions.generateCodeCoverageSymbols = true;
 
-  // Handle demangling.
+  // Handel demangling.
   if (args.hasArg(OPT_demangle))
     tapiOptions.demangle = true;
 
@@ -1084,33 +1116,26 @@ bool Options::processTAPIOptions(DiagnosticsEngine &diag, InputArgList &args) {
     tapiOptions.deletePrivateFrameworks = true;
 
   if (args.hasArg(OPT_noUUIDs))
-    diag.report(diag::warn_no_uuids);
+    tapiOptions.recordUUIDs = false;
 
-  if (args.hasArg(OPT_setInstallAPI))
-    diag.report(diag::warn_installapi_flag);
-
-  if (args.hasArg(OPT_snapshot))
-    diag.report(diag::warn_snapshot);
-
-  if (auto *arg = args.getLastArg(OPT_dSYM))
-    tapiOptions.dSYM = arg->getValue();
-
-  if (args.hasArg(OPT_t))
-    tapiOptions.traceLibraryLocation = true;
+  if (args.hasArg(OPT_setInstallAPI)) {
+    tapiOptions.setInstallAPIFlag = true;
+    tapiOptions.recordUUIDs = false;
+  }
 
 
   auto parseFileType = [](StringRef fileType) {
-    return StringSwitch<FileType>(fileType)
-        .Case("tbd-v1", FileType::TBD_V1)
-        .Case("tbd-v2", FileType::TBD_V2)
-        .Case("tbd-v3", FileType::TBD_V3)
-        .Case("tbd-v4", FileType::TBD_V4)
-        .Case("tbd-v5", FileType::TBD_V5)
-        .Default(FileType::Invalid);
+    return StringSwitch<VersionedFileType>(fileType)
+        .Case("tbd-v1", TBDv1)
+        .Case("tbd-v2", TBDv2)
+        .Case("tbd-v3", TBDv3)
+        .Case("tbd-v4", TBDv4)
+        .Default({FileType::Invalid});
   };
 
   if (auto *arg = args.getLastArg(OPT_filetype)) {
     tapiOptions.fileType = parseFileType(arg->getValue());
+
     if (tapiOptions.fileType == FileType::Invalid) {
       diag.report(clang::diag::err_drv_invalid_value)
           << arg->getAsString(args) << arg->getValue();
@@ -1134,7 +1159,7 @@ bool Options::processTAPIOptions(DiagnosticsEngine &diag, InputArgList &args) {
   if (args.hasArgNoClaim(OPT_inferIncludePaths) ||
       args.hasArgNoClaim(OPT_noInferIncludePaths))
     tapiOptions.inferIncludePaths =
-        args.hasFlag(OPT_inferIncludePaths, OPT_noInferIncludePaths, true);
+        args.hasFlag(OPT_inferIncludePaths, OPT_noInferIncludePaths);
 
   if (auto *arg = args.getLastArg(OPT_print_after_EQ))
     tapiOptions.printAfter = arg->getValue();
@@ -1157,15 +1182,15 @@ bool Options::processTAPIOptions(DiagnosticsEngine &diag, InputArgList &args) {
   // store all arguments to -isysroot.
   tapiOptions.allSysroots = args.getAllArgValues(OPT_isysroot);
 
-  tapiOptions.isBnI = inBnIEnvironment();
-
   if (auto *arg = args.getLastArg(OPT_sdkdb_output_dir))
     tapiOptions.sdkdbOutputPath = arg->getValue();
   else if (auto path = sys::Process::GetEnv("XBS_TAPI_SDKDB_OUTPUT_PATH"))
     // If the XBS environment is set, turn on SDKDB output as well.
     tapiOptions.sdkdbOutputPath = *path;
-  else if (tapiOptions.isBnI && !tapiOptions.verifyAgainst.empty()) {
-    // Directly infer output path in XBS. When in B&I environment and
+  else if (sys::Process::GetEnv("RC_XBS") &&
+           !sys::Process::GetEnv("RC_BUILDIT") &&
+           !tapiOptions.verifyAgainst.empty()) {
+    // Directly infer output path in XBS. When RC_XBS is set and
     // --verify-against is used, infer the output path from LD_TRACE_FILE.
     auto ldTraceFile = sys::Process::GetEnv("LD_TRACE_FILE");
     if (ldTraceFile) {
@@ -1194,41 +1219,55 @@ bool Options::processSDKDBOptions(DiagnosticsEngine &diag, InputArgList &args) {
     return false;
   }
 
-  // Handle diagnostics file.
-  if (auto *arg = args.getLastArg(OPT_diagnostics_file))
-    sdkdbOptions.diagnosticsFile = arg->getValue();
-  else if (tapiOptions.isBnI && driverOptions.outputPath != "-") {
-    SmallString<PATH_MAX> diagPath(driverOptions.outputPath);
-    sys::path::append(diagPath, "diag.plist");
-    sdkdbOptions.diagnosticsFile = diagPath.c_str();
+  return true;
+}
+
+void Options::initOptionsFromSnapshot(const Snapshot &snapshot) {
+  command = snapshot.command;
+  driverOptions = snapshot.driverOptions;
+  archiveOptions = snapshot.archiveOptions;
+  linkerOptions = snapshot.linkerOptions;
+  frontendOptions = snapshot.frontendOptions;
+  diagnosticsOptions = snapshot.diagnosticsOptions;
+  tapiOptions = snapshot.tapiOptions;
+}
+
+static void updateClangResourceDirFiles(DiagnosticsEngine &diag,
+                                        FileManager &fm,
+                                        StringRef originalClangResourcePath,
+                                        SnapshotFileSystem *vfs) {
+  auto clangResourcePath = getClangResourcesPath(fm);
+  if (clangResourcePath.empty())
+    return;
+
+  auto headers = enumerateHeaderFiles(fm, clangResourcePath);
+  if (!headers) {
+    diag.report(diag::err) << clangResourcePath
+                           << toString(headers.takeError());
+    return;
   }
 
-  sdkdbOptions.runtimeRoot = args.getLastArgValue(OPT_runtime_root).str();
-  sdkdbOptions.sdkContentRoot =
-      args.getLastArgValue(OPT_sdk_content_root).str();
-  sdkdbOptions.publicSDKContentRoot =
-      args.getLastArgValue(OPT_public_sdk_content_root).str();
+  SmallString<PATH_MAX> snapshotRessourcePath(originalClangResourcePath);
+  // Normalize path.
+  if (vfs->makeAbsolute(snapshotRessourcePath))
+    return;
+  sys::path::remove_dots(snapshotRessourcePath, /*remove_dot_dot=*/true);
 
-  // Get partial sdkdb filelist.
-  sdkdbOptions.partialSDKDBFileList =
-      args.getLastArgValue(OPT_partial_sdkdb_list).str();
+  // Replace all files in the ressource directory from the snapshot with our
+  // own files.
+  for (auto &header : *headers) {
+    SmallString<PATH_MAX> externalPath(header);
+    SmallString<PATH_MAX> srcPath(header);
 
-  if (auto *arg = args.getLastArg(OPT_installapi_sdkdb_path))
-    sdkdbOptions.installAPISDKDBDirectory = arg->getValue();
-  else if (driverOptions.outputPath != "-")
-    // if not set, default to output directory.
-    sdkdbOptions.installAPISDKDBDirectory = driverOptions.outputPath;
+    // Normalize path.
+    if (fm.getVirtualFileSystem().makeAbsolute(externalPath))
+      return;
+    sys::path::remove_dots(externalPath, /*remove_dot_dot=*/true);
+    sys::path::replace_path_prefix(srcPath, clangResourcePath,
+                                   snapshotRessourcePath);
 
-  // Handle SDKDB action, default to full.
-  if (auto *arg = args.getLastArg(OPT_sdkdb_action))
-    sdkdbOptions.action = StringSwitch<SDKDBAction>(arg->getValue())
-                              .Case("all", SDKDBAll)
-                              .Case("scan-interface", SDKDBInterfaceScan)
-                              .Case("gen-public", SDKDBPublicGen)
-                              .Case("gen-private", SDKDBPrivateGen)
-                              .Default(SDKDBInterfaceScan);
-
-  return true;
+    vfs->addFile(srcPath, externalPath);
+  }
 }
 
 static IntrusiveRefCntPtr<llvm::vfs::FileSystem>
@@ -1263,7 +1302,11 @@ createVFSFromYAML(DiagnosticsEngine &diag,
 
 Options::Options(DiagnosticsEngine &diag, ArrayRef<const char *> argString) {
   // Create the default file manager for all file operations.
-  fm = new FileManager(clang::FileSystemOptions());
+  fm = new FileManager(clang::FileSystemOptions(),
+                       newFileSystemStatCacheFactory<StatRecorder>());
+
+  // Record the raw arguments.
+  globalSnapshot->recordRawArguments(argString);
 
   table.reset(createDriverOptTable());
 
@@ -1287,15 +1330,51 @@ Options::Options(DiagnosticsEngine &diag, ArrayRef<const char *> argString) {
   if (diag.hasErrorOccurred())
     return;
 
-  // This has to happen before all other option processing.
+  // Process the snaphot options first. They can affect the results of the
+  // following options.
+  if (!processSnapshotOptions(diag, args))
+    goto recordOptions;
+
+  if (!snapshotOptions.snapshotOutputDir.empty())
+    globalSnapshot->setRootPath(snapshotOptions.snapshotOutputDir);
+
+  if (snapshotOptions.snapshotMode == SnapshotMode::Load) {
+    if (!globalSnapshot->loadSnapshot(snapshotOptions.snapshotInputPath))
+      return;
+    initOptionsFromSnapshot(*globalSnapshot);
+
+    // The snapshot creates a special mapping file system that we need to use to
+    // access the files that are recorded in the snapshot.
+    auto fs = globalSnapshot->getVirtualFileSystem();
+
+    if (snapshotOptions.useOwnResourceDir)
+      updateClangResourceDirFiles(diag, *fm.get(),
+                                  frontendOptions.clangResourcePath, fs.get());
+
+    fm = new FileManager(
+        clang::FileSystemOptions{globalSnapshot->getWorkingDirectory().str()},
+        newFileSystemStatCacheFactory<StatRecorder>(), fs);
+  } else {
+    if (snapshotOptions.snapshotMode == SnapshotMode::ForceCreate)
+      globalSnapshot->requestSnapshot();
+
+    // If TAPICommand remains unset, we know no significant tapi operations
+    // were requested and can move forward without collecting working directory.
+    if (command != TAPICommand::Driver)
+      globalSnapshot->setWorkingDirectory(
+          fm->getVirtualFileSystem().getCurrentWorkingDirectory().get());
+  }
+
+  // This has to happen after processing the snapshot options, but before all
+  // other option processing.
   if (!processXarchOptions(diag, args))
-    return;
+    goto recordOptions;
 
   if (!processXplatformOptions(diag, args))
-    return;
+    goto recordOptions;
 
   if (!processDriverOptions(diag, args))
-    return;
+    goto recordOptions;
 
   {
     auto fs = createVFSFromYAML(diag, &fm->getVirtualFileSystem(),
@@ -1304,22 +1383,25 @@ Options::Options(DiagnosticsEngine &diag, ArrayRef<const char *> argString) {
   }
 
   if (!processArchiveOptions(diag, args))
-    return;
+    goto recordOptions;
 
   if (!processFrontendOptions(diag, args))
-    return;
+    goto recordOptions;
 
   if (!processLinkerOptions(diag, args))
-    return;
+    goto recordOptions;
 
   if (!processDiagnosticsOptions(diag, args))
-    return;
+    goto recordOptions;
 
   if (!processTAPIOptions(diag, args))
-    return;
+    goto recordOptions;
 
   if (!processSDKDBOptions(diag, args))
-    return;
+    goto recordOptions;
+
+recordOptions:
+  globalSnapshot->recordOptions(*this);
 }
 
 /// \brief Print umbrella help for tapi.
@@ -1341,6 +1423,8 @@ static void printDriverHelp(bool hidden = false) {
     outs() << "Experimental Commands:\n"
               "  sdkdb         Generate SDKDB from SDKContent\n"
               "  api-verify    Compare interfaces between frameworks\n"
+              "  extractapi    Extract API information by scanning the "
+              "header files\n"
               "\n";
   }
   outs()

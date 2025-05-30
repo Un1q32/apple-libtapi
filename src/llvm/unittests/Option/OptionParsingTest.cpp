@@ -17,10 +17,9 @@ using namespace llvm::opt;
 
 enum ID {
   OPT_INVALID = 0, // This is not an option ID.
-#define OPTION(PREFIX, PREFIXED_NAME, ID, KIND, GROUP, ALIAS, ALIASARGS,       \
-               FLAGS, PARAM, HELP, METAVAR, VALUES)                            \
-  LLVM_MAKE_OPT_ID(PREFIX, PREFIXED_NAME, ID, KIND, GROUP, ALIAS, ALIASARGS,   \
-                   FLAGS, PARAM, HELP, METAVAR, VALUES),
+#define OPTION(PREFIX, NAME, ID, KIND, GROUP, ALIAS, ALIASARGS, FLAGS, PARAM,  \
+               HELPTEXT, METAVAR, VALUES)                                      \
+  OPT_##ID,
 #include "Opts.inc"
   LastOption
 #undef OPTION
@@ -37,10 +36,10 @@ enum OptionFlags {
 };
 
 static const OptTable::Info InfoTable[] = {
-#define OPTION(PREFIX, PREFIXED_NAME, ID, KIND, GROUP, ALIAS, ALIASARGS,       \
-               FLAGS, PARAM, HELP, METAVAR, VALUES)                            \
-  LLVM_CONSTRUCT_OPT_INFO(PREFIX, PREFIXED_NAME, ID, KIND, GROUP, ALIAS,       \
-                          ALIASARGS, FLAGS, PARAM, HELP, METAVAR, VALUES),
+#define OPTION(PREFIX, NAME, ID, KIND, GROUP, ALIAS, ALIASARGS, FLAGS, PARAM,  \
+               HELPTEXT, METAVAR, VALUES)                                      \
+  {PREFIX, NAME,  HELPTEXT,    METAVAR,     OPT_##ID,  Option::KIND##Class,    \
+   PARAM,  FLAGS, OPT_##GROUP, OPT_##ALIAS, ALIASARGS, VALUES},
 #include "Opts.inc"
 #undef OPTION
 };
@@ -376,30 +375,4 @@ TEST(Option, UnknownOptions) {
     EXPECT_EQ("-u", Unknown[0]);
     EXPECT_EQ("--long", Unknown[1]);
   }
-}
-
-TEST(Option, FlagsWithoutValues) {
-  TestOptTable T;
-  T.setGroupedShortOptions(true);
-  unsigned MAI, MAC;
-  const char *Args[] = {"-A=1", "-A="};
-  InputArgList AL = T.ParseArgs(Args, MAI, MAC);
-  const std::vector<std::string> Unknown = AL.getAllArgValues(OPT_UNKNOWN);
-  ASSERT_EQ((size_t)2, Unknown.size());
-  EXPECT_EQ("-A=1", Unknown[0]);
-  EXPECT_EQ("-A=", Unknown[1]);
-}
-
-TEST(Option, UnknownGroupedShortOptions) {
-  TestOptTable T;
-  T.setGroupedShortOptions(true);
-  unsigned MAI, MAC;
-  const char *Args[] = {"-AuzK", "-AuzK"};
-  InputArgList AL = T.ParseArgs(Args, MAI, MAC);
-  const std::vector<std::string> Unknown = AL.getAllArgValues(OPT_UNKNOWN);
-  ASSERT_EQ((size_t)4, Unknown.size());
-  EXPECT_EQ("-u", Unknown[0]);
-  EXPECT_EQ("-z", Unknown[1]);
-  EXPECT_EQ("-u", Unknown[2]);
-  EXPECT_EQ("-z", Unknown[3]);
 }

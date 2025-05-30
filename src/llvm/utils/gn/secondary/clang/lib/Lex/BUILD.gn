@@ -6,10 +6,9 @@ static_library("Lex") {
     "//llvm/lib/Support",
   ]
   sources = [
-    "DependencyDirectivesScanner.cpp",
+    "DependencyDirectivesSourceMinimizer.cpp",
     "HeaderMap.cpp",
     "HeaderSearch.cpp",
-    "InitHeaderSearch.cpp",
     "Lexer.cpp",
     "LiteralSupport.cpp",
     "MacroArgs.cpp",

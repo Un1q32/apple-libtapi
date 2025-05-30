@@ -19,7 +19,6 @@
 #include "llvm/Support/ErrorOr.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/MemoryBuffer.h"
-#include "llvm/Support/VirtualFileSystem.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Testing/Support/SupportHelpers.h"
 #include "gtest/gtest.h"
@@ -58,9 +57,8 @@ struct SampleProfTest : ::testing::Test {
 
   void readProfile(const Module &M, StringRef Profile,
                    StringRef RemapFile = "") {
-    auto FS = vfs::getRealFileSystem();
     auto ReaderOrErr = SampleProfileReader::create(
-        std::string(Profile), Context, *FS, FSDiscriminatorPass::Base,
+        std::string(Profile), Context, FSDiscriminatorPass::Base,
         std::string(RemapFile));
     ASSERT_TRUE(NoError(ReaderOrErr.getError()));
     Reader = std::move(ReaderOrErr.get());
@@ -101,8 +99,7 @@ struct SampleProfTest : ::testing::Test {
       auto Predicate = [&Cutoff](const ProfileSummaryEntry &PE) {
         return PE.Cutoff == Cutoff;
       };
-      const std::vector<ProfileSummaryEntry> &Details =
-          Summary.getDetailedSummary();
+      std::vector<ProfileSummaryEntry> &Details = Summary.getDetailedSummary();
       auto EightyPerc = find_if(Details, Predicate);
       Cutoff = 900000;
       auto NinetyPerc = find_if(Details, Predicate);
@@ -196,7 +193,7 @@ struct SampleProfTest : ::testing::Test {
     BooSamples.addHeadSamples(1);
     BooSamples.addBodySamples(1, 0, 1232);
 
-    SampleProfileMap Profiles;
+    StringMap<FunctionSamples> Profiles;
     Profiles[FooName] = std::move(FooSamples);
     Profiles[BarName] = std::move(BarSamples);
     Profiles[BazName] = std::move(BazSamples);
@@ -330,7 +327,7 @@ struct SampleProfTest : ::testing::Test {
     verifyProfileSummary(Summary, M, true, true);
   }
 
-  void addFunctionSamples(SampleProfileMap *Smap, const char *Fname,
+  void addFunctionSamples(StringMap<FunctionSamples> *Smap, const char *Fname,
                           uint64_t TotalSamples, uint64_t HeadSamples) {
     StringRef Name(Fname);
     FunctionSamples FcnSamples;
@@ -341,8 +338,8 @@ struct SampleProfTest : ::testing::Test {
     (*Smap)[Name] = FcnSamples;
   }
 
-  SampleProfileMap setupFcnSamplesForElisionTest(StringRef Policy) {
-    SampleProfileMap Smap;
+  StringMap<FunctionSamples> setupFcnSamplesForElisionTest(StringRef Policy) {
+    StringMap<FunctionSamples> Smap;
     addFunctionSamples(&Smap, "foo", uint64_t(20301), uint64_t(1437));
     if (Policy == "" || Policy == "all")
       return Smap;
@@ -376,7 +373,7 @@ struct SampleProfTest : ::testing::Test {
 
     Module M("my_module", Context);
     setupModuleForElisionTest(&M, Policy);
-    SampleProfileMap ProfMap = setupFcnSamplesForElisionTest(Policy);
+    StringMap<FunctionSamples> ProfMap = setupFcnSamplesForElisionTest(Policy);
 
     // write profile
     createWriter(Format, ProfileFile.path());

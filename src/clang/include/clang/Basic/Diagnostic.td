@@ -84,7 +84,6 @@ class Diagnostic<string text, DiagClass DC, Severity defaultmapping> {
   bit            AccessControl = 0;
   bit            WarningNoWerror = 0;
   bit            ShowInSystemHeader = 0;
-  bit            ShowInSystemMacro = 1;
   bit            Deferrable = 0;
   Severity       DefaultSeverity = defaultmapping;
   DiagGroup      Group;
@@ -107,14 +106,6 @@ class ShowInSystemHeader {
 
 class SuppressInSystemHeader {
   bit ShowInSystemHeader = 0;
-}
-
-class ShowInSystemMacro {
-  bit ShowInSystemMacro = 1;
-}
-
-class SuppressInSystemMacro {
-  bit ShowInSystemMacro = 0;
 }
 
 class Deferrable {
@@ -158,7 +149,6 @@ class DefaultRemark { Severity DefaultSeverity = SEV_Remark; }
 // Definitions for Diagnostics.
 include "DiagnosticASTKinds.td"
 include "DiagnosticAnalysisKinds.td"
-include "DiagnosticCASKinds.td"
 include "DiagnosticCommentKinds.td"
 include "DiagnosticCommonKinds.td"
 include "DiagnosticCrossTUKinds.td"

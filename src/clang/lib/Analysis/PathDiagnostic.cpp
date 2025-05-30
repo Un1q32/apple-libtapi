@@ -239,7 +239,7 @@ compareControlFlow(const PathDiagnosticControlFlowPiece &X,
   FullSourceLoc YEL = Y.getEndLocation().asLocation();
   if (XEL != YEL)
     return XEL.isBeforeInTranslationUnitThan(YEL);
-  return std::nullopt;
+  return None;
 }
 
 static Optional<bool> compareMacro(const PathDiagnosticMacroPiece &X,
@@ -305,7 +305,7 @@ static Optional<bool> comparePiece(const PathDiagnosticPiece &X,
     case PathDiagnosticPiece::Event:
     case PathDiagnosticPiece::Note:
     case PathDiagnosticPiece::PopUp:
-      return std::nullopt;
+      return None;
   }
   llvm_unreachable("all cases handled");
 }
@@ -319,11 +319,11 @@ static Optional<bool> comparePath(const PathPieces &X, const PathPieces &Y) {
 
   for ( ; X_I != X_end && Y_I != Y_end; ++X_I, ++Y_I) {
     Optional<bool> b = comparePiece(**X_I, **Y_I);
-    if (b)
-      return b.value();
+    if (b.hasValue())
+      return b.getValue();
   }
 
-  return std::nullopt;
+  return None;
 }
 
 static bool compareCrossTUSourceLocs(FullSourceLoc XL, FullSourceLoc YL) {
@@ -367,7 +367,7 @@ static bool compare(const PathDiagnostic &X, const PathDiagnostic &Y) {
     return X.getShortDescription() < Y.getShortDescription();
   auto CompareDecls = [&XL](const Decl *D1, const Decl *D2) -> Optional<bool> {
     if (D1 == D2)
-      return std::nullopt;
+      return None;
     if (!D1)
       return true;
     if (!D2)
@@ -379,7 +379,7 @@ static bool compare(const PathDiagnostic &X, const PathDiagnostic &Y) {
       return compareCrossTUSourceLocs(FullSourceLoc(D1L, SM),
                                       FullSourceLoc(D2L, SM));
     }
-    return std::nullopt;
+    return None;
   };
   if (auto Result = CompareDecls(X.getDeclWithIssue(), Y.getDeclWithIssue()))
     return *Result;
@@ -396,8 +396,8 @@ static bool compare(const PathDiagnostic &X, const PathDiagnostic &Y) {
       return (*XI) < (*YI);
   }
   Optional<bool> b = comparePath(X.path, Y.path);
-  assert(b);
-  return b.value();
+  assert(b.hasValue());
+  return b.getValue();
 }
 
 void PathDiagnosticConsumer::FlushDiagnostics(
@@ -434,8 +434,8 @@ void PathDiagnosticConsumer::FlushDiagnostics(
 }
 
 PathDiagnosticConsumer::FilesMade::~FilesMade() {
-  for (auto It = Set.begin(); It != Set.end();)
-    (It++)->~PDFileEntry();
+  for (PDFileEntry &Entry : Set)
+    Entry.~PDFileEntry();
 }
 
 void PathDiagnosticConsumer::FilesMade::addDiagnostic(const PathDiagnostic &PD,

@@ -5,10 +5,9 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-///
-/// \file
-/// This file defines the SmallPtrSet class.  See the doxygen comment for
-/// SmallPtrSetImplBase for more details on the algorithm used.
+//
+// This file defines the SmallPtrSet class.  See the doxygen comment for
+// SmallPtrSetImplBase for more details on the algorithm used.
 //
 //===----------------------------------------------------------------------===//
 
@@ -89,7 +88,7 @@ public:
 
   SmallPtrSetImplBase &operator=(const SmallPtrSetImplBase &) = delete;
 
-  [[nodiscard]] bool empty() const { return size() == 0; }
+  LLVM_NODISCARD bool empty() const { return size() == 0; }
   size_type size() const { return NumNonEmpty - NumTombstones; }
 
   void clear() {

@@ -18,7 +18,6 @@
 #include "clang/Config/config.h"
 #include "clang/Driver/DriverDiagnostic.h"
 #include "clang/Driver/Options.h"
-#include "clang/Frontend/CompileJobCache.h"
 #include "clang/Frontend/CompilerInstance.h"
 #include "clang/Frontend/CompilerInvocation.h"
 #include "clang/Frontend/FrontendDiagnostic.h"
@@ -26,11 +25,9 @@
 #include "clang/Frontend/TextDiagnosticPrinter.h"
 #include "clang/Frontend/Utils.h"
 #include "clang/FrontendTool/Utils.h"
-#include "llvm/ADT/ScopeExit.h"
 #include "llvm/ADT/Statistic.h"
 #include "llvm/Config/llvm-config.h"
 #include "llvm/LinkAllPasses.h"
-#include "llvm/MC/TargetRegistry.h"
 #include "llvm/Option/Arg.h"
 #include "llvm/Option/ArgList.h"
 #include "llvm/Option/OptTable.h"
@@ -41,10 +38,10 @@
 #include "llvm/Support/Path.h"
 #include "llvm/Support/Process.h"
 #include "llvm/Support/Signals.h"
+#include "llvm/Support/TargetRegistry.h"
 #include "llvm/Support/TargetSelect.h"
 #include "llvm/Support/TimeProfiler.h"
 #include "llvm/Support/Timer.h"
-#include "llvm/Support/VirtualOutputBackends.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Target/TargetMachine.h"
 #include <cstdio>
@@ -60,7 +57,7 @@ using namespace llvm::opt;
 // Main driver
 //===----------------------------------------------------------------------===//
 
-static void LLVMErrorHandler(void *UserData, const char *Message,
+static void LLVMErrorHandler(void *UserData, const std::string &Message,
                              bool GenCrashDiag) {
   DiagnosticsEngine &Diags = *static_cast<DiagnosticsEngine*>(UserData);
 
@@ -187,7 +184,6 @@ static int PrintSupportedCPUs(std::string TargetStr) {
 int cc1_main(ArrayRef<const char *> Argv, const char *Argv0, void *MainAddr) {
   ensureSufficientStack();
 
-  CompileJobCache JobCache;
   std::unique_ptr<CompilerInstance> Clang(new CompilerInstance());
   IntrusiveRefCntPtr<DiagnosticIDs> DiagID(new DiagnosticIDs());
 
@@ -216,9 +212,7 @@ int cc1_main(ArrayRef<const char *> Argv, const char *Argv0, void *MainAddr) {
   bool Success = CompilerInvocation::CreateFromArgs(Clang->getInvocation(),
                                                     Argv, Diags, Argv0);
 
-  if (Clang->getFrontendOpts().TimeTrace ||
-      !Clang->getFrontendOpts().TimeTracePath.empty()) {
-    Clang->getFrontendOpts().TimeTrace = 1;
+  if (Clang->getFrontendOpts().TimeTrace) {
     llvm::timeTraceProfilerInitialize(
         Clang->getFrontendOpts().TimeTraceGranularity, Argv0);
   }
@@ -243,40 +237,14 @@ int cc1_main(ArrayRef<const char *> Argv, const char *Argv0, void *MainAddr) {
                                   static_cast<void*>(&Clang->getDiagnostics()));
 
   DiagsBuffer->FlushDiagnostics(Clang->getDiagnostics());
-
-  auto FinishDiagnosticClient = [&]() {
-    // Notify the diagnostic client that all files were processed.
-    Clang->getDiagnosticClient().finish();
-
-    // Our error handler depends on the Diagnostics object, which we're
-    // potentially about to delete. Uninstall the handler now so that any
-    // later errors use the default handling behavior instead.
-    llvm::remove_fatal_error_handler();
-  };
-  auto FinishDiagnosticClientScope =
-      llvm::make_scope_exit([&]() { FinishDiagnosticClient(); });
-
   if (!Success)
     return 1;
-
-  // Initialize caching and replay, if enabled.
-  if (std::optional<int> Status = JobCache.initialize(*Clang))
-    return *Status; // FIXME: Should write out timers before exiting!
-
-  // Check for a cache hit.
-  if (std::optional<int> Status = JobCache.tryReplayCachedResult(*Clang))
-    return *Status; // FIXME: Should write out timers before exiting!
-
-  Clang->getFrontendOpts().MayEmitDiagnosticsAfterProcessingSourceFiles = true;
 
   // Execute the frontend actions.
   {
     llvm::TimeTraceScope TimeScope("ExecuteCompiler");
     Success = ExecuteCompilerInvocation(Clang.get());
   }
-
-  // Cache the result, and decanonicalize and finish outputs.
-  Success = JobCache.finishComputedResult(*Clang, Success);
 
   // If any timers were active but haven't been destroyed yet, print their
   // results now.  This happens in -disable-free mode.
@@ -286,29 +254,21 @@ int cc1_main(ArrayRef<const char *> Argv, const char *Argv0, void *MainAddr) {
   if (llvm::timeTraceProfilerEnabled()) {
     SmallString<128> Path(Clang->getFrontendOpts().OutputFile);
     llvm::sys::path::replace_extension(Path, "json");
-    if (!Clang->getFrontendOpts().TimeTracePath.empty()) {
-      // replace the suffix to '.json' directly
-      SmallString<128> TracePath(Clang->getFrontendOpts().TimeTracePath);
-      if (llvm::sys::fs::is_directory(TracePath))
-        llvm::sys::path::append(TracePath, llvm::sys::path::filename(Path));
-      Path.assign(TracePath);
-    }
-    llvm::vfs::OnDiskOutputBackend Backend;
-    if (Optional<llvm::vfs::OutputFile> profilerOutput =
-            llvm::expectedToOptional(
-                Backend.createFile(Path, llvm::vfs::OutputConfig()
-                                                  .setTextWithCRLF()
-                                                  .setNoDiscardOnSignal()
-                                                  .setNoAtomicWrite()))) {
+    if (auto profilerOutput = Clang->createOutputFile(
+            Path.str(), /*Binary=*/false, /*RemoveFileOnSignal=*/false,
+            /*useTemporary=*/false)) {
       llvm::timeTraceProfilerWrite(*profilerOutput);
-      llvm::consumeError(profilerOutput->keep());
+      // FIXME(ibiryukov): make profilerOutput flush in destructor instead.
+      profilerOutput->flush();
       llvm::timeTraceProfilerCleanup();
+      Clang->clearOutputFiles(false);
     }
   }
 
-  // Call this before the Clang pointer is moved below.
-  FinishDiagnosticClient();
-  FinishDiagnosticClientScope.release();
+  // Our error handler depends on the Diagnostics object, which we're
+  // potentially about to delete. Uninstall the handler now so that any
+  // later errors use the default handling behavior instead.
+  llvm::remove_fatal_error_handler();
 
   // When running with -disable-free, don't do any destruction or shutdown.
   if (Clang->getFrontendOpts().DisableFree) {

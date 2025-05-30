@@ -1,8 +1,9 @@
 //===--- APINotesReader.h - API Notes Reader ----------------------*- C++ -*-===//
 //
-// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
-// See https://llvm.org/LICENSE.txt for license information.
-// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//                     The LLVM Compiler Infrastructure
+//
+// This file is distributed under the University of Illinois Open Source
+// License. See LICENSE.TXT for details.
 //
 //===----------------------------------------------------------------------===//
 //
@@ -175,18 +176,14 @@ public:
   /// \param name The name of the global variable.
   ///
   /// \returns information about the global variable, if known.
-  VersionedInfo<GlobalVariableInfo>
-  lookupGlobalVariable(llvm::StringRef name,
-                       std::optional<Context> context = std::nullopt);
+  VersionedInfo<GlobalVariableInfo> lookupGlobalVariable(llvm::StringRef name);
 
   /// Look for information regarding the given global function.
   ///
   /// \param name The name of the global function.
   ///
   /// \returns information about the global function, if known.
-  VersionedInfo<GlobalFunctionInfo>
-  lookupGlobalFunction(llvm::StringRef name,
-                       std::optional<Context> context = std::nullopt);
+  VersionedInfo<GlobalFunctionInfo> lookupGlobalFunction(llvm::StringRef name);
 
   /// Look for information regarding the given enumerator.
   ///
@@ -201,27 +198,14 @@ public:
   /// \param name The name of the tag.
   ///
   /// \returns information about the tag, if known.
-  VersionedInfo<TagInfo>
-  lookupTag(llvm::StringRef name,
-            std::optional<Context> context = std::nullopt);
+  VersionedInfo<TagInfo> lookupTag(llvm::StringRef name);
 
   /// Look for information regarding the given typedef.
   ///
   /// \param name The name of the typedef.
   ///
   /// \returns information about the typedef, if known.
-  VersionedInfo<TypedefInfo>
-  lookupTypedef(llvm::StringRef name,
-                std::optional<Context> context = std::nullopt);
-
-  /// Look for the context ID of the given C++ namespace.
-  ///
-  /// \param name The name of the class we're looking for.
-  ///
-  /// \returns The ID, if known.
-  llvm::Optional<ContextID>
-  lookupNamespaceID(llvm::StringRef name,
-                    llvm::Optional<ContextID> parentNamespaceID = llvm::None);
+  VersionedInfo<TypedefInfo> lookupTypedef(llvm::StringRef name);
 };
 
 } // end namespace api_notes

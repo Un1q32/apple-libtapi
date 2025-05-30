@@ -10,9 +10,10 @@
 #define TAPI_DRIVER_OPTIONS_H
 
 #include "tapi/Core/FileManager.h"
+#include "tapi/Core/InterfaceFile.h"
 #include "tapi/Core/LLVM.h"
+#include "tapi/Core/PackedVersion.h"
 #include "tapi/Core/Path.h"
-#include "tapi/Core/SymbolVerifier.h"
 #include "tapi/Defines.h"
 #include "tapi/Diagnostics/Diagnostics.h"
 #include "tapi/Driver/DriverOptions.h"
@@ -20,14 +21,14 @@
 #include "llvm/ADT/Triple.h"
 #include "llvm/Option/Option.h"
 #include "llvm/TextAPI/Architecture.h"
-#include "llvm/TextAPI/InterfaceFile.h"
-#include "llvm/TextAPI/PackedVersion.h"
 #include "llvm/TextAPI/Platform.h"
 #include <set>
 #include <string>
 #include <vector>
 
 TAPI_NAMESPACE_INTERNAL_BEGIN
+
+class Snapshot;
 
 using Macro = std::pair<std::string, bool /*isUndef*/>;
 
@@ -39,7 +40,17 @@ enum class TAPICommand : unsigned {
   InstallAPI,
   Reexport,
   SDKDB,
+  GenerateAPITests,
   APIVerify,
+  ExtractAPI,
+};
+
+/// \brief A list of InstallAPI verification modes.
+enum class VerificationMode {
+  Invalid,
+  ErrorsOnly,
+  ErrorsAndWarnings,
+  Pedantic,
 };
 
 /// \brief Archive action.
@@ -63,6 +74,50 @@ enum class ArchiveAction {
 
   /// \brief List the exported symbols.
   ListSymbols,
+};
+
+/// \brief Snapshot mode.
+enum class SnapshotMode {
+  /// \brief Record all options and accessed files. Only creates the snapshot in
+  ///        case of an error.
+  Create,
+
+  /// \brief Always create a snapshot and record all options and accessed files.
+  ForceCreate,
+
+  /// \brief Load an existing snapshot and reply it.
+  Load,
+};
+
+struct LibraryRef {
+  std::string installName;
+  ArchitectureSet architectures;
+
+  LibraryRef() = default;
+
+  LibraryRef(const std::string &name, ArchitectureSet architectures)
+      : installName(name), architectures(architectures) {}
+};
+
+static inline bool operator==(const LibraryRef &lhs, const LibraryRef &rhs) {
+  return std::tie(lhs.installName, lhs.architectures) ==
+         std::tie(rhs.installName, rhs.architectures);
+}
+
+struct SnapshotOptions {
+  /// \brief Snapshot mode.
+  SnapshotMode snapshotMode = SnapshotMode::Create;
+
+  /// \brief Snapshot output directory.
+  std::string snapshotOutputDir;
+
+  /// \brief Snapshot input path. This can be a snapshot directory or a
+  ///        runscript inside a snapshot directory).
+  std::string snapshotInputPath;
+
+  /// \brief Use own ressource directory. Override the content of the ressource
+  ///        directory provided by the snapshot with our own files.
+  bool useOwnResourceDir = false;
 };
 
 struct DriverOptions {
@@ -113,10 +168,10 @@ struct LinkerOptions {
   bool isDynamicLibrary = false;
 
   /// \brief List of allowable clients to use for the dynamic library.
-  std::vector<std::pair<std::string, ArchitectureSet>> allowableClients;
+  std::vector<LibraryRef> allowableClients;
 
   /// \brief List of reexported libraries to use for the dynamic library.
-  std::vector<std::pair<std::string, ArchitectureSet>> reexportInstallNames;
+  std::vector<LibraryRef> reexportInstallNames;
 
   /// \brief List of reexported libraries to use for the dynamic library.
   std::vector<std::pair<std::string, ArchitectureSet>> reexportedLibraries;
@@ -132,10 +187,6 @@ struct LinkerOptions {
 
   /// \brief Path to the alias list file.
   std::vector<std::pair<std::string, ArchitectureSet>> aliasLists;
-
-  /// \brief List of run search paths.
-  std::vector<std::pair<std::string, ArchitectureSet>> rpaths;
-
 };
 
 struct FrontendOptions {
@@ -195,9 +246,6 @@ struct FrontendOptions {
   /// \brief Module cache path.
   std::string moduleCachePath;
 
-  /// \brief The name of the product being built.
-  std::string productName;
-
   /// \brief Validate system headers when using modules.
   bool validateSystemHeaders = false;
 
@@ -226,8 +274,8 @@ struct DiagnosticsOptions {
 };
 
 struct TAPIOptions {
-  /// Path to file lists (JSON).
-  std::vector<std::string> fileLists;
+  /// Path to file list (JSON).
+  std::string fileList;
 
   /// \brief Path to public umbrella header.
   std::string publicUmbrellaHeaderPath;
@@ -268,15 +316,8 @@ struct TAPIOptions {
   /// \brief Generate additional symbols for code coverage.
   bool generateCodeCoverageSymbols = false;
 
-  /// \brief Demangle symbols (C++, Swift) when printing.
+  /// \brief Demangle symbols (C++) when printing.
   bool demangle = false;
-
-  /// \brief Log each library path that was consumed.
-  bool traceLibraryLocation = false;
-
-  /// \brief Specify whether to verify that all symbols from swift interface
-  /// are represented in the binary.
-  bool verifySwift = false;
 
   /// \brief Delete input file after stubbing.
   bool deleteInputFile = false;
@@ -287,9 +328,15 @@ struct TAPIOptions {
   /// \brief Delete private frameworks.
   bool deletePrivateFrameworks = false;
 
+  /// \brief Record UUIDs.
+  bool recordUUIDs = true;
+
+  /// \brief Set 'installapi' flag.
+  bool setInstallAPIFlag = false;
+
 
   /// \brief Specify the output file type.
-  llvm::MachO::FileType fileType = llvm::MachO::FileType::TBD_V5;
+  VersionedFileType fileType = TBDv4;
 
   /// \bried Scan Bundles and Extensions for SDKDB.
   bool scanAll = true;
@@ -297,7 +344,6 @@ struct TAPIOptions {
   /// \brief Infer the include paths based on the provided/found header files.
   bool inferIncludePaths = true;
 
-  // FIXME: re-implement printAfter to work with SymbolVerifier.
   /// \brief Print the API/XPI after a certain phase.
   std::string printAfter;
 
@@ -316,12 +362,6 @@ struct TAPIOptions {
 
   /// \brief SDKDB output location.
   std::string sdkdbOutputPath;
-
-  /// \brief Path to dSYM.
-  std::string dSYM;
-
-  /// \brief Specify whether tapi is running in B&I environment.
-  bool isBnI = false;
 };
 
 /// Specify the actions for SDKDB Driver.
@@ -362,6 +402,10 @@ struct SDKDBOptions {
 
 class Options {
 private:
+  /// Helper methods for handling the various options.
+  bool processSnapshotOptions(DiagnosticsEngine &diag,
+                              llvm::opt::InputArgList &args);
+
   bool processXarchOptions(DiagnosticsEngine &diag,
                            llvm::opt::InputArgList &args);
 
@@ -389,11 +433,14 @@ private:
   bool processSDKDBOptions(DiagnosticsEngine &diag,
                            llvm::opt::InputArgList &args);
 
+  void initOptionsFromSnapshot(const Snapshot &snapshot);
+
 public:
   /// \brief The TAPI command to run.
   TAPICommand command = TAPICommand::Driver;
 
   /// The various options grouped together.
+  SnapshotOptions snapshotOptions;
   DriverOptions driverOptions;
   ArchiveOptions archiveOptions;
   LinkerOptions linkerOptions;
@@ -417,8 +464,9 @@ private:
   std::unique_ptr<llvm::opt::OptTable> table;
   IntrusiveRefCntPtr<FileManager> fm;
   std::map<const llvm::opt::Arg *, Architecture> argToArchMap;
-  std::map<const llvm::opt::Arg *, PlatformType> argToPlatformMap;
+  std::map<const llvm::opt::Arg *, PlatformKind> argToPlatformMap;
 
+  friend class Snapshot;
   friend class Context;
 };
 

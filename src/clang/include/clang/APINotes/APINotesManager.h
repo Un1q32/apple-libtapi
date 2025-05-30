@@ -1,8 +1,9 @@
 //===--- APINotesManager.h - Manage API Notes Files -------------*- C++ -*-===//
 //
-// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
-// See https://llvm.org/LICENSE.txt for license information.
-// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//                     The LLVM Compiler Infrastructure
+//
+// This file is distributed under the University of Illinois Open Source
+// License. See LICENSE.TXT for details.
 //
 //===----------------------------------------------------------------------===//
 //
@@ -77,13 +78,6 @@ class APINotesManager {
   /// a failure.
   std::unique_ptr<APINotesReader> loadAPINotes(const FileEntry *apiNotesFile);
 
-  /// Load the API notes associated with the given buffer, whether it is
-  /// the binary or source form of API notes.
-  ///
-  /// \returns the API notes reader for this file, or null if there is
-  /// a failure.
-  std::unique_ptr<APINotesReader> loadAPINotes(StringRef Buffer);
-
   /// Load the given API notes file for the given header directory.
   ///
   /// \param HeaderDir The directory at which we
@@ -132,25 +126,6 @@ public:
   bool loadCurrentModuleAPINotes(Module *module,
                                  bool lookInModule,
                                  ArrayRef<std::string> searchPaths);
-
-  /// Get FileEntry for the APINotes of the current module.
-  ///
-  /// \param module The current module.
-  /// \param lookInModule Whether to look inside the module itself.
-  /// \param searchPaths The paths in which we should search for API notes
-  /// for the current module.
-  ///
-  /// \returns a vector of FileEntry where APINotes files are.
-  llvm::SmallVector<const FileEntry *, 2>
-  getCurrentModuleAPINotes(Module *module, bool lookInModule,
-                           ArrayRef<std::string> searchPaths);
-
-  /// Load Compiled API notes for current module.
-  ///
-  /// \param Buffers Array of compiled API notes.
-  ///
-  /// \returns true if API notes were successfully loaded, \c false otherwise.
-  bool loadCurrentModuleAPINotesFromBuffer(ArrayRef<StringRef> Buffers);
 
   /// Retrieve the set of API notes readers for the current module.
   ArrayRef<APINotesReader *> getCurrentModuleReaders() const {

@@ -33,6 +33,7 @@
 
 namespace llvm {
 
+class DataLayout;
 class Type;
 class raw_ostream;
 
@@ -205,18 +206,6 @@ public:
 
     assert(getScalarSizeInBits() % Factor == 0);
     return scalar(getScalarSizeInBits() / Factor);
-  }
-
-  /// Produce a vector type that is \p Factor times bigger, preserving the
-  /// element type. For a scalar or pointer, this will produce a new vector with
-  /// \p Factor elements.
-  LLT multiplyElements(int Factor) const {
-    if (isVector()) {
-      return scalarOrVector(getElementCount().multiplyCoefficientBy(Factor),
-                            getElementType());
-    }
-
-    return fixed_vector(Factor, *this);
   }
 
   bool isByteSized() const { return getSizeInBits().isKnownMultipleOf(8); }

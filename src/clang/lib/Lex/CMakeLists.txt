@@ -3,10 +3,9 @@
 set(LLVM_LINK_COMPONENTS support)
 
 add_clang_library(clangLex
-  DependencyDirectivesScanner.cpp
+  DependencyDirectivesSourceMinimizer.cpp
   HeaderMap.cpp
   HeaderSearch.cpp
-  InitHeaderSearch.cpp
   Lexer.cpp
   LiteralSupport.cpp
   MacroArgs.cpp

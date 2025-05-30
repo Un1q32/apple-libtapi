@@ -9,7 +9,6 @@
 #include "llvm/ExecutionEngine/Orc/EPCDebugObjectRegistrar.h"
 
 #include "llvm/ExecutionEngine/Orc/Core.h"
-#include "llvm/ExecutionEngine/Orc/Shared/SimplePackedSerialization.h"
 #include "llvm/ExecutionEngine/Orc/TargetProcess/JITLoaderGDB.h"
 #include "llvm/Support/BinaryStreamWriter.h"
 
@@ -17,8 +16,7 @@ namespace llvm {
 namespace orc {
 
 Expected<std::unique_ptr<EPCDebugObjectRegistrar>>
-createJITLoaderGDBRegistrar(ExecutionSession &ES) {
-  auto &EPC = ES.getExecutorProcessControl();
+createJITLoaderGDBRegistrar(ExecutorProcessControl &EPC) {
   auto ProcessHandle = EPC.loadDylib(nullptr);
   if (!ProcessHandle)
     return ProcessHandle.takeError();
@@ -39,14 +37,7 @@ createJITLoaderGDBRegistrar(ExecutionSession &ES) {
   assert((*Result)[0].size() == 1 &&
          "Unexpected number of addresses in result");
 
-  return std::make_unique<EPCDebugObjectRegistrar>(
-      ES, ExecutorAddr((*Result)[0][0]));
-}
-
-Error EPCDebugObjectRegistrar::registerDebugObject(
-    ExecutorAddrRange TargetMem) {
-  return ES.callSPSWrapper<void(shared::SPSExecutorAddrRange)>(RegisterFn,
-                                                               TargetMem);
+  return std::make_unique<EPCDebugObjectRegistrar>(EPC, (*Result)[0][0]);
 }
 
 } // namespace orc

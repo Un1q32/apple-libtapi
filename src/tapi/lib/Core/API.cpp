@@ -23,8 +23,8 @@ APILoc::APILoc(StringRef file, unsigned line, unsigned col)
     : file(file.str()), line(line), col(col) {}
 
 bool APILoc::isInvalid() const {
-  if (presumedLoc)
-    return presumedLoc->isInvalid();
+  if (loc)
+    return loc->isInvalid();
   else if (file.empty())
     return true;
 
@@ -32,178 +32,312 @@ bool APILoc::isInvalid() const {
 }
 
 StringRef APILoc::getFilename() const {
-  if (presumedLoc)
-    return presumedLoc->getFilename();
+  if (loc)
+    return loc->getFilename();
   return file;
 }
 
 unsigned APILoc::getLine() const {
-  if (presumedLoc)
-    return presumedLoc->getLine();
+  if (loc)
+    return loc->getLine();
   return line;
 }
 
 unsigned APILoc::getColumn() const {
-  if (presumedLoc)
-    return presumedLoc->getColumn();
+  if (loc)
+    return loc->getColumn();
   return col;
 }
 
 clang::PresumedLoc APILoc::getPresumedLoc() const {
-  assert(presumedLoc && "must have an underlying PresumedLoc");
-  return *presumedLoc;
+  assert(loc && "must have an underlying PresumedLoc");
+  return *loc;
 }
 
-clang::SourceLocation APILoc::getSourceLocation() const { return *sourceLoc; }
+SymbolInfo SymbolInfo::copied(API &api) {
+  return {api.copyString(name), api.copyString(usr),
+          api.copyString(sourceModule)};
+}
+
+SymbolInfo SymbolInfo::copiedInto(llvm::BumpPtrAllocator &allocator) {
+  return {
+      API::copyStringInto(name, allocator),
+      API::copyStringInto(usr, allocator),
+      API::copyStringInto(sourceModule, allocator),
+  };
+}
+
+DeclarationFragments &DeclarationFragments::appendSpace() {
+  if (!fragments.empty()) {
+    auto last = fragments.back();
+    if (last.kind == FragmentKind::Text) {
+      if (last.spelling.back() != ' ') {
+        last.spelling.push_back(' ');
+      }
+    } else {
+      append(" ", FragmentKind::Text);
+    }
+  }
+
+  return *this;
+}
+
+const char *DeclarationFragments::getFragmentKindString(
+    DeclarationFragments::FragmentKind kind) {
+  switch (kind) {
+  case DeclarationFragments::Keyword:
+    return "keyword";
+  case DeclarationFragments::Identifier:
+    return "identifier";
+  case DeclarationFragments::StringLiteral:
+    return "string";
+  case DeclarationFragments::NumericLiteral:
+    return "number";
+  case DeclarationFragments::Text:
+    return "text";
+  case DeclarationFragments::TypeIdentifier:
+    return "typeIdentifier";
+  case DeclarationFragments::InternalParameter:
+    return "internalParam";
+  case DeclarationFragments::ExternalParameter:
+    return "externalParam";
+  case DeclarationFragments::Unknown:
+    return "unknown";
+  }
+
+  llvm_unreachable("Unhandled FragmentKind");
+}
+
+DeclarationFragments::FragmentKind
+DeclarationFragments::parseFragmentKindFromString(StringRef s) {
+  return llvm::StringSwitch<FragmentKind>(s)
+      .Case("keyword", DeclarationFragments::Keyword)
+      .Case("identifier", DeclarationFragments::Identifier)
+      .Case("string", DeclarationFragments::StringLiteral)
+      .Case("number", DeclarationFragments::NumericLiteral)
+      .Case("text", DeclarationFragments::Text)
+      .Case("typeIdentifier", DeclarationFragments::TypeIdentifier)
+      .Case("internalParam", DeclarationFragments::InternalParameter)
+      .Case("externalParam", DeclarationFragments::ExternalParameter)
+      .Default(DeclarationFragments::Unknown);
+}
 
 APIRecord *APIRecord::create(BumpPtrAllocator &allocator, StringRef name,
-                             APILinkage linkage, SymbolFlags flags, APILoc loc,
+                             StringRef declName, StringRef usr,
+                             APILinkage linkage, APIFlags flags, APILoc loc,
                              const AvailabilityInfo &availability,
-                             APIAccess access, const Decl *decl) {
-  return new (allocator)
-      APIRecord{name, loc, decl, availability, linkage, flags, access};
+                             APIAccess access, DocComment docComment,
+                             DeclarationFragments declarationFragments,
+                             DeclarationFragments subHeading,
+                             const Decl *decl) {
+  return new (allocator) APIRecord{name,
+                                   declName,
+                                   usr,
+                                   loc,
+                                   decl,
+                                   availability,
+                                   linkage,
+                                   flags,
+                                   access,
+                                   docComment,
+                                   declarationFragments,
+                                   subHeading};
 }
 
-GlobalRecord *GlobalRecord::create(BumpPtrAllocator &allocator, StringRef name,
-                                   APILinkage linkage, SymbolFlags flags,
-                                   APILoc loc,
-                                   const AvailabilityInfo &availability,
-                                   APIAccess access, const Decl *decl,
-                                   GVKind kind) {
+MacroDefinitionRecord *
+MacroDefinitionRecord::create(llvm::BumpPtrAllocator &allocator, StringRef name,
+                              StringRef usr, APILoc loc, APIAccess access,
+                              DeclarationFragments declarationFragments) {
   return new (allocator)
-      GlobalRecord{name, flags, loc, availability, access, decl, kind, linkage};
+      MacroDefinitionRecord{name, usr, loc, access, declarationFragments};
+}
+
+GlobalRecord *GlobalRecord::create(
+    BumpPtrAllocator &allocator, StringRef name, StringRef declName,
+    StringRef usr, APILinkage linkage, APIFlags flags, APILoc loc,
+    const AvailabilityInfo &availability, APIAccess access,
+    DocComment docComment, DeclarationFragments declarationFragments,
+    DeclarationFragments subHeading, FunctionSignature functionSignature,
+    const Decl *decl, GVKind kind) {
+
+  return new (allocator) GlobalRecord{name,
+                                      declName,
+                                      usr,
+                                      flags,
+                                      loc,
+                                      availability,
+                                      access,
+                                      docComment,
+                                      declarationFragments,
+                                      subHeading,
+                                      functionSignature,
+                                      decl,
+                                      kind,
+                                      linkage};
+}
+
+StructRecord *StructRecord::create(BumpPtrAllocator &allocator, StringRef name,
+                                   StringRef usr, APILoc loc,
+                                   const AvailabilityInfo &availability,
+                                   APIAccess access, DocComment docComment,
+                                   DeclarationFragments declarationFragments,
+                                   DeclarationFragments subHeading,
+                                   const Decl *decl) {
+  return new (allocator) StructRecord{name,
+                                      usr,
+                                      loc,
+                                      availability,
+                                      access,
+                                      docComment,
+                                      declarationFragments,
+                                      subHeading,
+                                      decl};
+}
+
+StructFieldRecord *
+StructFieldRecord::create(BumpPtrAllocator &allocator, StringRef name,
+                          StringRef declName, StringRef usr, APILoc loc,
+                          const AvailabilityInfo &availability,
+                          APIAccess access, DocComment docComment,
+                          DeclarationFragments declarationFragments,
+                          DeclarationFragments subHeading, const Decl *decl) {
+  return new (allocator) StructFieldRecord{
+      name,         declName, usr,        loc,
+      availability, access,   docComment, declarationFragments,
+      subHeading,   decl};
 }
 
 EnumRecord *EnumRecord::create(BumpPtrAllocator &allocator, StringRef name,
-                               StringRef usr, APILoc loc,
+                               StringRef declName, StringRef usr, APILoc loc,
                                const AvailabilityInfo &availability,
-                               APIAccess access, const Decl *decl) {
-  return new (allocator) EnumRecord{name, usr, loc, availability, access, decl};
-}
-
-template <typename InputT>
-static bool areChildrenRecordsEqual(const std::vector<InputT> &lhs,
-                                    const std::vector<InputT> &rhs) {
-  if (lhs.size() != rhs.size())
-    return false;
-  std::vector<InputT> lhsChildren = lhs;
-  std::vector<InputT> rhsChildren = rhs;
-  llvm::sort(lhsChildren, [](const auto *lhs, const auto *rhs) {
-    return lhs->name < rhs->name;
-  });
-  llvm::sort(rhsChildren, [](const auto *lhs, const auto *rhs) {
-    return lhs->name < rhs->name;
-  });
-  for (auto lhsIt = lhsChildren.begin(), rhsIt = rhsChildren.begin();
-       lhsIt != lhsChildren.end() && rhsIt != rhsChildren.end();
-       ++lhsIt, ++rhsIt) {
-    if (!(**lhsIt == **rhsIt))
-      return false;
-  }
-  return true;
-}
-
-bool EnumRecord::operator==(const EnumRecord &other) const {
-  if (!(APIRecord::operator==(other) && usr == other.usr))
-    return false;
-  return areChildrenRecordsEqual(constants, other.constants);
-}
-
-bool ObjCContainerRecord::operator==(const ObjCContainerRecord &other) const {
-  if (!(APIRecord::operator==(other)))
-    return false;
-  if (!areChildrenRecordsEqual(methods, other.methods))
-    return false;
-  if (!areChildrenRecordsEqual(properties, other.properties))
-    return false;
-  if (!areChildrenRecordsEqual(ivars, other.ivars))
-    return false;
-  if (protocols != other.protocols)
-    return false;
-
-  return true;
-}
-
-bool ObjCInterfaceRecord::operator==(const ObjCInterfaceRecord &other) const {
-  if (!ObjCContainerRecord::operator==(other))
-    return false;
-  if (hasExceptionAttribute != other.hasExceptionAttribute)
-    return false;
-  if (superClass != other.superClass)
-    return false;
-  if (!areChildrenRecordsEqual(categories, other.categories))
-    return false;
-
-  return true;
+                               APIAccess access, DocComment docComment,
+                               DeclarationFragments declarationFragments,
+                               DeclarationFragments subHeading,
+                               const Decl *decl) {
+  return new (allocator)
+      EnumRecord{name,         declName, usr,        loc,
+                 availability, access,   docComment, declarationFragments,
+                 subHeading,   decl};
 }
 
 EnumConstantRecord *
 EnumConstantRecord::create(BumpPtrAllocator &allocator, StringRef name,
-                           APILoc loc, const AvailabilityInfo &availability,
-                           APIAccess access, const Decl *decl) {
-  return new (allocator)
-      EnumConstantRecord{name, loc, availability, access, decl};
+                           StringRef declName, StringRef usr, APILoc loc,
+                           const AvailabilityInfo &availability,
+                           APIAccess access, DocComment docComment,
+                           DeclarationFragments declarationFragments,
+                           DeclarationFragments subHeading, const Decl *decl) {
+  return new (allocator) EnumConstantRecord{
+      name,         declName, usr,        loc,
+      availability, access,   docComment, declarationFragments,
+      subHeading,   decl};
 }
 
-ObjCMethodRecord *
-ObjCMethodRecord::create(BumpPtrAllocator &allocator, StringRef name,
-                         APILoc loc, const AvailabilityInfo &availability,
-                         APIAccess access, bool isInstanceMethod,
-                         bool isOptional, bool isDynamic, const Decl *decl) {
-  return new (allocator) ObjCMethodRecord{
-      name,       loc,       availability, access, isInstanceMethod,
-      isOptional, isDynamic, decl};
+ObjCMethodRecord *ObjCMethodRecord::create(
+    BumpPtrAllocator &allocator, StringRef name, StringRef usr, APILoc loc,
+    const AvailabilityInfo &availability, APIAccess access,
+    bool isInstanceMethod, bool isOptional, bool isDynamic,
+    DocComment docComment, DeclarationFragments declarationFragments,
+    DeclarationFragments subHeading, FunctionSignature signature,
+    const Decl *decl) {
+  return new (allocator) ObjCMethodRecord{name,       usr,
+                                          loc,        availability,
+                                          access,     isInstanceMethod,
+                                          isOptional, isDynamic,
+                                          docComment, declarationFragments,
+                                          subHeading, signature,
+                                          decl};
 }
 
-ObjCPropertyRecord *
-ObjCPropertyRecord::create(BumpPtrAllocator &allocator, StringRef name,
-                           StringRef getterName, StringRef setterName,
-                           APILoc loc, const AvailabilityInfo &availability,
-                           APIAccess access, AttributeKind attributes,
-                           bool isOptional, const Decl *decl) {
-  return new (allocator)
-      ObjCPropertyRecord{name,   getterName, setterName, loc, availability,
-                         access, attributes, isOptional, decl};
+ObjCPropertyRecord *ObjCPropertyRecord::create(
+    BumpPtrAllocator &allocator, StringRef name, StringRef usr,
+    StringRef getterName, StringRef setterName, APILoc loc,
+    const AvailabilityInfo &availability, APIAccess access,
+    AttributeKind attributes, bool isOptional, DocComment docComment,
+    DeclarationFragments declarationFragments, DeclarationFragments subHeading,
+    const Decl *decl) {
+  return new (allocator) ObjCPropertyRecord{name,
+                                            usr,
+                                            getterName,
+                                            setterName,
+                                            loc,
+                                            availability,
+                                            access,
+                                            attributes,
+                                            isOptional,
+                                            docComment,
+                                            declarationFragments,
+                                            subHeading,
+                                            decl};
 }
 
 ObjCInstanceVariableRecord *ObjCInstanceVariableRecord::create(
-    BumpPtrAllocator &allocator, StringRef name, APILinkage linkage, APILoc loc,
-    const AvailabilityInfo &availability, APIAccess access,
-    AccessControl accessControl, const Decl *decl) {
+    BumpPtrAllocator &allocator, StringRef name, StringRef usr,
+    APILinkage linkage, APILoc loc, const AvailabilityInfo &availability,
+    APIAccess access, AccessControl accessControl, DocComment docComment,
+    DeclarationFragments declarationFragments, DeclarationFragments subHeading,
+    const Decl *decl) {
   return new (allocator) ObjCInstanceVariableRecord{
-      name, linkage, loc, availability, access, accessControl, decl};
+      name,          usr,          linkage,
+      loc,           availability, access,
+      accessControl, docComment,   declarationFragments,
+      subHeading,    decl};
 }
 
 ObjCInterfaceRecord *ObjCInterfaceRecord::create(
-    BumpPtrAllocator &allocator, StringRef name, APILinkage linkage, APILoc loc,
+    BumpPtrAllocator &allocator, StringRef name, StringRef declName,
+    StringRef usr, APILinkage linkage, APILoc loc,
     const AvailabilityInfo &availability, APIAccess access,
-    StringRef superClass, const Decl *decl) {
+    SymbolInfo superClass, DocComment docComment,
+    DeclarationFragments declarationFragments, DeclarationFragments subHeading,
+    const Decl *decl) {
   return new (allocator) ObjCInterfaceRecord{
-      name, linkage, loc, availability, access, superClass, decl};
+      name,         declName, usr,        linkage,    loc,
+      availability, access,   superClass, docComment, declarationFragments,
+      subHeading,   decl};
 }
 
 ObjCCategoryRecord *
-ObjCCategoryRecord::create(BumpPtrAllocator &allocator, StringRef interface,
-                           StringRef name, APILoc loc,
+ObjCCategoryRecord::create(BumpPtrAllocator &allocator, SymbolInfo interface,
+                           StringRef name, StringRef usr, APILoc loc,
                            const AvailabilityInfo &availability,
-                           APIAccess access, const Decl *decl) {
+                           APIAccess access, DocComment docComment,
+                           DeclarationFragments declarationFragments,
+                           DeclarationFragments subHeading, const Decl *decl) {
   return new (allocator)
-      ObjCCategoryRecord{interface, name, loc, availability, access, decl};
+      ObjCCategoryRecord{interface,    name,   usr,        loc,
+                         availability, access, docComment, declarationFragments,
+                         subHeading,   decl};
 }
 
-ObjCProtocolRecord *
-ObjCProtocolRecord::create(BumpPtrAllocator &allocator, StringRef name,
-                           APILoc loc, const AvailabilityInfo &availability,
-                           APIAccess access, const Decl *decl) {
-  return new (allocator)
-      ObjCProtocolRecord{name, loc, availability, access, decl};
+ObjCProtocolRecord *ObjCProtocolRecord::create(
+    BumpPtrAllocator &allocator, StringRef name, StringRef usr, APILoc loc,
+    const AvailabilityInfo &availability, APIAccess access,
+    DocComment docComment, DeclarationFragments declarationFragments,
+    DeclarationFragments subHeading, const Decl *decl) {
+  return new (allocator) ObjCProtocolRecord{name,
+                                            usr,
+                                            loc,
+                                            availability,
+                                            access,
+                                            docComment,
+                                            declarationFragments,
+                                            subHeading,
+                                            decl};
 }
 
-TypedefRecord *TypedefRecord::create(llvm::BumpPtrAllocator &allocator,
-                                     StringRef name, APILoc loc,
-                                     const AvailabilityInfo &availability,
-                                     APIAccess access, const Decl *decl) {
-  return new (allocator) TypedefRecord{name, loc, availability, access, decl};
+TypedefRecord *
+TypedefRecord::create(llvm::BumpPtrAllocator &allocator, StringRef name,
+                      StringRef usr, APILoc loc,
+                      const AvailabilityInfo &availability, APIAccess access,
+                      SymbolInfo underlyingType, DocComment docComment,
+                      DeclarationFragments declarationFragment,
+                      DeclarationFragments subHeading, const Decl *decl) {
+  return new (allocator) TypedefRecord{name,       usr,
+                                       loc,        availability,
+                                       access,     underlyingType,
+                                       docComment, declarationFragment,
+                                       subHeading, decl};
 }
 
 bool API::updateAPIAccess(APIRecord *record, APIAccess access) {
@@ -221,265 +355,320 @@ bool API::updateAPILinkage(APIRecord *record, APILinkage linkage) {
   record->linkage = linkage;
   return true;
 }
-APIRecord *API::addGlobalFromBinary(StringRef name, SymbolFlags flags,
-                                    APILoc loc, GVKind kind,
-                                    APILinkage linkage) {
-  // See if there is a specific APIRecord type to capture instead.
-  auto [apiName, symbolKind] = parseSymbol(name);
-  name = apiName;
-  switch (symbolKind) {
-  case SymbolKind::GlobalSymbol:
-    return addGlobal(name, flags, loc, AvailabilityInfo(), APIAccess::Unknown,
-                     nullptr, kind, linkage);
-  case SymbolKind::ObjectiveCClass: {
-    auto *record = addObjCInterface(name, loc, AvailabilityInfo(),
-                                    APIAccess::Unknown, linkage, {}, nullptr);
-    // Obj-C Classes represent multiple symbols that could have competing
-    // linkages, in this case assign the largest one.
-    if (linkage >= APILinkage::Reexported)
-      updateAPILinkage(record, linkage);
-    return record;
-  }
-  case SymbolKind::ObjectiveCClassEHType: {
-    auto *record = addObjCInterface(name, loc, AvailabilityInfo(),
-                                    APIAccess::Unknown, linkage, {}, nullptr);
-    record->hasExceptionAttribute = true;
-    if (linkage >= APILinkage::Reexported)
-      updateAPILinkage(record, linkage);
-    return record;
-  }
-  case SymbolKind::ObjectiveCInstanceVariable: {
-    auto [superClass, ivar] = name.split('.');
-    // Attempt to find super class.
-    ObjCContainerRecord *container = findObjCInterface(superClass);
 
-    // Ivars can only exist with extensions, if they did not come from
-    // class.
-    if (container == nullptr)
-      container = findObjCCategory(superClass, superClass);
-
-    // If not found, create extension since there is no mapped class symbol.
-    if (container == nullptr)
-      container = addObjCCategory(superClass, {}, APILoc(), AvailabilityInfo(),
-                                  APIAccess::Unknown, nullptr);
-    return addObjCInstanceVariable(
-        container, ivar, loc, AvailabilityInfo(), APIAccess::Unknown,
-        ObjCInstanceVariableRecord::AccessControl::None, linkage, nullptr);
-  }
-  }
-
-  llvm_unreachable("unexpected symbol kind when adding to API");
-}
-
-GlobalRecord *API::addGlobal(StringRef name, APILoc loc,
-                             const AvailabilityInfo &availability,
-                             APIAccess access, const Decl *decl, GVKind kind,
-                             APILinkage linkage, bool isWeakDefined,
-                             bool isThreadLocal) {
-  auto flags = SymbolFlags::None;
-  if (isWeakDefined)
-    flags |= SymbolFlags::WeakDefined;
-  if (isThreadLocal)
-    flags |= SymbolFlags::ThreadLocalValue;
-  if (kind == GVKind::Function)
-    flags |= SymbolFlags::Text;
-  else
-    flags |= SymbolFlags::Data;
-  return addGlobal(name, flags, loc, availability, access, decl, kind, linkage);
-}
-
-GlobalRecord *API::addGlobal(StringRef name, SymbolFlags flags, APILoc loc,
-                             const AvailabilityInfo &availability,
-                             APIAccess access, const Decl *decl, GVKind kind,
-                             APILinkage linkage) {
+MacroDefinitionRecord *
+API::addMacroDefinition(StringRef name, StringRef usr, APILoc loc,
+                        APIAccess access,
+                        DeclarationFragments declarationFragments) {
   name = copyString(name);
-  auto result = globals.insert({name, nullptr});
+  auto result = macros.insert({name, nullptr});
   if (result.second) {
-    auto *record = GlobalRecord::create(allocator, name, linkage, flags, loc,
-                                        availability, access, decl, kind);
+    usr = copyString(usr);
+    auto *record = MacroDefinitionRecord::create(allocator, name, usr, loc,
+                                                 access, declarationFragments);
     result.first->second = record;
   }
-
   API::updateAPIAccess(result.first->second, access);
-  API::updateAPILinkage(result.first->second, linkage);
   return result.first->second;
 }
 
-GlobalRecord *API::addGlobalVariable(StringRef name, APILoc loc,
+GlobalRecord *API::addGlobal(StringRef name, StringRef declName, StringRef usr,
+                             APILoc loc, const AvailabilityInfo &availability,
+                             APIAccess access, DocComment docComment,
+                             DeclarationFragments declarationFragments,
+                             DeclarationFragments subHeading,
+                             FunctionSignature functionSignature,
+                             const Decl *decl, GVKind kind, APILinkage linkage,
+                             bool isWeakDefined, bool isThreadLocal) {
+  auto flags = APIFlags::None;
+  if (isWeakDefined)
+    flags |= APIFlags::WeakDefined;
+  if (isThreadLocal)
+    flags |= APIFlags::ThreadLocalValue;
+  return addGlobal(name, declName, usr, flags, loc, availability, access,
+                   docComment, declarationFragments, subHeading,
+                   functionSignature, decl, kind, linkage);
+}
+
+GlobalRecord *API::addGlobal(
+    StringRef name, StringRef declName, StringRef usr, APIFlags flags,
+    APILoc loc, const AvailabilityInfo &availability, APIAccess access,
+    DocComment docComment, DeclarationFragments declarationFragments,
+    DeclarationFragments subHeading, FunctionSignature functionSignature,
+    const Decl *decl, GVKind kind, APILinkage linkage) {
+  name = copyString(name);
+  auto result = globals.insert({name, nullptr});
+  if (result.second) {
+    usr = copyString(usr);
+    declName = copyString(declName);
+    auto *record = GlobalRecord::create(
+        allocator, name, declName, usr, linkage, flags, loc, availability,
+        access, docComment, declarationFragments, subHeading, functionSignature,
+        decl, kind);
+    result.first->second = record;
+  }
+  API::updateAPIAccess(result.first->second, access);
+  API::updateAPILinkage(result.first->second, linkage);
+  // TODO: diagnose kind difference.
+  return result.first->second;
+}
+
+GlobalRecord *API::addGlobalVariable(StringRef name, StringRef declName,
+                                     StringRef usr, APILoc loc,
                                      const AvailabilityInfo &availability,
-                                     APIAccess access, const Decl *decl,
-                                     APILinkage linkage, bool isWeakDefined,
-                                     bool isThreadLocal) {
-  return addGlobal(name, loc, availability, access, decl, GVKind::Variable,
+                                     APIAccess access, DocComment docComment,
+                                     DeclarationFragments declarationFragments,
+                                     DeclarationFragments subHeading,
+                                     const Decl *decl, APILinkage linkage,
+                                     bool isWeakDefined, bool isThreadLocal) {
+  return addGlobal(name, declName, usr, loc, availability, access, docComment,
+                   declarationFragments, subHeading, {}, decl, GVKind::Variable,
                    linkage, isWeakDefined, isThreadLocal);
 }
 
-GlobalRecord *API::addFunction(StringRef name, APILoc loc,
-                               const AvailabilityInfo &availability,
-                               APIAccess access, const Decl *decl,
-                               APILinkage linkage, bool isWeakDefined) {
-  return addGlobal(name, loc, availability, access, decl, GVKind::Function,
-                   linkage, isWeakDefined);
+GlobalRecord *API::addFunction(
+    StringRef name, StringRef declName, StringRef usr, APILoc loc,
+    const AvailabilityInfo &availability, APIAccess access,
+    DocComment docComment, DeclarationFragments declarationFragments,
+    DeclarationFragments subHeading, FunctionSignature functionSignature,
+    const Decl *decl, APILinkage linkage, bool isWeakDefined) {
+  return addGlobal(name, declName, usr, loc, availability, access, docComment,
+                   declarationFragments, subHeading, functionSignature, decl,
+                   GVKind::Function, linkage, isWeakDefined);
 }
 
-EnumRecord *API::addEnum(StringRef name, StringRef usr, APILoc loc,
-                         const AvailabilityInfo &availability, APIAccess access,
-                         const Decl *decl) {
+EnumRecord *API::addEnum(StringRef name, StringRef declName, StringRef usr,
+                         APILoc loc, const AvailabilityInfo &availability,
+                         APIAccess access, DocComment docComment,
+                         DeclarationFragments declarationFragments,
+                         DeclarationFragments subHeading, const Decl *decl) {
   usr = copyString(usr);
   // Use USR as the key, as all anonymous enums have the same name.
   auto result = enums.insert({usr, nullptr});
   if (result.second) {
     name = copyString(name);
-    auto *record = EnumRecord::create(allocator, name, usr, loc, availability,
-                                      access, decl);
+    declName = copyString(declName);
+    auto *record = EnumRecord::create(allocator, name, declName, usr, loc,
+                                      availability, access, docComment,
+                                      declarationFragments, subHeading, decl);
     result.first->second = record;
   }
   return result.first->second;
 }
 
-EnumConstantRecord *API::addEnumConstant(EnumRecord *record, StringRef name,
-                                         APILoc loc,
-                                         const AvailabilityInfo &availability,
-                                         APIAccess access, const Decl *decl) {
+EnumConstantRecord *API::addEnumConstant(
+    EnumRecord *record, StringRef name, StringRef declName, StringRef usr,
+    APILoc loc, const AvailabilityInfo &availability, APIAccess access,
+    DocComment docComment, DeclarationFragments declarationFragments,
+    DeclarationFragments subHeading, const Decl *decl) {
   name = copyString(name);
-  auto *constant = EnumConstantRecord::create(allocator, name, loc,
-                                              availability, access, decl);
+  declName = copyString(declName);
+  usr = copyString(usr);
+  auto *constant = EnumConstantRecord::create(
+      allocator, name, declName, usr, loc, availability, access, docComment,
+      declarationFragments, subHeading, decl);
   record->constants.push_back(constant);
   return constant;
 }
 
-ObjCInterfaceRecord *API::addObjCInterface(StringRef name, APILoc loc,
-                                           const AvailabilityInfo &availability,
-                                           APIAccess access, APILinkage linkage,
-                                           StringRef superClass,
-                                           const Decl *decl) {
+ObjCInterfaceRecord *
+API::addObjCInterface(StringRef name, StringRef declName, StringRef usr,
+                      APILoc loc, const AvailabilityInfo &availability,
+                      APIAccess access, APILinkage linkage,
+                      SymbolInfo superClass, DocComment docComment,
+                      DeclarationFragments declarationFragments,
+                      DeclarationFragments subHeading, const Decl *decl) {
   name = copyString(name);
-  superClass = copyString(superClass);
   auto result = interfaces.insert({name, nullptr});
-
   if (result.second) {
+    declName = copyString(declName);
+    usr = copyString(usr);
+    superClass.name = copyString(superClass.name);
+    superClass.usr = copyString(superClass.usr);
+    superClass.sourceModule = copyString(superClass.sourceModule);
     auto *record = ObjCInterfaceRecord::create(
-        allocator, name, linkage, loc, availability, access, superClass, decl);
+        allocator, name, declName, usr, linkage, loc, availability, access,
+        superClass, docComment, declarationFragments, subHeading, decl);
     result.first->second = record;
   }
-
-  // Inheritance may not always be known when class is first added.
-  if (result.first->second->superClass.empty() && !superClass.empty()) {
-    result.first->second->superClass = superClass;
-  }
-
   return result.first->second;
 }
 
-ObjCCategoryRecord *API::addObjCCategory(StringRef interface, StringRef name,
-                                         APILoc loc,
-                                         const AvailabilityInfo &availability,
-                                         APIAccess access, const Decl *decl) {
-  interface = copyString(interface);
+ObjCCategoryRecord *
+API::addObjCCategory(SymbolInfo interface, StringRef name, StringRef usr,
+                     APILoc loc, const AvailabilityInfo &availability,
+                     APIAccess access, DocComment docComment,
+                     DeclarationFragments declarationFragments,
+                     DeclarationFragments subHeading, const Decl *decl) {
+  interface.name = copyString(interface.name);
   name = copyString(name);
-  auto result = categories.insert({std::make_pair(interface, name), nullptr});
+  auto result =
+      categories.insert({std::make_pair(interface.name, name), nullptr});
   if (result.second) {
-    auto *record = ObjCCategoryRecord::create(allocator, interface, name, loc,
-                                              availability, access, decl);
+    usr = copyString(usr);
+    interface.usr = copyString(interface.usr);
+    interface.sourceModule = copyString(interface.sourceModule);
+    auto *record = ObjCCategoryRecord::create(
+        allocator, interface, name, usr, loc, availability, access, docComment,
+        declarationFragments, subHeading, decl);
     result.first->second = record;
   }
 
-  auto it = interfaces.find(interface);
+  auto it = interfaces.find(interface.name);
   if (it != interfaces.end())
     it->second->categories.push_back(result.first->second);
 
   return result.first->second;
 }
 
-ObjCProtocolRecord *API::addObjCProtocol(StringRef name, APILoc loc,
-                                         const AvailabilityInfo &availability,
-                                         APIAccess access, const Decl *decl) {
+ObjCProtocolRecord *
+API::addObjCProtocol(StringRef name, StringRef usr, APILoc loc,
+                     const AvailabilityInfo &availability, APIAccess access,
+                     DocComment docComment,
+                     DeclarationFragments declarationFragments,
+                     DeclarationFragments subHeading, const Decl *decl) {
   name = copyString(name);
   auto result = protocols.insert({name, nullptr});
   if (result.second) {
-    auto *record = ObjCProtocolRecord::create(allocator, name, loc,
-                                              availability, access, decl);
+    usr = copyString(usr);
+    auto *record = ObjCProtocolRecord::create(
+        allocator, name, usr, loc, availability, access, docComment,
+        declarationFragments, subHeading, decl);
     result.first->second = record;
   }
 
   return result.first->second;
 }
 
-void API::addObjCProtocol(ObjCContainerRecord *record, StringRef protocol) {
-  protocol = copyString(protocol);
+void API::addObjCProtocol(ObjCContainerRecord *record, SymbolInfo protocol) {
+  protocol.name = copyString(protocol.name);
+  protocol.usr = copyString(protocol.usr);
+  protocol.sourceModule = copyString(protocol.sourceModule);
   record->protocols.push_back(protocol);
 }
 
-ObjCMethodRecord *API::addObjCMethod(ObjCContainerRecord *record,
-                                     StringRef name, APILoc loc,
-                                     const AvailabilityInfo &availability,
-                                     APIAccess access, bool isInstanceMethod,
-                                     bool isOptional, bool isDynamic,
-                                     const Decl *decl) {
+ObjCMethodRecord *
+API::addObjCMethod(ObjCContainerRecord *record, StringRef name, StringRef usr,
+                   APILoc loc, const AvailabilityInfo &availability,
+                   APIAccess access, bool isInstanceMethod, bool isOptional,
+                   bool isDynamic, DocComment docComment,
+                   DeclarationFragments declarationFragments,
+                   DeclarationFragments subHeading, FunctionSignature signature,
+                   const Decl *decl) {
   name = copyString(name);
-  auto *method =
-      ObjCMethodRecord::create(allocator, name, loc, availability, access,
-                               isInstanceMethod, isOptional, isDynamic, decl);
+  usr = copyString(usr);
+  auto *method = ObjCMethodRecord::create(
+      allocator, name, usr, loc, availability, access, isInstanceMethod,
+      isOptional, isDynamic, docComment, declarationFragments, subHeading,
+      signature, decl);
   record->methods.push_back(method);
   return method;
 }
 
 ObjCPropertyRecord *
-API::addObjCProperty(ObjCContainerRecord *record, StringRef name,
+API::addObjCProperty(ObjCContainerRecord *record, StringRef name, StringRef usr,
                      StringRef getterName, StringRef setterName, APILoc loc,
                      const AvailabilityInfo &availability, APIAccess access,
                      ObjCPropertyRecord::AttributeKind attributes,
-                     bool isOptional, const Decl *decl) {
+                     bool isOptional, DocComment docComment,
+                     DeclarationFragments declarationFragments,
+                     DeclarationFragments subHeading, const Decl *decl) {
   name = copyString(name);
+  usr = copyString(usr);
   getterName = copyString(getterName);
   setterName = copyString(setterName);
   auto *property = ObjCPropertyRecord::create(
-      allocator, name, getterName, setterName, loc, availability, access,
-      attributes, isOptional, decl);
+      allocator, name, usr, getterName, setterName, loc, availability, access,
+      attributes, isOptional, docComment, declarationFragments, subHeading,
+      decl);
   record->properties.push_back(property);
   return property;
 }
 
 ObjCInstanceVariableRecord *API::addObjCInstanceVariable(
-    ObjCContainerRecord *record, StringRef name, APILoc loc,
+    ObjCContainerRecord *record, StringRef name, StringRef usr, APILoc loc,
     const AvailabilityInfo &availability, APIAccess access,
     ObjCInstanceVariableRecord::AccessControl accessControl, APILinkage linkage,
-    const Decl *decl) {
+    DocComment docComment, DeclarationFragments declarationFragments,
+    DeclarationFragments subHeading, const Decl *decl) {
   name = copyString(name);
+  usr = copyString(usr);
   auto *ivar = ObjCInstanceVariableRecord::create(
-      allocator, name, linkage, loc, availability, access, accessControl, decl);
+      allocator, name, usr, linkage, loc, availability, access, accessControl,
+      docComment, declarationFragments, subHeading, decl);
   record->ivars.push_back(ivar);
   return ivar;
 }
 
-TypedefRecord *API::addTypeDef(StringRef name, APILoc loc,
-                               const AvailabilityInfo &availability,
-                               APIAccess access, const Decl *decl) {
+StructRecord *API::addStruct(StringRef name, StringRef usr, APILoc loc,
+                             const AvailabilityInfo &availability,
+                             APIAccess access, DocComment docComment,
+                             DeclarationFragments declarationFragments,
+                             DeclarationFragments subHeading,
+                             const Decl *decl) {
   name = copyString(name);
-  auto result = typeDefs.insert({name, nullptr});
+  auto result = structs.insert({name, nullptr});
   if (result.second) {
-    auto *record =
-        TypedefRecord::create(allocator, name, loc, availability, access, decl);
+    usr = copyString(usr);
+    auto *record = StructRecord::create(allocator, name, usr, loc, availability,
+                                        access, docComment,
+                                        declarationFragments, subHeading, decl);
     result.first->second = record;
   }
   return result.first->second;
 }
 
-GlobalRecord *API::findGlobal(StringRef name) const {
-  auto it = globals.find(name);
-  if (it != globals.end())
-    return it->second;
-  return nullptr;
+StructFieldRecord *API::addStructField(
+    StructRecord *record, StringRef name, StringRef declName, StringRef usr,
+    APILoc loc, const AvailabilityInfo &availability, APIAccess access,
+    DocComment docComment, DeclarationFragments declarationFragments,
+    DeclarationFragments subHeading, const Decl *decl) {
+  const auto it = find_if(record->fields, [&](const StructFieldRecord *field) {
+    return field->name.equals(name);
+  });
+  if (it != record->fields.end())
+    return *it;
+
+  name = copyString(name);
+  declName = copyString(declName);
+  usr = copyString(usr);
+  auto *field = StructFieldRecord::create(
+      allocator, name, declName, usr, loc, availability, access, docComment,
+      declarationFragments, subHeading, decl);
+  record->fields.push_back(field);
+  return field;
 }
 
-GlobalRecord *API::findGlobalVariable(StringRef name) const {
+TypedefRecord *API::addTypeDef(StringRef name, StringRef usr, APILoc loc,
+                               const AvailabilityInfo &availability,
+                               APIAccess access, SymbolInfo underlyingType,
+                               DocComment docComment,
+                               DeclarationFragments declarationFragments,
+                               DeclarationFragments subHeading,
+                               const Decl *decl) {
+  name = copyString(name);
+  usr = copyString(usr);
+  auto result = typeDefs.insert({name, nullptr});
+  if (result.second) {
+    underlyingType.name = copyString(underlyingType.name);
+    underlyingType.usr = copyString(underlyingType.usr);
+    underlyingType.sourceModule = copyString(underlyingType.sourceModule);
+    auto *record = TypedefRecord::create(
+        allocator, name, usr, loc, availability, access, underlyingType,
+        docComment, declarationFragments, subHeading, decl);
+    result.first->second = record;
+  }
+  return result.first->second;
+}
+
+const GlobalRecord *API::findGlobalVariable(StringRef name) const {
   auto it = globals.find(name);
   if (it != globals.end() && it->second->kind == GVKind::Variable)
     return it->second;
   return nullptr;
 }
 
-GlobalRecord *API::findFunction(StringRef name) const {
+const GlobalRecord *API::findFunction(StringRef name) const {
   auto it = globals.find(name);
   if (it != globals.end() && it->second->kind == GVKind::Function)
     return it->second;
@@ -500,53 +689,7 @@ const EnumRecord *API::findEnum(StringRef usr) const {
   return nullptr;
 }
 
-ObjCContainerRecord *API::findContainer(StringRef ivar) const {
-  auto [superClassName, _] = ivar.split('.');
-  ObjCContainerRecord *container = findObjCInterface(superClassName);
-  // Ivars can only exist with extensions, if they did not come from
-  // class.
-  if (container == nullptr)
-    container = findObjCCategory(superClassName, "");
-  return container;
-}
-
-ObjCInstanceVariableRecord *API::findIVar(StringRef name,
-                                          bool isSymbolName) const {
-  if (isSymbolName) {
-    auto *container = findContainer(name);
-    if (!container)
-      return nullptr;
-
-    StringRef ivarName = name.substr(name.find_first_of('.') + 1);
-    auto it = find_if(container->ivars, [ivarName](auto *ivar) {
-      return ivar && ivar->name == ivarName;
-    });
-
-    if (it == container->ivars.end())
-      return nullptr;
-    return *it;
-  }
-
-  for (const auto &[_, record] : interfaces) {
-    auto it = find_if(record->ivars, [name](auto *ivar) {
-      return ivar && ivar->name == name;
-    });
-    if (it != record->ivars.end())
-      return *it;
-  }
-
-  for (const auto &[_, record] : categories) {
-    auto it = find_if(record->ivars, [name](auto *ivar) {
-      return ivar && ivar->name == name;
-    });
-    if (it != record->ivars.end())
-      return *it;
-  }
-
-  return nullptr;
-}
-
-ObjCInterfaceRecord *API::findObjCInterface(StringRef name) const {
+const ObjCInterfaceRecord *API::findObjCInterface(StringRef name) const {
   auto it = interfaces.find(name);
   if (it != interfaces.end())
     return it->second;
@@ -560,15 +703,24 @@ const ObjCProtocolRecord *API::findObjCProtocol(StringRef name) const {
   return nullptr;
 }
 
-ObjCCategoryRecord *API::findObjCCategory(StringRef interfaceName,
-                                          StringRef name) const {
+const ObjCCategoryRecord *API::findObjCCategory(StringRef interfaceName,
+                                                StringRef name) const {
   auto it = categories.find({interfaceName, name});
   if (it != categories.end())
     return it->second;
   return nullptr;
 }
 
+const StructRecord *API::findStruct(StringRef name) const {
+  auto it = structs.find(name);
+  if (it != structs.end())
+    return it->second;
+  return nullptr;
+}
+
 void API::visit(APIVisitor &visitor) const {
+  for (auto &it : macros)
+    visitor.visitMacroDefinition(*it.second);
   for (auto &it : typeDefs)
     visitor.visitTypeDef(*it.second);
   for (auto &it : globals)
@@ -581,9 +733,13 @@ void API::visit(APIVisitor &visitor) const {
     visitor.visitObjCInterface(*it.second);
   for (auto &it : categories)
     visitor.visitObjCCategory(*it.second);
+  for (auto &it : structs)
+    visitor.visitStruct(*it.second);
 }
 
 void API::visit(APIMutator &visitor) {
+  for (auto &it : macros)
+    visitor.visitMacroDefinition(*it.second);
   for (auto &it : typeDefs)
     visitor.visitTypeDef(*it.second);
   for (auto &it : globals)
@@ -596,6 +752,8 @@ void API::visit(APIMutator &visitor) {
     visitor.visitObjCInterface(*it.second);
   for (auto &it : categories)
     visitor.visitObjCCategory(*it.second);
+  for (auto &it : structs)
+    visitor.visitStruct(*it.second);
 }
 
 StringRef API::copyStringInto(StringRef string,
@@ -640,10 +798,12 @@ bool API::operator<(const API &other) const {
 
   // 3. Sorted by target triple.
   // Doing string comparsion here since version matters.
-  if (triple.str() != other.triple.str())
-    return triple.str() < other.triple.str();
+  if (target.str() != other.target.str())
+    return target.str() < other.target.str();
 
   // 4. Sort by number of APIs. Pick the one has more APIs.
+  if (macros.size() != other.macros.size())
+    return macros.size() > other.macros.size();
   if (globals.size() != other.globals.size())
     return globals.size() > other.globals.size();
   if (interfaces.size() != other.interfaces.size())
@@ -655,49 +815,6 @@ bool API::operator<(const API &other) const {
 
   // fallback plan. unstable ordering.
   return false;
-}
-
-template <typename InputT> static bool hasEqualRecords(InputT lhs, InputT rhs) {
-  if (lhs.size() != rhs.size())
-    return false;
-
-  for (const auto &[key, val] : lhs) {
-    auto rhsIt = rhs.find(key);
-    if (rhsIt == rhs.end())
-      return false;
-    if (!(*(rhsIt->second) == *val))
-      return false;
-  }
-
-  return true;
-}
-
-bool API::operator==(const API &other) const {
-  if (triple != other.triple)
-    return false;
-  if (projectName != other.projectName)
-    return false;
-
-  if (!hasEqualRecords<GlobalRecordMap>(globals, other.globals))
-    return false;
-  if (!hasEqualRecords<EnumRecordMap>(enums, other.enums))
-    return false;
-  if (!hasEqualRecords<TypedefMap>(typeDefs, other.typeDefs))
-    return false;
-  if (!hasEqualRecords<ObjCInterfaceRecordMap>(interfaces, other.interfaces))
-    return false;
-  if (!hasEqualRecords<ObjCCategoryRecordMap>(categories, other.categories))
-    return false;
-  if (!hasEqualRecords<ObjCProtocolRecordMap>(protocols, other.protocols))
-    return false;
-
-  if (hasBinaryInfo() && !other.hasBinaryInfo())
-    return false;
-  if (!hasBinaryInfo() && other.hasBinaryInfo())
-    return false;
-  if (hasBinaryInfo() && *binaryInfo != other.getBinaryInfo())
-    return false;
-  return true;
 }
 
 TAPI_NAMESPACE_INTERNAL_END

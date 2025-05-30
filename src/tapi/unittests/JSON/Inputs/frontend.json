@@ -6,7 +6,25 @@
       "file": "test.m",
       "instanceMethods": [
         {
+          "USR": "c:objc(cs)A(im)method",
           "col": 1,
+          "docComment": {
+            "lines": [
+              {
+                "range": {
+                  "end": {
+                    "col": 40,
+                    "line": 27
+                  },
+                  "start": {
+                    "col": 60,
+                    "line": 27
+                  }
+                },
+                "text": "An instance method."
+              }
+            ]
+          },
           "file": "test.m",
           "introduced": "10.10",
           "line": 27,
@@ -64,6 +82,14 @@
   ],
   "interfaces": [
     {
+      "col": 12,
+      "file": "test.m",
+      "line": 1,
+      "linkage": "exported",
+      "name": "NSObject",
+      "super": ""
+    },
+    {
       "categories": [
         "P"
       ],
@@ -90,9 +116,27 @@
       ],
       "ivars": [
         {
+          "USR": "c:objc(cs)A@a",
           "access": "public",
           "accessControl": "protected",
           "col": 7,
+          "docComment": {
+            "lines": [
+              {
+                "range": {
+                  "end": {
+                    "col": 20,
+                    "line": 12
+                  },
+                  "start": {
+                    "col": 42,
+                    "line": 12
+                  }
+                },
+                "text": "An instance variable."
+              }
+            ]
+          },
           "file": "test.m",
           "line": 12,
           "name": "a"
@@ -103,10 +147,28 @@
       "name": "A",
       "properties": [
         {
+          "USR": "c:objc(cs)A(py)baz",
           "attr": [
             "dynamic"
           ],
           "col": 23,
+          "docComment": {
+            "lines": [
+              {
+                "range": {
+                  "end": {
+                    "col": 20,
+                    "line": 16
+                  },
+                  "start": {
+                    "col": 32,
+                    "line": 16
+                  }
+                },
+                "text": "A property."
+              }
+            ]
+          },
           "file": "test.m",
           "getter": "baz",
           "line": 16,
@@ -126,14 +188,6 @@
         }
       ],
       "super": "NSObject"
-    },
-    {
-      "col": 12,
-      "file": "test.m",
-      "line": 1,
-      "linkage": "exported",
-      "name": "NSObject",
-      "super": ""
     }
   ],
   "protocols": [
@@ -154,21 +208,65 @@
       "name": "P"
     }
   ],
+  "structs": [
+    {
+      "USR": "c:@S@Color",
+      "access": "public",
+      "col": 8,
+      "fields": [
+        {
+          "USR": "c:@S@Color@FI@red",
+          "access": "public",
+          "col": 12,
+          "file": "test.m",
+          "line": 15,
+          "name": "red"
+        },
+        {
+          "USR": "c:@S@Color@FI@green",
+          "access": "public",
+          "col": 12,
+          "file": "test.m",
+          "line": 16,
+          "name": "green"
+        },
+        {
+          "USR": "c:@S@Color@FI@blue",
+          "access": "public",
+          "col": 12,
+          "file": "test.m",
+          "line": 17,
+          "name": "blue"
+        },
+        {
+          "USR": "c:@S@Color@FI@alpha",
+          "access": "public",
+          "col": 12,
+          "file": "test.m",
+          "line": 18,
+          "name": "alpha"
+        }
+      ],
+      "file": "test.m",
+      "line": 14,
+      "name": "Color"
+    }
+  ],
   "target": "x86_64-apple-macosx",
   "typedefs": [
-    {
-      "access": "public",
-      "col": 3,
-      "file": "test.m",
-      "line": 9,
-      "name": "MyEnum"
-    },
     {
       "access": "public",
       "col": 13,
       "file": "test.m",
       "line": 3,
       "name": "MyInt"
+    },
+    {
+      "access": "public",
+      "col": 3,
+      "file": "test.m",
+      "line": 9,
+      "name": "MyEnum"
     }
   ]
 }

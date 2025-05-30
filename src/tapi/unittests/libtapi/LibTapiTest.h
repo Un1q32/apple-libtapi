@@ -13,7 +13,6 @@
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/raw_ostream.h"
 #include "gtest/gtest.h"
-#include <tapi/tapi.h>
 
 #define ASSERT_NO_ERROR(x)                                                     \
   if (std::error_code ASSERT_NO_ERROR_ec = x) {                                \
@@ -42,17 +41,11 @@ public:
   }
 
   template <typename T> void writeTempFile(T str) {
-    llvm::sys::fs::openFileForWrite(tmpFilePath, tmpFileFD);
     llvm::raw_fd_ostream file(tmpFileFD, /*shouldClose=*/true);
     file << str;
   }
 
   const char *getTempFilePath() { return tmpFilePath.c_str(); }
-
-  void testPlatform(
-      const std::string &target, unsigned platform, unsigned cpuType,
-      unsigned subType, bool isYAML = true,
-      tapi::PackedVersion32 expectedDV = tapi::PackedVersion32(11, 0, 0));
 };
 
 #endif // LIB_TAPI_TEST

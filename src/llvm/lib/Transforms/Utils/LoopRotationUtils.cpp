@@ -13,24 +13,31 @@
 #include "llvm/Transforms/Utils/LoopRotationUtils.h"
 #include "llvm/ADT/Statistic.h"
 #include "llvm/Analysis/AssumptionCache.h"
+#include "llvm/Analysis/BasicAliasAnalysis.h"
 #include "llvm/Analysis/CodeMetrics.h"
 #include "llvm/Analysis/DomTreeUpdater.h"
+#include "llvm/Analysis/GlobalsModRef.h"
 #include "llvm/Analysis/InstructionSimplify.h"
-#include "llvm/Analysis/LoopInfo.h"
+#include "llvm/Analysis/LoopPass.h"
 #include "llvm/Analysis/MemorySSA.h"
 #include "llvm/Analysis/MemorySSAUpdater.h"
 #include "llvm/Analysis/ScalarEvolution.h"
+#include "llvm/Analysis/ScalarEvolutionAliasAnalysis.h"
+#include "llvm/Analysis/TargetTransformInfo.h"
 #include "llvm/Analysis/ValueTracking.h"
 #include "llvm/IR/CFG.h"
 #include "llvm/IR/DebugInfo.h"
 #include "llvm/IR/Dominators.h"
+#include "llvm/IR/Function.h"
 #include "llvm/IR/IntrinsicInst.h"
+#include "llvm/IR/Module.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Transforms/Utils/BasicBlockUtils.h"
 #include "llvm/Transforms/Utils/Cloning.h"
 #include "llvm/Transforms/Utils/Local.h"
+#include "llvm/Transforms/Utils/LoopUtils.h"
 #include "llvm/Transforms/Utils/SSAUpdater.h"
 #include "llvm/Transforms/Utils/ValueMapper.h"
 using namespace llvm;
@@ -96,7 +103,6 @@ static void InsertNewValueIntoMap(ValueToValueMapTy &VM, Value *K, Value *V) {
 static void RewriteUsesOfClonedInstructions(BasicBlock *OrigHeader,
                                             BasicBlock *OrigPreheader,
                                             ValueToValueMapTy &ValueMap,
-                                            ScalarEvolution *SE,
                                 SmallVectorImpl<PHINode*> *InsertedPHIs) {
   // Remove PHI node entries that are no longer live.
   BasicBlock::iterator I, E = OrigHeader->end();
@@ -119,15 +125,19 @@ static void RewriteUsesOfClonedInstructions(BasicBlock *OrigHeader,
     // The value now exits in two versions: the initial value in the preheader
     // and the loop "next" value in the original header.
     SSA.Initialize(OrigHeaderVal->getType(), OrigHeaderVal->getName());
-    // Force re-computation of OrigHeaderVal, as some users now need to use the
-    // new PHI node.
-    if (SE)
-      SE->forgetValue(OrigHeaderVal);
     SSA.AddAvailableValue(OrigHeader, OrigHeaderVal);
     SSA.AddAvailableValue(OrigPreheader, OrigPreHeaderVal);
 
     // Visit each use of the OrigHeader instruction.
-    for (Use &U : llvm::make_early_inc_range(OrigHeaderVal->uses())) {
+    for (Value::use_iterator UI = OrigHeaderVal->use_begin(),
+                             UE = OrigHeaderVal->use_end();
+         UI != UE;) {
+      // Grab the use before incrementing the iterator.
+      Use &U = *UI;
+
+      // Increment the iterator before removing the use from the list.
+      ++UI;
+
       // SSAUpdater can't handle a non-PHI use in the same block as an
       // earlier def. We can easily handle those cases manually.
       Instruction *UserInst = cast<Instruction>(U.getUser());
@@ -310,12 +320,6 @@ bool LoopRotate::rotateLoop(Loop *L, bool SimplifiedLatch) {
                    L->dump());
         return Rotated;
       }
-      if (!Metrics.NumInsts.isValid()) {
-        LLVM_DEBUG(dbgs() << "LoopRotation: NOT rotating - contains instructions"
-                   " with invalid cost: ";
-                   L->dump());
-        return Rotated;
-      }
       if (Metrics.NumInsts > MaxHeaderSize) {
         LLVM_DEBUG(dbgs() << "LoopRotation: NOT rotating - contains "
                           << Metrics.NumInsts
@@ -345,14 +349,8 @@ bool LoopRotate::rotateLoop(Loop *L, bool SimplifiedLatch) {
     // all outer loops because insertion and deletion of blocks that happens
     // during the rotation may violate invariants related to backedge taken
     // infos in them.
-    if (SE) {
+    if (SE)
       SE->forgetTopmostLoop(L);
-      // We may hoist some instructions out of loop. In case if they were cached
-      // as "loop variant" or "loop computable", these caches must be dropped.
-      // We also may fold basic blocks, so cached block dispositions also need
-      // to be dropped.
-      SE->forgetBlockAndLoopDispositions();
-    }
 
     LLVM_DEBUG(dbgs() << "LoopRotation: rotating "; L->dump());
     if (MSSAU && VerifyMemorySSA)
@@ -401,8 +399,9 @@ bool LoopRotate::rotateLoop(Loop *L, bool SimplifiedLatch) {
               D->getExpression()};
     };
     SmallDenseSet<DbgIntrinsicHash, 8> DbgIntrinsics;
-    for (Instruction &I : llvm::drop_begin(llvm::reverse(*OrigPreheader))) {
-      if (auto *DII = dyn_cast<DbgVariableIntrinsic>(&I))
+    for (auto I = std::next(OrigPreheader->rbegin()), E = OrigPreheader->rend();
+         I != E; ++I) {
+      if (auto *DII = dyn_cast<DbgVariableIntrinsic>(&*I))
         DbgIntrinsics.insert(makeHash(DII));
       else
         break;
@@ -451,7 +450,7 @@ bool LoopRotate::rotateLoop(Loop *L, bool SimplifiedLatch) {
       // With the operands remapped, see if the instruction constant folds or is
       // otherwise simplifyable.  This commonly occurs because the entry from PHI
       // nodes allows icmps and other instructions to fold.
-      Value *V = simplifyInstruction(C, SQ);
+      Value *V = SimplifyInstruction(C, SQ);
       if (V && LI->replacementPreservesLCSSAForm(C, V)) {
         // If so, then delete the temporary instruction and stick the folded value
         // in the map.
@@ -564,7 +563,7 @@ bool LoopRotate::rotateLoop(Loop *L, bool SimplifiedLatch) {
     SmallVector<PHINode*, 2> InsertedPHIs;
     // If there were any uses of instructions in the duplicated block outside the
     // loop, update them, inserting PHI nodes as required
-    RewriteUsesOfClonedInstructions(OrigHeader, OrigPreheader, ValueMap, SE,
+    RewriteUsesOfClonedInstructions(OrigHeader, OrigPreheader, ValueMap,
                                     &InsertedPHIs);
 
     // Attach dbg.value intrinsics to the new phis if that phi uses a value that
@@ -622,13 +621,13 @@ bool LoopRotate::rotateLoop(Loop *L, bool SimplifiedLatch) {
       // one predecessor. Note that Exit could be an exit block for multiple
       // nested loops, causing both of the edges to now be critical and need to
       // be split.
-      SmallVector<BasicBlock *, 4> ExitPreds(predecessors(Exit));
+      SmallVector<BasicBlock *, 4> ExitPreds(pred_begin(Exit), pred_end(Exit));
       bool SplitLatchEdge = false;
       for (BasicBlock *ExitPred : ExitPreds) {
         // We only need to split loop exit edges.
         Loop *PredLoop = LI->getLoopFor(ExitPred);
         if (!PredLoop || PredLoop->contains(Exit) ||
-            isa<IndirectBrInst>(ExitPred->getTerminator()))
+            ExitPred->getTerminator()->isIndirectTerminator())
           continue;
         SplitLatchEdge |= L->getLoopLatch() == ExitPred;
         BasicBlock *ExitSplit = SplitCriticalEdge(
@@ -719,7 +718,7 @@ static bool shouldSpeculateInstrs(BasicBlock::iterator Begin,
       if (!cast<GEPOperator>(I)->hasAllConstantIndices())
         return false;
       // fall-thru to increment case
-      [[fallthrough]];
+      LLVM_FALLTHROUGH;
     case Instruction::Add:
     case Instruction::Sub:
     case Instruction::And:

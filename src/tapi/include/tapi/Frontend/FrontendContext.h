@@ -17,7 +17,6 @@
 #include "tapi/Core/FileManager.h"
 #include "tapi/Core/HeaderFile.h"
 #include "tapi/Core/LLVM.h"
-#include "tapi/Core/SymbolVerifier.h"
 #include "tapi/Defines.h"
 #include "clang/AST/ASTContext.h"
 #include "clang/Frontend/CompilerInstance.h"
@@ -28,25 +27,24 @@ TAPI_NAMESPACE_INTERNAL_BEGIN
 
 struct FrontendContext {
   const llvm::Triple target;
-  SymbolVerifier *verifier;
-  std::shared_ptr<API> api;
+  API api;
   std::unique_ptr<clang::CompilerInstance> compiler;
   llvm::IntrusiveRefCntPtr<clang::ASTContext> ast;
   llvm::IntrusiveRefCntPtr<clang::SourceManager> sourceMgr;
   std::shared_ptr<clang::Preprocessor> pp;
   llvm::IntrusiveRefCntPtr<FileManager> fileManager;
-  HeaderType type;
 
   using HeaderMap = std::map<const FileEntry *, HeaderType>;
   HeaderMap knownFiles;
-  std::map<const std::string, HeaderType> knownIncludes;
+  std::map<const StringRef, HeaderType> knownIncludes;
 
-  FrontendContext(const llvm::Triple &triple, SymbolVerifier *verifier,
-                  IntrusiveRefCntPtr<llvm::vfs::FileSystem> vfs = nullptr,
-                  HeaderType type = HeaderType::Project);
+  FrontendContext(
+      const llvm::Triple &triple, StringRef workingDirectory = StringRef(),
+      IntrusiveRefCntPtr<FileSystemStatCacheFactory> cacheFactory = nullptr,
+      IntrusiveRefCntPtr<llvm::vfs::FileSystem> vfs = nullptr);
 
-  void visit(APIVisitor &visitor) const { api->visit(visitor); }
-  void visit(APIMutator &visitor) { api->visit(visitor); }
+  void visit(APIVisitor &visitor) const { api.visit(visitor); }
+  void visit(APIMutator &visitor) { api.visit(visitor); }
 
   llvm::Optional<HeaderType> findAndRecordFile(const FileEntry *file);
 

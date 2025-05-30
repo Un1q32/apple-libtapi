@@ -14,6 +14,7 @@
 #define LLVM_SUPPORT_ERROR_H
 
 #include "llvm-c/Error.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/Twine.h"
@@ -25,6 +26,7 @@
 #include "llvm/Support/ErrorOr.h"
 #include "llvm/Support/Format.h"
 #include "llvm/Support/raw_ostream.h"
+#include <algorithm>
 #include <cassert>
 #include <cstdint>
 #include <cstdlib>
@@ -152,7 +154,7 @@ private:
 /// *All* Error instances must be checked before destruction, even if
 /// they're moved-assigned or constructed from Success values that have already
 /// been checked. This enforces checking through all levels of the call stack.
-class [[nodiscard]] Error {
+class LLVM_NODISCARD Error {
   // ErrorList needs to be able to yank ErrorInfoBase pointers out of Errors
   // to add to the error list. It can't rely on handleErrors for this, since
   // handleErrors does not support ErrorList handlers.
@@ -255,7 +257,8 @@ private:
   // of debug prints can cause the function to be too large for inlining.  So
   // it's important that we define this function out of line so that it can't be
   // inlined.
-  [[noreturn]] void fatalUncheckedError() const;
+  LLVM_ATTRIBUTE_NORETURN
+  void fatalUncheckedError() const;
 #endif
 
   void assertIsChecked() {
@@ -311,7 +314,7 @@ private:
   }
 
   friend raw_ostream &operator<<(raw_ostream &OS, const Error &E) {
-    if (auto *P = E.getPtr())
+    if (auto P = E.getPtr())
       P->log(OS);
     else
       OS << "success";
@@ -371,7 +374,7 @@ class ErrorList final : public ErrorInfo<ErrorList> {
 public:
   void log(raw_ostream &OS) const override {
     OS << "Multiple errors:\n";
-    for (const auto &ErrPayload : Payloads) {
+    for (auto &ErrPayload : Payloads) {
       ErrPayload->log(OS);
       OS << "\n";
     }
@@ -463,10 +466,10 @@ inline Error joinErrors(Error E1, Error E2) {
 ///     outs() << "The answer is " << *Result << "\n";
 ///   @endcode
 ///
-///  For unit-testing a function returning an 'Expected<T>', see the
+///  For unit-testing a function returning an 'Expceted<T>', see the
 ///  'EXPECT_THAT_EXPECTED' macros in llvm/Testing/Support/Error.h
 
-template <class T> class [[nodiscard]] Expected {
+template <class T> class LLVM_NODISCARD Expected {
   template <class T1> friend class ExpectedAsOutParameter;
   template <class OtherT> friend class Expected;
 
@@ -573,16 +576,6 @@ public:
   const_reference get() const {
     assertIsChecked();
     return const_cast<Expected<T> *>(this)->get();
-  }
-
-  /// Returns \a takeError() after moving the held T (if any) into \p V.
-  template <class OtherT>
-  Error moveInto(OtherT &Value,
-                 std::enable_if_t<std::is_assignable<OtherT &, T &&>::value> * =
-                     nullptr) && {
-    if (*this)
-      Value = std::move(get());
-    return takeError();
   }
 
   /// Check that this Expected<T> is an error of type ErrT.
@@ -695,7 +688,9 @@ private:
   }
 
 #if LLVM_ENABLE_ABI_BREAKING_CHECKS
-  [[noreturn]] LLVM_ATTRIBUTE_NOINLINE void fatalUncheckedExpected() const {
+  LLVM_ATTRIBUTE_NORETURN
+  LLVM_ATTRIBUTE_NOINLINE
+  void fatalUncheckedExpected() const {
     dbgs() << "Expected<T> must be checked before access or destruction.\n";
     if (HasError) {
       dbgs() << "Unchecked Expected<T> contained error:\n";
@@ -727,7 +722,8 @@ private:
 
 /// Report a serious error, calling any installed error handler. See
 /// ErrorHandling.h.
-[[noreturn]] void report_fatal_error(Error Err, bool gen_crash_diag = true);
+LLVM_ATTRIBUTE_NORETURN void report_fatal_error(Error Err,
+                                                bool gen_crash_diag = true);
 
 /// Report a fatal error if Err is a failure value.
 ///
@@ -822,8 +818,8 @@ T& cantFail(Expected<T&> ValOrErr, const char *Msg = nullptr) {
 /// ErrorInfo types.
 template <typename HandlerT>
 class ErrorHandlerTraits
-    : public ErrorHandlerTraits<
-          decltype(&std::remove_reference_t<HandlerT>::operator())> {};
+    : public ErrorHandlerTraits<decltype(
+          &std::remove_reference<HandlerT>::type::operator())> {};
 
 // Specialization functions of the form 'Error (const ErrT&)'.
 template <typename ErrT> class ErrorHandlerTraits<Error (&)(ErrT &)> {
@@ -1141,7 +1137,7 @@ private:
 class ECError : public ErrorInfo<ECError> {
   friend Error errorCodeToError(std::error_code);
 
-  void anchor() override;
+  virtual void anchor() override;
 
 public:
   void setErrorCode(std::error_code EC) { this->EC = EC; }
@@ -1163,7 +1159,7 @@ protected:
 /// It should only be used in this situation, and should never be used where a
 /// sensible conversion to std::error_code is available, as attempts to convert
 /// to/from this error will result in a fatal error. (i.e. it is a programmatic
-/// error to try to convert such a value).
+///error to try to convert such a value).
 std::error_code inconvertibleErrorCode();
 
 /// Helper for converting an std::error_code to a Error.
@@ -1267,21 +1263,14 @@ class FileError final : public ErrorInfo<FileError> {
 
 public:
   void log(raw_ostream &OS) const override {
-    assert(Err && "Trying to log after takeError().");
+    assert(Err && !FileName.empty() && "Trying to log after takeError().");
     OS << "'" << FileName << "': ";
-    if (Line)
-      OS << "line " << Line.value() << ": ";
+    if (Line.hasValue())
+      OS << "line " << Line.getValue() << ": ";
     Err->log(OS);
   }
 
-  std::string messageWithoutFileInfo() const {
-    std::string Msg;
-    raw_string_ostream OS(Msg);
-    Err->log(OS);
-    return OS.str();
-  }
-
-  StringRef getFileName() const { return FileName; }
+  StringRef getFileName() { return FileName; }
 
   Error takeError() { return Error(std::move(Err)); }
 
@@ -1294,6 +1283,8 @@ private:
   FileError(const Twine &F, Optional<size_t> LineNum,
             std::unique_ptr<ErrorInfoBase> E) {
     assert(E && "Cannot create FileError from Error success value.");
+    assert(!F.isTriviallyEmpty() &&
+           "The file name provided to FileError must not be empty.");
     FileName = F.str();
     Err = std::move(E);
     Line = std::move(LineNum);

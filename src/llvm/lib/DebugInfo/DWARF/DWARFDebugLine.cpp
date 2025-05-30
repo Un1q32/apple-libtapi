@@ -12,12 +12,12 @@
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/BinaryFormat/Dwarf.h"
-#include "llvm/DebugInfo/DWARF/DWARFDataExtractor.h"
-#include "llvm/DebugInfo/DWARF/DWARFDie.h"
 #include "llvm/DebugInfo/DWARF/DWARFFormValue.h"
+#include "llvm/DebugInfo/DWARF/DWARFRelocMap.h"
 #include "llvm/Support/Errc.h"
 #include "llvm/Support/Format.h"
 #include "llvm/Support/FormatVariadic.h"
+#include "llvm/Support/WithColor.h"
 #include "llvm/Support/raw_ostream.h"
 #include <algorithm>
 #include <cassert>
@@ -323,21 +323,21 @@ parseV5DirFileTables(const DWARFDataExtractor &DebugLineData,
         FileEntry.Source = Value;
         break;
       case DW_LNCT_directory_index:
-        FileEntry.DirIdx = Value.getAsUnsignedConstant().value();
+        FileEntry.DirIdx = Value.getAsUnsignedConstant().getValue();
         break;
       case DW_LNCT_timestamp:
-        FileEntry.ModTime = Value.getAsUnsignedConstant().value();
+        FileEntry.ModTime = Value.getAsUnsignedConstant().getValue();
         break;
       case DW_LNCT_size:
-        FileEntry.Length = Value.getAsUnsignedConstant().value();
+        FileEntry.Length = Value.getAsUnsignedConstant().getValue();
         break;
       case DW_LNCT_MD5:
-        if (!Value.getAsBlock() || Value.getAsBlock().value().size() != 16)
+        if (!Value.getAsBlock() || Value.getAsBlock().getValue().size() != 16)
           return createStringError(
               errc::invalid_argument,
               "failed to parse file entry because the MD5 hash is invalid");
-        std::uninitialized_copy_n(Value.getAsBlock().value().begin(), 16,
-                                  FileEntry.Checksum.begin());
+        std::uninitialized_copy_n(Value.getAsBlock().getValue().begin(), 16,
+                                  FileEntry.Checksum.Bytes.begin());
         break;
       default:
         break;
@@ -595,10 +595,6 @@ Expected<const DWARFDebugLine::LineTable *> DWARFDebugLine::getOrParseLineTable(
     return LT;
   }
   return LT;
-}
-
-void DWARFDebugLine::clearLineTable(uint64_t Offset) {
-  LineTableMap.erase(Offset);
 }
 
 static StringRef getOpcodeName(uint8_t Opcode, uint8_t OpcodeBase) {
@@ -1335,8 +1331,8 @@ Optional<StringRef> DWARFDebugLine::LineTable::getSourceByIndex(uint64_t FileInd
   if (Kind == FileLineInfoKind::None || !Prologue.hasFileAtIndex(FileIndex))
     return None;
   const FileNameEntry &Entry = Prologue.getFileNameEntry(FileIndex);
-  if (auto E = dwarf::toString(Entry.Source))
-    return StringRef(*E);
+  if (Optional<const char *> source = Entry.Source.getAsCString())
+    return StringRef(*source);
   return None;
 }
 
@@ -1354,10 +1350,10 @@ bool DWARFDebugLine::Prologue::getFileNameByIndex(
   if (Kind == FileLineInfoKind::None || !hasFileAtIndex(FileIndex))
     return false;
   const FileNameEntry &Entry = getFileNameEntry(FileIndex);
-  auto E = dwarf::toString(Entry.Name);
-  if (!E)
+  Optional<const char *> Name = Entry.Name.getAsCString();
+  if (!Name)
     return false;
-  StringRef FileName = *E;
+  StringRef FileName = *Name;
   if (Kind == FileLineInfoKind::RawValue ||
       isPathAbsoluteOnWindowsOrPosix(FileName)) {
     Result = std::string(FileName);
@@ -1376,18 +1372,17 @@ bool DWARFDebugLine::Prologue::getFileNameByIndex(
     // relative names.
     if ((Entry.DirIdx != 0 || Kind != FileLineInfoKind::RelativeFilePath) &&
         Entry.DirIdx < IncludeDirectories.size())
-      IncludeDir = dwarf::toStringRef(IncludeDirectories[Entry.DirIdx]);
+      IncludeDir = IncludeDirectories[Entry.DirIdx].getAsCString().getValue();
   } else {
     if (0 < Entry.DirIdx && Entry.DirIdx <= IncludeDirectories.size())
-      IncludeDir = dwarf::toStringRef(IncludeDirectories[Entry.DirIdx - 1]);
+      IncludeDir =
+          IncludeDirectories[Entry.DirIdx - 1].getAsCString().getValue();
   }
 
-  // For absolute paths only, include the compilation directory of compile unit,
-  // unless v5 DirIdx == 0 (IncludeDir indicates the compilation directory). We
-  // know that FileName is not absolute, the only way to have an absolute path
-  // at this point would be if IncludeDir is absolute.
-  if (Kind == FileLineInfoKind::AbsoluteFilePath &&
-      (getVersion() < 5 || Entry.DirIdx != 0) && !CompDir.empty() &&
+  // For absolute paths only, include the compilation directory of compile unit.
+  // We know that FileName is not absolute, the only way to have an absolute
+  // path at this point would be if IncludeDir is absolute.
+  if (Kind == FileLineInfoKind::AbsoluteFilePath && !CompDir.empty() &&
       !isPathAbsoluteOnWindowsOrPosix(IncludeDir))
     sys::path::append(FilePath, Style, CompDir);
 

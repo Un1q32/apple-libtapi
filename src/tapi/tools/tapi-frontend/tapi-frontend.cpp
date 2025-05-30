@@ -109,14 +109,14 @@ static std::string getClangResourcesPath(clang::FileManager &fm) {
   // Try the default tapi path.
   SmallString<PATH_MAX>
       path(dir);
-  llvm::sys::path::append(path, "..", CLANG_INSTALL_LIBDIR_BASENAME,
+  llvm::sys::path::append(path, "..", Twine("lib") + CLANG_LIBDIR_SUFFIX,
                           "tapi", TAPI_MAKE_STRING(TAPI_VERSION));
   if (fileExists(path))
     return path.str().str();
 
   // Try the default clang path. This is used by check-tapi.
   path = dir;
-  llvm::sys::path::append(path, "..", CLANG_INSTALL_LIBDIR_BASENAME,
+  llvm::sys::path::append(path, "..", Twine("lib") + CLANG_LIBDIR_SUFFIX,
                           "clang", CLANG_VERSION_STRING);
   if (fileExists(path))
     return path.str().str();
@@ -149,6 +149,7 @@ int main(int argc, const char *argv[]) {
   headers.emplace_back(inputFilename, HeaderType::Public);
   for (const auto &target : targets) {
     FrontendJob job;
+
     job.target = Triple(target);
     job.isysroot = isysroot;
     job.language_std = language_std;
@@ -210,7 +211,7 @@ int main(int argc, const char *argv[]) {
     }
 
     for (auto &r : results) {
-      APIJSONSerializer serializer(*r.api);
+      APIJSONSerializer serializer(r.api);
       serializer.serialize(jsonOut);
     }
   }

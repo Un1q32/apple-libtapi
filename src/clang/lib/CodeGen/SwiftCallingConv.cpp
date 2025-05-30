@@ -11,17 +11,16 @@
 //===----------------------------------------------------------------------===//
 
 #include "clang/CodeGen/SwiftCallingConv.h"
-#include "ABIInfo.h"
+#include "clang/Basic/TargetInfo.h"
 #include "CodeGenModule.h"
 #include "TargetInfo.h"
-#include "clang/Basic/TargetInfo.h"
 
 using namespace clang;
 using namespace CodeGen;
 using namespace swiftcall;
 
 static const SwiftABIInfo &getSwiftABIInfo(CodeGenModule &CGM) {
-  return CGM.getTargetCodeGenInfo().getSwiftABIInfo();
+  return cast<SwiftABIInfo>(CGM.getTargetCodeGenInfo().getABIInfo());
 }
 
 static bool isPowerOf2(unsigned n) {
@@ -124,7 +123,7 @@ void SwiftAggLowering::addTypedData(const RecordDecl *record, CharUnits begin,
                                     const ASTRecordLayout &layout) {
   // Unions are a special case.
   if (record->isUnion()) {
-    for (auto *field : record->fields()) {
+    for (auto field : record->fields()) {
       if (field->isBitField()) {
         addBitFieldData(field, begin, 0);
       } else {
@@ -161,7 +160,7 @@ void SwiftAggLowering::addTypedData(const RecordDecl *record, CharUnits begin,
   }
 
   // Add fields.
-  for (auto *field : record->fields()) {
+  for (auto field : record->fields()) {
     auto fieldOffsetInBits = layout.getFieldOffset(field->getFieldIndex());
     if (field->isBitField()) {
       addBitFieldData(field, begin, fieldOffsetInBits);
@@ -631,8 +630,9 @@ bool SwiftAggLowering::shouldPassIndirectly(bool asReturnValue) const {
 
   // Avoid copying the array of types when there's just a single element.
   if (Entries.size() == 1) {
-    return getSwiftABIInfo(CGM).shouldPassIndirectly(Entries.back().Type,
-                                                     asReturnValue);
+    return getSwiftABIInfo(CGM).shouldPassIndirectlyForSwift(
+                                                           Entries.back().Type,
+                                                             asReturnValue);
   }
 
   SmallVector<llvm::Type*, 8> componentTys;
@@ -640,13 +640,15 @@ bool SwiftAggLowering::shouldPassIndirectly(bool asReturnValue) const {
   for (auto &entry : Entries) {
     componentTys.push_back(entry.Type);
   }
-  return getSwiftABIInfo(CGM).shouldPassIndirectly(componentTys, asReturnValue);
+  return getSwiftABIInfo(CGM).shouldPassIndirectlyForSwift(componentTys,
+                                                           asReturnValue);
 }
 
 bool swiftcall::shouldPassIndirectly(CodeGenModule &CGM,
                                      ArrayRef<llvm::Type*> componentTys,
                                      bool asReturnValue) {
-  return getSwiftABIInfo(CGM).shouldPassIndirectly(componentTys, asReturnValue);
+  return getSwiftABIInfo(CGM).shouldPassIndirectlyForSwift(componentTys,
+                                                           asReturnValue);
 }
 
 CharUnits swiftcall::getMaximumVoluntaryIntegerSize(CodeGenModule &CGM) {
@@ -696,7 +698,8 @@ bool swiftcall::isLegalVectorType(CodeGenModule &CGM, CharUnits vectorSize,
 bool swiftcall::isLegalVectorType(CodeGenModule &CGM, CharUnits vectorSize,
                                   llvm::Type *eltTy, unsigned numElts) {
   assert(numElts > 1 && "illegal vector length");
-  return getSwiftABIInfo(CGM).isLegalVectorType(vectorSize, eltTy, numElts);
+  return getSwiftABIInfo(CGM)
+           .isLegalVectorTypeForSwift(vectorSize, eltTy, numElts);
 }
 
 std::pair<llvm::Type*, unsigned>

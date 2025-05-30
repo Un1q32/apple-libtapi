@@ -1,8 +1,9 @@
 //===--- APINotesWriter.h - API Notes Writer ----------------------*- C++ -*-===//
 //
-// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
-// See https://llvm.org/LICENSE.txt for license information.
-// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//                     The LLVM Compiler Infrastructure
+//
+// This file is distributed under the University of Illinois Open Source
+// License. See LICENSE.TXT for details.
 //
 //===----------------------------------------------------------------------===//
 //
@@ -46,17 +47,15 @@ public:
   /// Write the API notes data to the given stream.
   void writeToStream(llvm::raw_ostream &os);
 
-  /// Add information about a specific Objective-C class or protocol or a C++
-  /// namespace.
+  /// Add information about a specific Objective-C class or protocol.
   ///
-  /// \param name The name of this class/protocol/namespace.
-  /// \param contextKind Whether this is a class, a protocol, or a namespace.
-  /// \param info Information about this class/protocol/namespace.
+  /// \param name The name of this class/protocol.
+  /// \param isClass Whether this is a class (vs. a protocol).
+  /// \param info Information about this class/protocol.
   ///
-  /// \returns the ID of the class, protocol, or namespace, which can be used to
-  /// add properties and methods to the class/protocol/namespace.
-  ContextID addObjCContext(std::optional<ContextID> parentContextID,
-                           llvm::StringRef name, ContextKind contextKind,
+  /// \returns the ID of the class or protocol, which can be used to add
+  /// properties and methods to the class/protocol.
+  ContextID addObjCContext(llvm::StringRef name, bool isClass,
                            const ObjCContextInfo &info,
                            llvm::VersionTuple swiftVersion);
 
@@ -85,16 +84,14 @@ public:
   ///
   /// \param name The name of this global variable.
   /// \param info Information about this global variable.
-  void addGlobalVariable(std::optional<Context> context, llvm::StringRef name,
-                         const GlobalVariableInfo &info,
+  void addGlobalVariable(llvm::StringRef name, const GlobalVariableInfo &info,
                          llvm::VersionTuple swiftVersion);
 
   /// Add information about a global function.
   ///
   /// \param name The name of this global function.
   /// \param info Information about this global function.
-  void addGlobalFunction(std::optional<Context> context, llvm::StringRef name,
-                         const GlobalFunctionInfo &info,
+  void addGlobalFunction(llvm::StringRef name, const GlobalFunctionInfo &info,
                          llvm::VersionTuple swiftVersion);
 
   /// Add information about an enumerator.
@@ -108,15 +105,15 @@ public:
   ///
   /// \param name The name of this tag.
   /// \param info Information about this tag.
-  void addTag(std::optional<Context> context, llvm::StringRef name,
-              const TagInfo &info, llvm::VersionTuple swiftVersion);
+  void addTag(llvm::StringRef name, const TagInfo &info,
+              llvm::VersionTuple swiftVersion);
 
   /// Add information about a typedef.
   ///
   /// \param name The name of this typedef.
   /// \param info Information about this typedef.
-  void addTypedef(std::optional<Context> context, llvm::StringRef name,
-                  const TypedefInfo &info, llvm::VersionTuple swiftVersion);
+  void addTypedef(llvm::StringRef name, const TypedefInfo &info,
+                  llvm::VersionTuple swiftVersion);
 
   /// Add module options
   void addModuleOptions(ModuleOptions opts);

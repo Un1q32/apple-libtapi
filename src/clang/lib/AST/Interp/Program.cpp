@@ -18,21 +18,6 @@
 using namespace clang;
 using namespace clang::interp;
 
-unsigned Program::getOrCreateNativePointer(const void *Ptr) {
-  auto It = NativePointerIndices.find(Ptr);
-  if (It != NativePointerIndices.end())
-    return It->second;
-
-  unsigned Idx = NativePointers.size();
-  NativePointers.push_back(Ptr);
-  NativePointerIndices[Ptr] = Idx;
-  return Idx;
-}
-
-const void *Program::getNativePointer(unsigned Idx) {
-  return NativePointers[Idx];
-}
-
 unsigned Program::createGlobalString(const StringLiteral *S) {
   const size_t CharWidth = S->getCharByteWidth();
   const size_t BitWidth = CharWidth * Ctx.getCharBit();
@@ -104,7 +89,7 @@ llvm::Optional<unsigned> Program::getGlobal(const ValueDecl *VD) {
   if (It != GlobalIndices.end())
     return It->second;
 
-  // Find any previous declarations which were already evaluated.
+  // Find any previous declarations which were aleady evaluated.
   llvm::Optional<unsigned> Index;
   for (const Decl *P = VD; P; P = P->getPreviousDecl()) {
     auto It = GlobalIndices.find(P);
@@ -127,7 +112,7 @@ llvm::Optional<unsigned> Program::getOrCreateGlobal(const ValueDecl *VD) {
   if (auto Idx = getGlobal(VD))
     return Idx;
 
-  if (auto Idx = createGlobal(VD, nullptr)) {
+  if (auto Idx = createGlobal(VD)) {
     GlobalIndices[VD] = *Idx;
     return Idx;
   }
@@ -153,8 +138,7 @@ llvm::Optional<unsigned> Program::getOrCreateDummy(const ParmVarDecl *PD) {
   return {};
 }
 
-llvm::Optional<unsigned> Program::createGlobal(const ValueDecl *VD,
-                                               const Expr *Init) {
+llvm::Optional<unsigned> Program::createGlobal(const ValueDecl *VD) {
   bool IsStatic, IsExtern;
   if (auto *Var = dyn_cast<VarDecl>(VD)) {
     IsStatic = !Var->hasLocalStorage();
@@ -163,7 +147,7 @@ llvm::Optional<unsigned> Program::createGlobal(const ValueDecl *VD,
     IsStatic = false;
     IsExtern = true;
   }
-  if (auto Idx = createGlobal(VD, VD->getType(), IsStatic, IsExtern, Init)) {
+  if (auto Idx = createGlobal(VD, VD->getType(), IsStatic, IsExtern)) {
     for (const Decl *P = VD; P; P = P->getPreviousDecl())
       GlobalIndices[P] = *Idx;
     return *Idx;
@@ -176,8 +160,7 @@ llvm::Optional<unsigned> Program::createGlobal(const Expr *E) {
 }
 
 llvm::Optional<unsigned> Program::createGlobal(const DeclTy &D, QualType Ty,
-                                               bool IsStatic, bool IsExtern,
-                                               const Expr *Init) {
+                                               bool IsStatic, bool IsExtern) {
   // Create a descriptor for the global.
   Descriptor *Desc;
   const bool IsConst = Ty.isConstQualified();
@@ -208,6 +191,19 @@ Function *Program::getFunction(const FunctionDecl *F) {
   return It == Funcs.end() ? nullptr : It->second.get();
 }
 
+llvm::Expected<Function *> Program::getOrCreateFunction(const FunctionDecl *F) {
+  if (Function *Func = getFunction(F)) {
+    return Func;
+  }
+
+  // Try to compile the function if it wasn't compiled yet.
+  if (const FunctionDecl *FD = F->getDefinition())
+    return ByteCodeStmtGen<ByteCodeEmitter>(Ctx, *this).compileFunc(FD);
+
+  // A relocation which traps if not resolved.
+  return nullptr;
+}
+
 Record *Program::getOrCreateRecord(const RecordDecl *RD) {
   // Use the actual definition as a key.
   RD = RD->getDefinition();
@@ -221,7 +217,7 @@ Record *Program::getOrCreateRecord(const RecordDecl *RD) {
   }
 
   // Number of bytes required by fields and base classes.
-  unsigned BaseSize = 0;
+  unsigned Size = 0;
   // Number of bytes required by virtual base.
   unsigned VirtSize = 0;
 
@@ -245,9 +241,9 @@ Record *Program::getOrCreateRecord(const RecordDecl *RD) {
       const RecordDecl *BD = Spec.getType()->castAs<RecordType>()->getDecl();
       Record *BR = getOrCreateRecord(BD);
       if (Descriptor *Desc = GetBaseDesc(BD, BR)) {
-        BaseSize += align(sizeof(InlineDescriptor));
-        Bases.push_back({BD, BaseSize, Desc, BR});
-        BaseSize += align(BR->getSize());
+        Size += align(sizeof(InlineDescriptor));
+        Bases.push_back({BD, Size, Desc, BR});
+        Size += align(BR->getSize());
         continue;
       }
       return nullptr;
@@ -271,7 +267,7 @@ Record *Program::getOrCreateRecord(const RecordDecl *RD) {
   Record::FieldList Fields;
   for (const FieldDecl *FD : RD->fields()) {
     // Reserve space for the field's descriptor and the offset.
-    BaseSize += align(sizeof(InlineDescriptor));
+    Size += align(sizeof(InlineDescriptor));
 
     // Classify the field and add its metadata.
     QualType FT = FD->getType();
@@ -287,19 +283,19 @@ Record *Program::getOrCreateRecord(const RecordDecl *RD) {
     }
     if (!Desc)
       return nullptr;
-    Fields.push_back({FD, BaseSize, Desc});
-    BaseSize += align(Desc->getAllocSize());
+    Fields.push_back({FD, Size, Desc});
+    Size += align(Desc->getAllocSize());
   }
 
   Record *R = new (Allocator) Record(RD, std::move(Bases), std::move(Fields),
-                                     std::move(VirtBases), VirtSize, BaseSize);
+                                     std::move(VirtBases), VirtSize, Size);
   Records.insert({RD, R});
   return R;
 }
 
 Descriptor *Program::createDescriptor(const DeclTy &D, const Type *Ty,
                                       bool IsConst, bool IsTemporary,
-                                      bool IsMutable, const Expr *Init) {
+                                      bool IsMutable) {
   // Classes and structures.
   if (auto *RT = Ty->getAs<RecordType>()) {
     if (auto *Record = getOrCreateRecord(RT->getDecl()))
@@ -323,15 +319,14 @@ Descriptor *Program::createDescriptor(const DeclTy &D, const Type *Ty,
       } else {
         // Arrays of composites. In this case, the array is a list of pointers,
         // followed by the actual elements.
-        Descriptor *ElemDesc =
+        Descriptor *Desc =
             createDescriptor(D, ElemTy.getTypePtr(), IsConst, IsTemporary);
-        if (!ElemDesc)
+        if (!Desc)
           return nullptr;
-        InterpSize ElemSize =
-            ElemDesc->getAllocSize() + sizeof(InlineDescriptor);
+        InterpSize ElemSize = Desc->getAllocSize() + sizeof(InlineDescriptor);
         if (std::numeric_limits<unsigned>::max() / ElemSize <= NumElems)
           return {};
-        return allocateDescriptor(D, ElemDesc, NumElems, IsConst, IsTemporary,
+        return allocateDescriptor(D, Desc, NumElems, IsConst, IsTemporary,
                                   IsMutable);
       }
     }

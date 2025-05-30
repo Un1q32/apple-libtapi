@@ -23,24 +23,28 @@ class APIVisitor {
 public:
   virtual ~APIVisitor();
 
+  virtual void visitMacroDefinition(const MacroDefinitionRecord &);
   virtual void visitGlobal(const GlobalRecord &);
   virtual void visitEnum(const EnumRecord &);
   virtual void visitObjCInterface(const ObjCInterfaceRecord &);
   virtual void visitObjCCategory(const ObjCCategoryRecord &);
   virtual void visitObjCProtocol(const ObjCProtocolRecord &);
   virtual void visitTypeDef(const TypedefRecord &);
+  virtual void visitStruct(const StructRecord &);
 };
 
 class APIMutator {
 public:
   virtual ~APIMutator();
 
+  virtual void visitMacroDefinition(MacroDefinitionRecord &);
   virtual void visitGlobal(GlobalRecord &);
   virtual void visitEnum(EnumRecord &);
   virtual void visitObjCInterface(ObjCInterfaceRecord &);
   virtual void visitObjCCategory(ObjCCategoryRecord &);
   virtual void visitObjCProtocol(ObjCProtocolRecord &);
   virtual void visitTypeDef(TypedefRecord &);
+  virtual void visitStruct(StructRecord &);
 };
 
 TAPI_NAMESPACE_INTERNAL_END

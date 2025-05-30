@@ -12,7 +12,6 @@ unittest("FormatTests") {
   ]
   sources = [
     "CleanupTest.cpp",
-    "DefinitionBlockSeparatorTest.cpp",
     "FormatTest.cpp",
     "FormatTestCSharp.cpp",
     "FormatTestComments.cpp",
@@ -25,11 +24,8 @@ unittest("FormatTests") {
     "FormatTestSelective.cpp",
     "FormatTestTableGen.cpp",
     "FormatTestTextProto.cpp",
-    "FormatTestVerilog.cpp",
-    "MacroCallReconstructorTest.cpp",
     "MacroExpanderTest.cpp",
     "NamespaceEndCommentsFixerTest.cpp",
-    "QualifierFixerTest.cpp",
     "SortImportsTestJS.cpp",
     "SortImportsTestJava.cpp",
     "SortIncludesTest.cpp",

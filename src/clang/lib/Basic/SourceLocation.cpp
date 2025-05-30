@@ -90,7 +90,7 @@ SourceLocation::printToString(const SourceManager &SM) const {
   std::string S;
   llvm::raw_string_ostream OS(S);
   print(OS, SM);
-  return S;
+  return OS.str();
 }
 
 LLVM_DUMP_METHOD void SourceLocation::dump(const SourceManager &SM) const {
@@ -149,7 +149,7 @@ SourceRange::printToString(const SourceManager &SM) const {
   std::string S;
   llvm::raw_string_ostream OS(S);
   print(OS, SM);
-  return S;
+  return OS.str();
 }
 
 //===----------------------------------------------------------------------===//
@@ -164,10 +164,6 @@ FileID FullSourceLoc::getFileID() const {
 FullSourceLoc FullSourceLoc::getExpansionLoc() const {
   assert(isValid());
   return FullSourceLoc(SrcMgr->getExpansionLoc(*this), *SrcMgr);
-}
-
-std::pair<FileID, unsigned> FullSourceLoc::getDecomposedExpansionLoc() const {
-  return SrcMgr->getDecomposedExpansionLoc(*this);
 }
 
 FullSourceLoc FullSourceLoc::getSpellingLoc() const {

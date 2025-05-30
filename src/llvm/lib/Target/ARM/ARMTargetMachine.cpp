@@ -23,7 +23,6 @@
 #include "llvm/ADT/Triple.h"
 #include "llvm/Analysis/TargetTransformInfo.h"
 #include "llvm/CodeGen/ExecutionDomainFix.h"
-#include "llvm/CodeGen/GlobalISel/CSEInfo.h"
 #include "llvm/CodeGen/GlobalISel/CallLowering.h"
 #include "llvm/CodeGen/GlobalISel/IRTranslator.h"
 #include "llvm/CodeGen/GlobalISel/InstructionSelect.h"
@@ -31,21 +30,20 @@
 #include "llvm/CodeGen/GlobalISel/Legalizer.h"
 #include "llvm/CodeGen/GlobalISel/LegalizerInfo.h"
 #include "llvm/CodeGen/GlobalISel/RegBankSelect.h"
+#include "llvm/CodeGen/GlobalISel/RegisterBankInfo.h"
 #include "llvm/CodeGen/MachineFunction.h"
 #include "llvm/CodeGen/MachineScheduler.h"
 #include "llvm/CodeGen/Passes.h"
-#include "llvm/CodeGen/RegisterBankInfo.h"
 #include "llvm/CodeGen/TargetPassConfig.h"
 #include "llvm/IR/Attributes.h"
 #include "llvm/IR/DataLayout.h"
 #include "llvm/IR/Function.h"
-#include "llvm/MC/TargetRegistry.h"
 #include "llvm/Pass.h"
-#include "llvm/Support/ARMTargetParser.h"
 #include "llvm/Support/CodeGen.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/TargetParser.h"
+#include "llvm/Support/TargetRegistry.h"
 #include "llvm/Target/TargetLoweringObjectFile.h"
 #include "llvm/Target/TargetOptions.h"
 #include "llvm/Transforms/CFGuard.h"
@@ -94,7 +92,6 @@ extern "C" LLVM_EXTERNAL_VISIBILITY void LLVMInitializeARMTarget() {
   initializeARMLoadStoreOptPass(Registry);
   initializeARMPreAllocLoadStoreOptPass(Registry);
   initializeARMParallelDSPPass(Registry);
-  initializeARMBranchTargetsPass(Registry);
   initializeARMConstantIslandsPass(Registry);
   initializeARMExecutionDomainFixPass(Registry);
   initializeARMExpandPseudoPass(Registry);
@@ -107,7 +104,6 @@ extern "C" LLVM_EXTERNAL_VISIBILITY void LLVMInitializeARMTarget() {
   initializeMVEGatherScatterLoweringPass(Registry);
   initializeARMSLSHardeningPass(Registry);
   initializeMVELaneInterleavingPass(Registry);
-  initializeARMFixCortexA57AES1742098Pass(Registry);
 }
 
 static std::unique_ptr<TargetLoweringObjectFile> createTLOF(const Triple &TT) {
@@ -196,7 +192,7 @@ static std::string computeDataLayout(const Triple &TT, StringRef CPU,
 
 static Reloc::Model getEffectiveRelocModel(const Triple &TT,
                                            Optional<Reloc::Model> RM) {
-  if (!RM)
+  if (!RM.hasValue())
     // Default relocation model on Darwin is PIC.
     return TT.isOSBinFormatMachO() ? Reloc::PIC_ : Reloc::Static;
 
@@ -309,7 +305,7 @@ ARMBaseTargetMachine::getSubtargetImpl(const Function &F) const {
 }
 
 TargetTransformInfo
-ARMBaseTargetMachine::getTargetTransformInfo(const Function &F) const {
+ARMBaseTargetMachine::getTargetTransformInfo(const Function &F) {
   return TargetTransformInfo(ARMTTIImpl(this, F));
 }
 
@@ -436,9 +432,6 @@ void ARMPassConfig::addIRPasses() {
   // Add Control Flow Guard checks.
   if (TM->getTargetTriple().isOSWindows())
     addPass(createCFGuardCheckPass());
-
-  if (TM->Options.JMCInstrument)
-    addPass(createJMCInstrumenterPass());
 }
 
 void ARMPassConfig::addCodeGenPrepare() {
@@ -510,9 +503,6 @@ bool ARMPassConfig::addGlobalInstructionSelect() {
 
 void ARMPassConfig::addPreRegAlloc() {
   if (getOptLevel() != CodeGenOpt::None) {
-    if (getOptLevel() == CodeGenOpt::Aggressive)
-      addPass(&MachinePipelinerID);
-
     addPass(createMVETPAndVPTOptimisationsPass());
 
     addPass(createMLxExpansionPass());
@@ -551,6 +541,7 @@ void ARMPassConfig::addPreSched2() {
       return !MF.getSubtarget<ARMSubtarget>().isThumb1Only();
     }));
   }
+  addPass(createMVEVPTBlockPass());
   addPass(createThumb2ITBlockPass());
 
   // Add both scheduling passes to give the subtarget an opportunity to pick
@@ -560,7 +551,6 @@ void ARMPassConfig::addPreSched2() {
     addPass(&PostRASchedulerID);
   }
 
-  addPass(createMVEVPTBlockPass());
   addPass(createARMIndirectThunks());
   addPass(createARMSLSHardeningPass());
 }
@@ -581,20 +571,7 @@ void ARMPassConfig::addPreEmitPass() {
 }
 
 void ARMPassConfig::addPreEmitPass2() {
-  // Inserts fixup instructions before unsafe AES operations. Instructions may
-  // be inserted at the start of blocks and at within blocks so this pass has to
-  // come before those below.
-  addPass(createARMFixCortexA57AES1742098Pass());
-  // Inserts BTIs at the start of functions and indirectly-called basic blocks,
-  // so passes cannot add to the start of basic blocks once this has run.
-  addPass(createARMBranchTargetsPass());
-  // Inserts Constant Islands. Block sizes cannot be increased after this point,
-  // as this may push the branch ranges and load offsets of accessing constant
-  // pools out of range..
   addPass(createARMConstantIslandPass());
-  // Finalises Low-Overhead Loops. This replaces pseudo instructions with real
-  // instructions, but the pseudos all have conservative sizes so that block
-  // sizes will only be decreased by this pass.
   addPass(createARMLowOverheadLoopsPass());
 
   if (TM->getTargetTriple().isOSWindows()) {

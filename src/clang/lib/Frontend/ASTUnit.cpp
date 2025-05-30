@@ -87,7 +87,6 @@
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/FileUtilities.h"
 #include "llvm/Support/MemoryBuffer.h"
-#include "llvm/Support/SaveAndRestore.h"
 #include "llvm/Support/Timer.h"
 #include "llvm/Support/VirtualFileSystem.h"
 #include "llvm/Support/raw_ostream.h"
@@ -525,7 +524,6 @@ class ASTInfoCollector : public ASTReaderListener {
   IntrusiveRefCntPtr<TargetInfo> &Target;
   unsigned &Counter;
   bool InitializedLanguage = false;
-  bool InitializedHeaderSearchPaths = false;
 
 public:
   ASTInfoCollector(Preprocessor &PP, ASTContext *Context,
@@ -552,42 +550,11 @@ public:
   bool ReadHeaderSearchOptions(const HeaderSearchOptions &HSOpts,
                                StringRef SpecificModuleCachePath,
                                bool Complain) override {
-    // Preserve previously set header search paths.
-    llvm::SaveAndRestore<std::vector<HeaderSearchOptions::Entry>> X(
-        this->HSOpts.UserEntries);
-    llvm::SaveAndRestore<std::vector<HeaderSearchOptions::SystemHeaderPrefix>>
-        Y(this->HSOpts.SystemHeaderPrefixes);
-    llvm::SaveAndRestore<std::vector<std::string>> Z(
-        this->HSOpts.VFSOverlayFiles);
-
     this->HSOpts = HSOpts;
-
     return false;
   }
 
-  bool ReadHeaderSearchPaths(const HeaderSearchOptions &HSOpts,
-                             bool Complain) override {
-    if (InitializedHeaderSearchPaths)
-      return false;
-
-    this->HSOpts.UserEntries = HSOpts.UserEntries;
-    this->HSOpts.SystemHeaderPrefixes = HSOpts.SystemHeaderPrefixes;
-    this->HSOpts.VFSOverlayFiles = HSOpts.VFSOverlayFiles;
-
-    // Initialize the FileManager. We can't do this in update(), since that
-    // performs the initialization too late (once both target and language
-    // options are read).
-    PP.getFileManager().setVirtualFileSystem(createVFSFromOverlayFiles(
-        HSOpts.VFSOverlayFiles, PP.getDiagnostics(),
-        PP.getFileManager().getVirtualFileSystemPtr()));
-
-    InitializedHeaderSearchPaths = true;
-
-    return false;
-  }
-
-  bool ReadPreprocessorOptions(const PreprocessorOptions &PPOpts,
-                               bool ReadMacros, bool Complain,
+  bool ReadPreprocessorOptions(const PreprocessorOptions &PPOpts, bool Complain,
                                std::string &SuggestedPredefines) override {
     this->PPOpts = PPOpts;
     return false;
@@ -738,7 +705,7 @@ void FilterAndStoreDiagnosticConsumer::HandleDiagnostic(
     }
 
     if (StandaloneDiags) {
-      llvm::Optional<StoredDiagnostic> StoredDiag;
+      llvm::Optional<StoredDiagnostic> StoredDiag = None;
       if (!ResultDiag) {
         StoredDiag.emplace(Level, Info);
         ResultDiag = StoredDiag.getPointer();
@@ -792,8 +759,7 @@ std::unique_ptr<ASTUnit> ASTUnit::LoadFromASTFile(
     WhatToLoad ToLoad, IntrusiveRefCntPtr<DiagnosticsEngine> Diags,
     const FileSystemOptions &FileSystemOpts, bool UseDebugInfo,
     bool OnlyLocalDecls, CaptureDiagsKind CaptureDiagnostics,
-    bool AllowASTWithCompilerErrors, bool UserFilesAreVolatile,
-    IntrusiveRefCntPtr<llvm::vfs::FileSystem> VFS) {
+    bool AllowASTWithCompilerErrors, bool UserFilesAreVolatile) {
   std::unique_ptr<ASTUnit> AST(new ASTUnit(true));
 
   // Recover resources if we crash before exiting this method.
@@ -809,6 +775,8 @@ std::unique_ptr<ASTUnit> ASTUnit::LoadFromASTFile(
   AST->OnlyLocalDecls = OnlyLocalDecls;
   AST->CaptureDiagnostics = CaptureDiagnostics;
   AST->Diagnostics = Diags;
+  IntrusiveRefCntPtr<llvm::vfs::FileSystem> VFS =
+      llvm::vfs::getRealFileSystem();
   AST->FileMgr = new FileManager(FileSystemOpts, VFS);
   AST->UserFilesAreVolatile = UserFilesAreVolatile;
   AST->SourceMgr = new SourceManager(AST->getDiagnostics(),
@@ -816,7 +784,7 @@ std::unique_ptr<ASTUnit> ASTUnit::LoadFromASTFile(
                                      UserFilesAreVolatile);
   AST->ModuleCache = new InMemoryModuleCache;
   AST->HSOpts = std::make_shared<HeaderSearchOptions>();
-  AST->HSOpts->ModuleFormat = std::string(PCHContainerRdr.getFormats().front());
+  AST->HSOpts->ModuleFormat = std::string(PCHContainerRdr.getFormat());
   AST->HeaderInfo.reset(new HeaderSearch(AST->HSOpts,
                                          AST->getSourceManager(),
                                          AST->getDiagnostics(),
@@ -849,7 +817,7 @@ std::unique_ptr<ASTUnit> ASTUnit::LoadFromASTFile(
   AST->Reader = new ASTReader(
       PP, *AST->ModuleCache, AST->Ctx.get(), PCHContainerRdr, {},
       /*isysroot=*/"",
-      /*DisableValidationKind=*/disableValid, AllowASTWithCompilerErrors);
+      /*DisableValidation=*/disableValid, AllowASTWithCompilerErrors);
 
   AST->Reader->setListener(std::make_unique<ASTInfoCollector>(
       *AST->PP, AST->Ctx.get(), *AST->HSOpts, *AST->PPOpts, *AST->LangOpts,
@@ -1101,7 +1069,9 @@ static void
 checkAndRemoveNonDriverDiags(SmallVectorImpl<StoredDiagnostic> &StoredDiags) {
   // Get rid of stored diagnostics except the ones from the driver which do not
   // have a source location.
-  llvm::erase_if(StoredDiags, isNonDriverDiag);
+  StoredDiags.erase(
+      std::remove_if(StoredDiags.begin(), StoredDiags.end(), isNonDriverDiag),
+      StoredDiags.end());
 }
 
 static void checkAndSanitizeDiags(SmallVectorImpl<StoredDiagnostic> &
@@ -1146,7 +1116,6 @@ bool ASTUnit::Parse(std::shared_ptr<PCHContainerOperations> PCHContainerOps,
   // Create the compiler instance to use for building the AST.
   std::unique_ptr<CompilerInstance> Clang(
       new CompilerInstance(std::move(PCHContainerOps)));
-  Clang->setInvocation(CCInvocation);
 
   // Clean up on error, disengage it if the function returns successfully.
   auto CleanOnError = llvm::make_scope_exit([&]() {
@@ -1173,6 +1142,7 @@ bool ASTUnit::Parse(std::shared_ptr<PCHContainerOperations> PCHContainerOps,
   llvm::CrashRecoveryContextCleanupRegistrar<CompilerInstance>
     CICleanup(Clang.get());
 
+  Clang->setInvocation(CCInvocation);
   OriginalSourceFile =
       std::string(Clang->getFrontendOpts().Inputs[0].getFile());
 
@@ -1738,7 +1708,7 @@ std::unique_ptr<ASTUnit> ASTUnit::LoadFromCompilerInvocation(
   return AST;
 }
 
-std::unique_ptr<ASTUnit> ASTUnit::LoadFromCommandLine(
+ASTUnit *ASTUnit::LoadFromCommandLine(
     const char **ArgBegin, const char **ArgEnd,
     std::shared_ptr<PCHContainerOperations> PCHContainerOps,
     IntrusiveRefCntPtr<DiagnosticsEngine> Diags, StringRef ResourceFilesPath,
@@ -1753,12 +1723,6 @@ std::unique_ptr<ASTUnit> ASTUnit::LoadFromCommandLine(
     IntrusiveRefCntPtr<llvm::vfs::FileSystem> VFS) {
   assert(Diags.get() && "no DiagnosticsEngine was provided");
 
-  // If no VFS was provided, create one that tracks the physical file system.
-  // If '-working-directory' was passed as an argument, 'createInvocation' will
-  // set this as the current working directory of the VFS.
-  if (!VFS)
-    VFS = llvm::vfs::createPhysicalFileSystem();
-
   SmallVector<StoredDiagnostic, 4> StoredDiagnostics;
 
   std::shared_ptr<CompilerInvocation> CI;
@@ -1767,12 +1731,8 @@ std::unique_ptr<ASTUnit> ASTUnit::LoadFromCommandLine(
     CaptureDroppedDiagnostics Capture(CaptureDiagnostics, *Diags,
                                       &StoredDiagnostics, nullptr);
 
-    CreateInvocationOptions CIOpts;
-    CIOpts.VFS = VFS;
-    CIOpts.Diags = Diags;
-    CIOpts.ProbePrecompiled = true; // FIXME: historical default. Needed?
-    CI = createInvocation(llvm::makeArrayRef(ArgBegin, ArgEnd),
-                          std::move(CIOpts));
+    CI = createInvocationFromCommandLine(
+        llvm::makeArrayRef(ArgBegin, ArgEnd), Diags, VFS);
     if (!CI)
       return nullptr;
   }
@@ -1795,7 +1755,8 @@ std::unique_ptr<ASTUnit> ASTUnit::LoadFromCommandLine(
       SkipFunctionBodies == SkipFunctionBodiesScope::PreambleAndMainFile;
 
   if (ModuleFormat)
-    CI->getHeaderSearchOpts().ModuleFormat = std::string(*ModuleFormat);
+    CI->getHeaderSearchOpts().ModuleFormat =
+        std::string(ModuleFormat.getValue());
 
   if (ForSerialization)
     CI->getLangOpts()->NeededByPCHOrCompilationUsesPCH = true;
@@ -1808,6 +1769,8 @@ std::unique_ptr<ASTUnit> ASTUnit::LoadFromCommandLine(
   ConfigureDiags(Diags, *AST, CaptureDiagnostics);
   AST->Diagnostics = Diags;
   AST->FileSystemOpts = CI->getFileSystemOpts();
+  if (!VFS)
+    VFS = llvm::vfs::getRealFileSystem();
   VFS = createVFSFromCompilerInvocation(*CI, *Diags, VFS);
   AST->FileMgr = new FileManager(AST->FileSystemOpts, VFS);
   AST->ModuleCache = new InMemoryModuleCache;
@@ -1842,7 +1805,7 @@ std::unique_ptr<ASTUnit> ASTUnit::LoadFromCommandLine(
     return nullptr;
   }
 
-  return AST;
+  return AST.release();
 }
 
 bool ASTUnit::Reparse(std::shared_ptr<PCHContainerOperations> PCHContainerOps,
@@ -1964,10 +1927,9 @@ namespace {
     void ProcessOverloadCandidates(Sema &S, unsigned CurrentArg,
                                    OverloadCandidate *Candidates,
                                    unsigned NumCandidates,
-                                   SourceLocation OpenParLoc,
-                                   bool Braced) override {
+                                   SourceLocation OpenParLoc) override {
       Next.ProcessOverloadCandidates(S, CurrentArg, Candidates, NumCandidates,
-                                     OpenParLoc, Braced);
+                                     OpenParLoc);
     }
 
     CodeCompletionAllocator &getAllocator() override {
@@ -2030,7 +1992,6 @@ static void CalculateHiddenNames(const CodeCompletionContext &Context,
   case CodeCompletionContext::CCC_ObjCClassMessage:
   case CodeCompletionContext::CCC_ObjCCategoryName:
   case CodeCompletionContext::CCC_IncludedFile:
-  case CodeCompletionContext::CCC_Attribute:
   case CodeCompletionContext::CCC_NewName:
     // We're looking for nothing, or we're looking for names that cannot
     // be hidden.

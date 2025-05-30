@@ -228,7 +228,6 @@ AsmToken AsmLexer::LexLineComment() {
   int CurChar = getNextChar();
   while (CurChar != '\n' && CurChar != '\r' && CurChar != EOF)
     CurChar = getNextChar();
-  const char *NewlinePtr = CurPtr;
   if (CurChar == '\r' && CurPtr != CurBuf.end() && *CurPtr == '\n')
     ++CurPtr;
 
@@ -236,7 +235,7 @@ AsmToken AsmLexer::LexLineComment() {
   if (CommentConsumer) {
     CommentConsumer->HandleComment(
         SMLoc::getFromPointer(CommentTextStart),
-        StringRef(CommentTextStart, NewlinePtr - 1 - CommentTextStart));
+        StringRef(CommentTextStart, CurPtr - 1 - CommentTextStart));
   }
 
   IsAtStartOfLine = true;
@@ -251,12 +250,12 @@ AsmToken AsmLexer::LexLineComment() {
 }
 
 static void SkipIgnoredIntegerSuffix(const char *&CurPtr) {
-  // Skip case-insensitive ULL, UL, U, L and LL suffixes.
-  if (CurPtr[0] == 'U' || CurPtr[0] == 'u')
+  // Skip ULL, UL, U, L and LL suffices.
+  if (CurPtr[0] == 'U')
     ++CurPtr;
-  if (CurPtr[0] == 'L' || CurPtr[0] == 'l')
+  if (CurPtr[0] == 'L')
     ++CurPtr;
-  if (CurPtr[0] == 'L' || CurPtr[0] == 'l')
+  if (CurPtr[0] == 'L')
     ++CurPtr;
 }
 
@@ -339,7 +338,7 @@ AsmToken AsmLexer::LexDigit() {
         if (!FirstNonDecimal) {
           FirstNonDecimal = CurPtr;
         }
-        [[fallthrough]];
+        LLVM_FALLTHROUGH;
       case '9':
       case '8':
       case '7':
@@ -716,7 +715,7 @@ bool AsmLexer::isAtStartOfComment(const char *Ptr) {
   if (CommentString.size() == 1)
     return CommentString[0] == Ptr[0];
 
-  // Allow # preprocessor comments also be counted as comments for "##" cases
+  // Allow # preprocessor commments also be counted as comments for "##" cases
   if (CommentString[1] == '#')
     return CommentString[0] == Ptr[0];
 

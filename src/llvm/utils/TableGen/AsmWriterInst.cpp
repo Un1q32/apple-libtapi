@@ -11,7 +11,6 @@
 //===----------------------------------------------------------------------===//
 
 #include "AsmWriterInst.h"
-#include "CodeGenInstruction.h"
 #include "CodeGenTarget.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/TableGen/Error.h"
@@ -148,7 +147,8 @@ AsmWriterInst::AsmWriterInst(const CodeGenInstruction &CGI, unsigned CGIIndex,
           std::string::size_type ModifierStart = VarEnd;
           while (VarEnd < AsmString.size() && isIdentChar(AsmString[VarEnd]))
             ++VarEnd;
-          Modifier = AsmString.substr(ModifierStart, VarEnd - ModifierStart);
+          Modifier = std::string(AsmString.begin()+ModifierStart,
+                                 AsmString.begin()+VarEnd);
           if (Modifier.empty())
             PrintFatalError(CGI.TheDef->getLoc(),
                             "Bad operand modifier name in '" +

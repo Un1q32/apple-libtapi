@@ -39,10 +39,10 @@
 #include "llvm/Support/Error.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/LEB128.h"
+#include "llvm/Support/ManagedStatic.h"
 #include "llvm/Support/MathExtras.h"
 #include "llvm/Support/Path.h"
 #include "llvm/Support/SwapByteOrder.h"
-#include "llvm/Support/VirtualFileSystem.h"
 #include <algorithm>
 #include <cassert>
 #include <cstddef>
@@ -51,7 +51,6 @@
 #include <memory>
 #include <string>
 #include <system_error>
-#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -75,91 +74,53 @@ static cl::opt<unsigned> StaticFuncStripDirNamePrefix(
     cl::desc("Strip specified level of directory name from source path in "
              "the profile counter name for static functions."));
 
-static std::string getInstrProfErrString(instrprof_error Err,
-                                         const std::string &ErrMsg = "") {
-  std::string Msg;
-  raw_string_ostream OS(Msg);
-
+static std::string getInstrProfErrString(instrprof_error Err) {
   switch (Err) {
   case instrprof_error::success:
-    OS << "success";
-    break;
+    return "success";
   case instrprof_error::eof:
-    OS << "end of File";
-    break;
+    return "end of File";
   case instrprof_error::unrecognized_format:
-    OS << "unrecognized instrumentation profile encoding format";
-    break;
+    return "unrecognized instrumentation profile encoding format";
   case instrprof_error::bad_magic:
-    OS << "invalid instrumentation profile data (bad magic)";
-    break;
+    return "invalid instrumentation profile data (bad magic)";
   case instrprof_error::bad_header:
-    OS << "invalid instrumentation profile data (file header is corrupt)";
-    break;
+    return "invalid instrumentation profile data (file header is corrupt)";
   case instrprof_error::unsupported_version:
-    OS << "unsupported instrumentation profile format version";
-    break;
+    return "unsupported instrumentation profile format version";
   case instrprof_error::unsupported_hash_type:
-    OS << "unsupported instrumentation profile hash type";
-    break;
+    return "unsupported instrumentation profile hash type";
   case instrprof_error::too_large:
-    OS << "too much profile data";
-    break;
+    return "too much profile data";
   case instrprof_error::truncated:
-    OS << "truncated profile data";
-    break;
+    return "truncated profile data";
   case instrprof_error::malformed:
-    OS << "malformed instrumentation profile data";
-    break;
-  case instrprof_error::missing_debug_info_for_correlation:
-    OS << "debug info for correlation is required";
-    break;
-  case instrprof_error::unexpected_debug_info_for_correlation:
-    OS << "debug info for correlation is not necessary";
-    break;
-  case instrprof_error::unable_to_correlate_profile:
-    OS << "unable to correlate profile";
-    break;
+    return "malformed instrumentation profile data";
   case instrprof_error::invalid_prof:
-    OS << "invalid profile created. Please file a bug "
-          "at: " BUG_REPORT_URL
-          " and include the profraw files that caused this error.";
-    break;
+    return "invalid profile created. Please file a bug "
+           "at: " BUG_REPORT_URL
+           " and include the profraw files that caused this error.";
   case instrprof_error::unknown_function:
-    OS << "no profile data available for function";
-    break;
+    return "no profile data available for function";
   case instrprof_error::hash_mismatch:
-    OS << "function control flow change detected (hash mismatch)";
-    break;
+    return "function control flow change detected (hash mismatch)";
   case instrprof_error::count_mismatch:
-    OS << "function basic block count change detected (counter mismatch)";
-    break;
+    return "function basic block count change detected (counter mismatch)";
   case instrprof_error::counter_overflow:
-    OS << "counter overflow";
-    break;
+    return "counter overflow";
   case instrprof_error::value_site_count_mismatch:
-    OS << "function value site count change detected (counter mismatch)";
-    break;
+    return "function value site count change detected (counter mismatch)";
   case instrprof_error::compress_failed:
-    OS << "failed to compress data (zlib)";
-    break;
+    return "failed to compress data (zlib)";
   case instrprof_error::uncompress_failed:
-    OS << "failed to uncompress data (zlib)";
-    break;
+    return "failed to uncompress data (zlib)";
   case instrprof_error::empty_raw_profile:
-    OS << "empty raw profile file";
-    break;
+    return "empty raw profile file";
   case instrprof_error::zlib_unavailable:
-    OS << "profile uses zlib compression but the profile reader was built "
-          "without zlib support";
-    break;
+    return "profile uses zlib compression but the profile reader was built "
+           "without zlib support";
   }
-
-  // If optional error message is not empty, append it to the message.
-  if (!ErrMsg.empty())
-    OS << ": " << ErrMsg;
-
-  return OS.str();
+  llvm_unreachable("A value of instrprof_error has no message.");
 }
 
 namespace {
@@ -177,9 +138,10 @@ class InstrProfErrorCategoryType : public std::error_category {
 
 } // end anonymous namespace
 
+static ManagedStatic<InstrProfErrorCategoryType> ErrorCategory;
+
 const std::error_category &llvm::instrprof_category() {
-  static InstrProfErrorCategoryType ErrorCategory;
-  return ErrorCategory;
+  return *ErrorCategory;
 }
 
 namespace {
@@ -255,7 +217,7 @@ void SoftInstrProfErrors::addError(instrprof_error IE) {
 }
 
 std::string InstrProfError::message() const {
-  return getInstrProfErrString(Err, Msg);
+  return getInstrProfErrString(Err);
 }
 
 char InstrProfError::ID = 0;
@@ -465,13 +427,16 @@ Error collectPGOFuncNameStrings(ArrayRef<std::string> NameStrs,
     return WriteStringToResult(0, UncompressedNameStrings);
   }
 
-  SmallVector<uint8_t, 128> CompressedNameStrings;
-  compression::zlib::compress(arrayRefFromStringRef(UncompressedNameStrings),
-                              CompressedNameStrings,
-                              compression::zlib::BestSizeCompression);
+  SmallString<128> CompressedNameStrings;
+  Error E = zlib::compress(StringRef(UncompressedNameStrings),
+                           CompressedNameStrings, zlib::BestSizeCompression);
+  if (E) {
+    consumeError(std::move(E));
+    return make_error<InstrProfError>(instrprof_error::compress_failed);
+  }
 
   return WriteStringToResult(CompressedNameStrings.size(),
-                             toStringRef(CompressedNameStrings));
+                             CompressedNameStrings);
 }
 
 StringRef getPGOFuncNameVarInitializer(GlobalVariable *NameVar) {
@@ -488,7 +453,7 @@ Error collectPGOFuncNameStrings(ArrayRef<GlobalVariable *> NameVars,
     NameStrs.push_back(std::string(getPGOFuncNameVarInitializer(NameVar)));
   }
   return collectPGOFuncNameStrings(
-      NameStrs, compression::zlib::isAvailable() && doCompression, Result);
+      NameStrs, zlib::isAvailable() && doCompression, Result);
 }
 
 Error readPGOFuncNameStrings(StringRef NameStrings, InstrProfSymtab &Symtab) {
@@ -501,20 +466,23 @@ Error readPGOFuncNameStrings(StringRef NameStrings, InstrProfSymtab &Symtab) {
     uint64_t CompressedSize = decodeULEB128(P, &N);
     P += N;
     bool isCompressed = (CompressedSize != 0);
-    SmallVector<uint8_t, 128> UncompressedNameStrings;
+    SmallString<128> UncompressedNameStrings;
     StringRef NameStrings;
     if (isCompressed) {
-      if (!llvm::compression::zlib::isAvailable())
+      if (!llvm::zlib::isAvailable())
         return make_error<InstrProfError>(instrprof_error::zlib_unavailable);
 
-      if (Error E = compression::zlib::decompress(
-              makeArrayRef(P, CompressedSize), UncompressedNameStrings,
-              UncompressedSize)) {
+      StringRef CompressedNameStrings(reinterpret_cast<const char *>(P),
+                                      CompressedSize);
+      if (Error E =
+              zlib::uncompress(CompressedNameStrings, UncompressedNameStrings,
+                               UncompressedSize)) {
         consumeError(std::move(E));
         return make_error<InstrProfError>(instrprof_error::uncompress_failed);
       }
       P += CompressedSize;
-      NameStrings = toStringRef(UncompressedNameStrings);
+      NameStrings = StringRef(UncompressedNameStrings.data(),
+                              UncompressedNameStrings.size());
     } else {
       NameStrings =
           StringRef(reinterpret_cast<const char *>(P), UncompressedSize);
@@ -536,8 +504,8 @@ Error readPGOFuncNameStrings(StringRef NameStrings, InstrProfSymtab &Symtab) {
 void InstrProfRecord::accumulateCounts(CountSumOrPercent &Sum) const {
   uint64_t FuncSum = 0;
   Sum.NumEntries += Counts.size();
-  for (uint64_t Count : Counts)
-    FuncSum += Count;
+  for (size_t F = 0, E = Counts.size(); F < E; ++F)
+    FuncSum += Counts[F];
   Sum.CountSum += FuncSum;
 
   for (uint32_t VK = IPVK_First; VK <= IPVK_Last; ++VK) {
@@ -660,26 +628,27 @@ void InstrProfValueSiteRecord::merge(InstrProfValueSiteRecord &Input,
   Input.sortByTargetValues();
   auto I = ValueData.begin();
   auto IE = ValueData.end();
-  for (const InstrProfValueData &J : Input.ValueData) {
-    while (I != IE && I->Value < J.Value)
+  for (auto J = Input.ValueData.begin(), JE = Input.ValueData.end(); J != JE;
+       ++J) {
+    while (I != IE && I->Value < J->Value)
       ++I;
-    if (I != IE && I->Value == J.Value) {
+    if (I != IE && I->Value == J->Value) {
       bool Overflowed;
-      I->Count = SaturatingMultiplyAdd(J.Count, Weight, I->Count, &Overflowed);
+      I->Count = SaturatingMultiplyAdd(J->Count, Weight, I->Count, &Overflowed);
       if (Overflowed)
         Warn(instrprof_error::counter_overflow);
       ++I;
       continue;
     }
-    ValueData.insert(I, J);
+    ValueData.insert(I, *J);
   }
 }
 
 void InstrProfValueSiteRecord::scale(uint64_t N, uint64_t D,
                                      function_ref<void(instrprof_error)> Warn) {
-  for (InstrProfValueData &I : ValueData) {
+  for (auto I = ValueData.begin(), IE = ValueData.end(); I != IE; ++I) {
     bool Overflowed;
-    I.Count = SaturatingMultiply(I.Count, N, &Overflowed) / D;
+    I->Count = SaturatingMultiply(I->Count, N, &Overflowed) / D;
     if (Overflowed)
       Warn(instrprof_error::counter_overflow);
   }
@@ -715,33 +684,10 @@ void InstrProfRecord::merge(InstrProfRecord &Other, uint64_t Weight,
     return;
   }
 
-  // Special handling of the first count as the PseudoCount.
-  CountPseudoKind OtherKind = Other.getCountPseudoKind();
-  CountPseudoKind ThisKind = getCountPseudoKind();
-  if (OtherKind != NotPseudo || ThisKind != NotPseudo) {
-    // We don't allow the merge of a profile with pseudo counts and
-    // a normal profile (i.e. without pesudo counts).
-    // Profile supplimenation should be done after the profile merge.
-    if (OtherKind == NotPseudo || ThisKind == NotPseudo) {
-      Warn(instrprof_error::count_mismatch);
-      return;
-    }
-    if (OtherKind == PseudoHot || ThisKind == PseudoHot)
-      setPseudoCount(PseudoHot);
-    else
-      setPseudoCount(PseudoWarm);
-    return;
-  }
-
   for (size_t I = 0, E = Other.Counts.size(); I < E; ++I) {
     bool Overflowed;
-    uint64_t Value =
+    Counts[I] =
         SaturatingMultiplyAdd(Other.Counts[I], Weight, Counts[I], &Overflowed);
-    if (Value > getInstrMaxCountValue()) {
-      Value = getInstrMaxCountValue();
-      Overflowed = true;
-    }
-    Counts[I] = Value;
     if (Overflowed)
       Warn(instrprof_error::counter_overflow);
   }
@@ -763,10 +709,6 @@ void InstrProfRecord::scale(uint64_t N, uint64_t D,
   for (auto &Count : this->Counts) {
     bool Overflowed;
     Count = SaturatingMultiply(Count, N, &Overflowed) / D;
-    if (Count > getInstrMaxCountValue()) {
-      Count = getInstrMaxCountValue();
-      Overflowed = true;
-    }
     if (Overflowed)
       Warn(instrprof_error::counter_overflow);
   }
@@ -936,23 +878,18 @@ static std::unique_ptr<ValueProfData> allocValueProfData(uint32_t TotalSize) {
 
 Error ValueProfData::checkIntegrity() {
   if (NumValueKinds > IPVK_Last + 1)
-    return make_error<InstrProfError>(
-        instrprof_error::malformed, "number of value profile kinds is invalid");
-  // Total size needs to be multiple of quadword size.
+    return make_error<InstrProfError>(instrprof_error::malformed);
+  // Total size needs to be mulltiple of quadword size.
   if (TotalSize % sizeof(uint64_t))
-    return make_error<InstrProfError>(
-        instrprof_error::malformed, "total size is not multiples of quardword");
+    return make_error<InstrProfError>(instrprof_error::malformed);
 
   ValueProfRecord *VR = getFirstValueProfRecord(this);
   for (uint32_t K = 0; K < this->NumValueKinds; K++) {
     if (VR->Kind > IPVK_Last)
-      return make_error<InstrProfError>(instrprof_error::malformed,
-                                        "value kind is invalid");
+      return make_error<InstrProfError>(instrprof_error::malformed);
     VR = getValueProfRecordNext(VR);
     if ((char *)VR - (char *)this > (ptrdiff_t)TotalSize)
-      return make_error<InstrProfError>(
-          instrprof_error::malformed,
-          "value profile address is greater than total size");
+      return make_error<InstrProfError>(instrprof_error::malformed);
   }
   return Error::success();
 }
@@ -1161,13 +1098,9 @@ bool needsComdatForCounter(const Function &F, const Module &M) {
 bool isIRPGOFlagSet(const Module *M) {
   auto IRInstrVar =
       M->getNamedGlobal(INSTR_PROF_QUOTE(INSTR_PROF_RAW_VERSION_VAR));
-  if (!IRInstrVar || IRInstrVar->hasLocalLinkage())
+  if (!IRInstrVar || IRInstrVar->isDeclaration() ||
+      IRInstrVar->hasLocalLinkage())
     return false;
-
-  // For CSPGO+LTO, this variable might be marked as non-prevailing and we only
-  // have the decl.
-  if (IRInstrVar->isDeclaration())
-    return true;
 
   // Check if the flag is set.
   if (!IRInstrVar->hasInitializer())
@@ -1202,6 +1135,28 @@ bool canRenameComdatFunc(const Function &F, bool CheckAddressTaken) {
   return true;
 }
 
+// Create a COMDAT variable INSTR_PROF_RAW_VERSION_VAR to make the runtime
+// aware this is an ir_level profile so it can set the version flag.
+void createIRLevelProfileFlagVar(Module &M, bool IsCS,
+                                 bool InstrEntryBBEnabled) {
+  const StringRef VarName(INSTR_PROF_QUOTE(INSTR_PROF_RAW_VERSION_VAR));
+  Type *IntTy64 = Type::getInt64Ty(M.getContext());
+  uint64_t ProfileVersion = (INSTR_PROF_RAW_VERSION | VARIANT_MASK_IR_PROF);
+  if (IsCS)
+    ProfileVersion |= VARIANT_MASK_CSIR_PROF;
+  if (InstrEntryBBEnabled)
+    ProfileVersion |= VARIANT_MASK_INSTR_ENTRY;
+  auto IRLevelVersionVariable = new GlobalVariable(
+      M, IntTy64, true, GlobalValue::WeakAnyLinkage,
+      Constant::getIntegerValue(IntTy64, APInt(64, ProfileVersion)), VarName);
+  IRLevelVersionVariable->setVisibility(GlobalValue::DefaultVisibility);
+  Triple TT(M.getTargetTriple());
+  if (TT.supportsCOMDAT()) {
+    IRLevelVersionVariable->setLinkage(GlobalValue::ExternalLinkage);
+    IRLevelVersionVariable->setComdat(M.getOrInsertComdat(VarName));
+  }
+}
+
 // Create the variable for the profile file name.
 void createProfileFileNameVar(Module &M, StringRef InstrProfileOutput) {
   if (InstrProfileOutput.empty())
@@ -1224,10 +1179,7 @@ Error OverlapStats::accumulateCounts(const std::string &BaseFilename,
                                      bool IsCS) {
   auto getProfileSum = [IsCS](const std::string &Filename,
                               CountSumOrPercent &Sum) -> Error {
-    // This function is only used from llvm-profdata that doesn't use any kind
-    // of VFS. Just create a default RealFileSystem to read profiles.
-    auto FS = vfs::getRealFileSystem();
-    auto ReaderOrErr = InstrProfReader::create(Filename, *FS);
+    auto ReaderOrErr = InstrProfReader::create(Filename);
     if (Error E = ReaderOrErr.takeError()) {
       return E;
     }
@@ -1334,77 +1286,5 @@ void OverlapStats::dump(raw_fd_ostream &OS) const {
        << "\n";
   }
 }
-
-namespace IndexedInstrProf {
-// A C++14 compatible version of the offsetof macro.
-template <typename T1, typename T2>
-inline size_t constexpr offsetOf(T1 T2::*Member) {
-  constexpr T2 Object{};
-  return size_t(&(Object.*Member)) - size_t(&Object);
-}
-
-static inline uint64_t read(const unsigned char *Buffer, size_t Offset) {
-  return *reinterpret_cast<const uint64_t *>(Buffer + Offset);
-}
-
-uint64_t Header::formatVersion() const {
-  using namespace support;
-  return endian::byte_swap<uint64_t, little>(Version);
-}
-
-Expected<Header> Header::readFromBuffer(const unsigned char *Buffer) {
-  using namespace support;
-  static_assert(std::is_standard_layout<Header>::value,
-                "The header should be standard layout type since we use offset "
-                "of fields to read.");
-  Header H;
-
-  H.Magic = read(Buffer, offsetOf(&Header::Magic));
-  // Check the magic number.
-  uint64_t Magic = endian::byte_swap<uint64_t, little>(H.Magic);
-  if (Magic != IndexedInstrProf::Magic)
-    return make_error<InstrProfError>(instrprof_error::bad_magic);
-
-  // Read the version.
-  H.Version = read(Buffer, offsetOf(&Header::Version));
-  if (GET_VERSION(H.formatVersion()) >
-      IndexedInstrProf::ProfVersion::CurrentVersion)
-    return make_error<InstrProfError>(instrprof_error::unsupported_version);
-
-  switch (GET_VERSION(H.formatVersion())) {
-    // When a new field is added in the header add a case statement here to
-    // populate it.
-    static_assert(
-        IndexedInstrProf::ProfVersion::CurrentVersion == Version8,
-        "Please update the reading code below if a new field has been added, "
-        "if not add a case statement to fall through to the latest version.");
-  case 8ull:
-    H.MemProfOffset = read(Buffer, offsetOf(&Header::MemProfOffset));
-    [[fallthrough]];
-  default: // Version7 (when the backwards compatible header was introduced).
-    H.HashType = read(Buffer, offsetOf(&Header::HashType));
-    H.HashOffset = read(Buffer, offsetOf(&Header::HashOffset));
-  }
-
-  return H;
-}
-
-size_t Header::size() const {
-  switch (GET_VERSION(formatVersion())) {
-    // When a new field is added to the header add a case statement here to
-    // compute the size as offset of the new field + size of the new field. This
-    // relies on the field being added to the end of the list.
-    static_assert(IndexedInstrProf::ProfVersion::CurrentVersion == Version8,
-                  "Please update the size computation below if a new field has "
-                  "been added to the header, if not add a case statement to "
-                  "fall through to the latest version.");
-  case 8ull:
-    return offsetOf(&Header::MemProfOffset) + sizeof(Header::MemProfOffset);
-  default: // Version7 (when the backwards compatible header was introduced).
-    return offsetOf(&Header::HashOffset) + sizeof(Header::HashOffset);
-  }
-}
-
-} // namespace IndexedInstrProf
 
 } // end namespace llvm

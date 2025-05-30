@@ -2,7 +2,7 @@
 
 set -e
 
-TAPI_VERSION=1500.0.12.3
+TAPI_VERSION=1400.0.11
 
 pushd "${0%/*}" &>/dev/null
 source tools/tools.sh

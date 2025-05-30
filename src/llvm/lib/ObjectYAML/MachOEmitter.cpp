@@ -54,9 +54,6 @@ private:
   void writeNameList(raw_ostream &OS);
   void writeStringTable(raw_ostream &OS);
   void writeExportTrie(raw_ostream &OS);
-  void writeDynamicSymbolTable(raw_ostream &OS);
-  void writeFunctionStarts(raw_ostream &OS);
-  void writeDataInCode(raw_ostream &OS);
 
   void dumpExportEntry(raw_ostream &OS, MachOYAML::ExportEntry &Entry);
   void ZeroToOffset(raw_ostream &OS, size_t offset);
@@ -187,30 +184,6 @@ size_t writeLoadCommandData<MachO::rpath_command>(MachOYAML::LoadCommand &LC,
 }
 
 template <>
-size_t writeLoadCommandData<MachO::sub_framework_command>(
-    MachOYAML::LoadCommand &LC, raw_ostream &OS, bool IsLittleEndian) {
-  return writePayloadString(LC, OS);
-}
-
-template <>
-size_t writeLoadCommandData<MachO::sub_umbrella_command>(
-    MachOYAML::LoadCommand &LC, raw_ostream &OS, bool IsLittleEndian) {
-  return writePayloadString(LC, OS);
-}
-
-template <>
-size_t writeLoadCommandData<MachO::sub_client_command>(
-    MachOYAML::LoadCommand &LC, raw_ostream &OS, bool IsLittleEndian) {
-  return writePayloadString(LC, OS);
-}
-
-template <>
-size_t writeLoadCommandData<MachO::sub_library_command>(
-    MachOYAML::LoadCommand &LC, raw_ostream &OS, bool IsLittleEndian) {
-  return writePayloadString(LC, OS);
-}
-
-template <>
 size_t writeLoadCommandData<MachO::build_version_command>(
     MachOYAML::LoadCommand &LC, raw_ostream &OS, bool IsLittleEndian) {
   size_t BytesWritten = 0;
@@ -291,7 +264,6 @@ void MachOWriter::writeLoadCommands(raw_ostream &OS) {
 }
 
 Error MachOWriter::writeSectionData(raw_ostream &OS) {
-  uint64_t LinkEditOff = 0;
   for (auto &LC : Obj.LoadCommands) {
     switch (LC.Data.load_command_data.cmd) {
     case MachO::LC_SEGMENT:
@@ -301,9 +273,6 @@ Error MachOWriter::writeSectionData(raw_ostream &OS) {
       if (0 ==
           strncmp(&LC.Data.segment_command_data.segname[0], "__LINKEDIT", 16)) {
         FoundLinkEditSeg = true;
-        LinkEditOff = segOff;
-        if (Obj.RawLinkEditSegment)
-          continue;
         writeLinkEditData(OS);
       }
       for (auto &Sec : LC.Sections) {
@@ -351,13 +320,6 @@ Error MachOWriter::writeSectionData(raw_ostream &OS) {
     }
   }
 
-  if (Obj.RawLinkEditSegment) {
-    ZeroToOffset(OS, LinkEditOff);
-    if (OS.tell() - fileStart > LinkEditOff || !LinkEditOff)
-      return createStringError(errc::invalid_argument,
-                               "section offsets don't line up");
-    Obj.RawLinkEditSegment->writeAsBinary(OS);
-  }
   return Error::success();
 }
 
@@ -436,24 +398,24 @@ void MachOWriter::writeBindOpcodes(
 
 void MachOWriter::dumpExportEntry(raw_ostream &OS,
                                   MachOYAML::ExportEntry &Entry) {
-  encodeULEB128(Entry.TerminalSize, OS);
+  encodeSLEB128(Entry.TerminalSize, OS);
   if (Entry.TerminalSize > 0) {
-    encodeULEB128(Entry.Flags, OS);
+    encodeSLEB128(Entry.Flags, OS);
     if (Entry.Flags & MachO::EXPORT_SYMBOL_FLAGS_REEXPORT) {
-      encodeULEB128(Entry.Other, OS);
+      encodeSLEB128(Entry.Other, OS);
       OS << Entry.ImportName;
       OS.write('\0');
     } else {
-      encodeULEB128(Entry.Address, OS);
+      encodeSLEB128(Entry.Address, OS);
       if (Entry.Flags & MachO::EXPORT_SYMBOL_FLAGS_STUB_AND_RESOLVER)
-        encodeULEB128(Entry.Other, OS);
+        encodeSLEB128(Entry.Other, OS);
     }
   }
   OS.write(static_cast<uint8_t>(Entry.Children.size()));
   for (auto EE : Entry.Children) {
     OS << EE.Name;
     OS.write('\0');
-    encodeULEB128(EE.NodeOffset, OS);
+    encodeSLEB128(EE.NodeOffset, OS);
   }
   for (auto EE : Entry.Children)
     dumpExportEntry(OS, EE);
@@ -483,11 +445,8 @@ void MachOWriter::writeLinkEditData(raw_ostream &OS) {
   typedef std::pair<uint64_t, writeHandler> writeOperation;
   std::vector<writeOperation> WriteQueue;
 
-  MachO::dyld_info_command *DyldInfoOnlyCmd = nullptr;
-  MachO::symtab_command *SymtabCmd = nullptr;
-  MachO::dysymtab_command *DSymtabCmd = nullptr;
-  MachO::linkedit_data_command *FunctionStartsCmd = nullptr;
-  MachO::linkedit_data_command *DataInCodeCmd = nullptr;
+  MachO::dyld_info_command *DyldInfoOnlyCmd = 0;
+  MachO::symtab_command *SymtabCmd = 0;
   for (auto &LC : Obj.LoadCommands) {
     switch (LC.Data.load_command_data.cmd) {
     case MachO::LC_SYMTAB:
@@ -510,25 +469,12 @@ void MachOWriter::writeLinkEditData(raw_ostream &OS) {
       WriteQueue.push_back(std::make_pair(DyldInfoOnlyCmd->export_off,
                                           &MachOWriter::writeExportTrie));
       break;
-    case MachO::LC_DYSYMTAB:
-      DSymtabCmd = &LC.Data.dysymtab_command_data;
-      WriteQueue.push_back(std::make_pair(
-          DSymtabCmd->indirectsymoff, &MachOWriter::writeDynamicSymbolTable));
-      break;
-    case MachO::LC_FUNCTION_STARTS:
-      FunctionStartsCmd = &LC.Data.linkedit_data_command_data;
-      WriteQueue.push_back(std::make_pair(FunctionStartsCmd->dataoff,
-                                          &MachOWriter::writeFunctionStarts));
-      break;
-    case MachO::LC_DATA_IN_CODE:
-      DataInCodeCmd = &LC.Data.linkedit_data_command_data;
-      WriteQueue.push_back(std::make_pair(DataInCodeCmd->dataoff,
-                                          &MachOWriter::writeDataInCode));
-      break;
     }
   }
 
-  llvm::sort(WriteQueue, llvm::less_first());
+  llvm::sort(WriteQueue, [](const writeOperation &a, const writeOperation &b) {
+    return a.first < b.first;
+  });
 
   for (auto writeOp : WriteQueue) {
     ZeroToOffset(OS, writeOp.first);
@@ -572,33 +518,6 @@ void MachOWriter::writeStringTable(raw_ostream &OS) {
   for (auto Str : Obj.LinkEdit.StringTable) {
     OS.write(Str.data(), Str.size());
     OS.write('\0');
-  }
-}
-
-void MachOWriter::writeDynamicSymbolTable(raw_ostream &OS) {
-  for (auto Data : Obj.LinkEdit.IndirectSymbols)
-    OS.write(reinterpret_cast<const char *>(&Data),
-             sizeof(yaml::Hex32::BaseType));
-}
-
-void MachOWriter::writeFunctionStarts(raw_ostream &OS) {
-  uint64_t Addr = 0;
-  for (uint64_t NextAddr : Obj.LinkEdit.FunctionStarts) {
-    uint64_t Delta = NextAddr - Addr;
-    encodeULEB128(Delta, OS);
-    Addr = NextAddr;
-  }
-
-  OS.write('\0');
-}
-
-void MachOWriter::writeDataInCode(raw_ostream &OS) {
-  for (const auto &Entry : Obj.LinkEdit.DataInCode) {
-    MachO::data_in_code_entry DICE{Entry.Offset, Entry.Length, Entry.Kind};
-    if (Obj.IsLittleEndian != sys::IsLittleEndianHost)
-      MachO::swapStruct(DICE);
-    OS.write(reinterpret_cast<const char *>(&DICE),
-             sizeof(MachO::data_in_code_entry));
   }
 }
 

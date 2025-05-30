@@ -37,7 +37,6 @@
 #include "llvm/Transforms/Instrumentation/SoftPointerAuth.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/GlobalVariable.h"
-#include "llvm/IR/IntrinsicInst.h"
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/Module.h"
 #include "llvm/InitializePasses.h"
@@ -137,7 +136,7 @@ private:
     if (!hasType(call, resultTypeTag))
       return false;
 
-    if (call->arg_size() != argTypeTags.size())
+    if (call->getNumArgOperands() != argTypeTags.size())
       return false;
     for (unsigned i = 0, e = argTypeTags.size(); i != e; ++i) {
       if (!hasType(call->getArgOperand(i), argTypeTags[i]))
@@ -151,7 +150,10 @@ private:
     auto type = value->getType();
     switch (tag) {
     case VoidPtr:
-      return type == Type::getInt8PtrTy(M->getContext());
+      if (auto ptrType = dyn_cast<PointerType>(type))
+        return ptrType->getAddressSpace() == 0 &&
+               ptrType->getElementType()->isIntegerTy(8);
+      return false;
     case Key:
       return type->isIntegerTy(32);
     case IntPtr:

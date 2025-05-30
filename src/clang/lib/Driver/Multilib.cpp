@@ -267,9 +267,10 @@ bool MultilibSet::select(const Multilib::flags_list &Flags, Multilib &M) const {
   }
 
   // Sort multilibs by priority and select the one with the highest priority.
-  llvm::sort(Filtered, [](const Multilib &a, const Multilib &b) -> bool {
-    return a.priority() > b.priority();
-  });
+  llvm::sort(Filtered.begin(), Filtered.end(),
+             [](const Multilib &a, const Multilib &b) -> bool {
+               return a.priority() > b.priority();
+             });
 
   if (Filtered[0].priority() > Filtered[1].priority()) {
     M = Filtered[0];
@@ -298,7 +299,7 @@ MultilibSet::multilib_list MultilibSet::filterCopy(FilterCallback F,
 }
 
 void MultilibSet::filterInPlace(FilterCallback F, multilib_list &Ms) {
-  llvm::erase_if(Ms, F);
+  Ms.erase(std::remove_if(Ms.begin(), Ms.end(), F), Ms.end());
 }
 
 raw_ostream &clang::driver::operator<<(raw_ostream &OS, const MultilibSet &MS) {

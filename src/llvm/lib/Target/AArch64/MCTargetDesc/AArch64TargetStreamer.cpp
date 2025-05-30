@@ -48,13 +48,11 @@ void AArch64TargetStreamer::emitCurrentConstantPool() {
   ConstantPools->emitForCurrentSection(Streamer);
 }
 
-void AArch64TargetStreamer::emitConstantPools() {
-  ConstantPools->emitAll(Streamer);
-}
-
 // finish() - write out any non-empty assembler constant pools and
 //   write out note.gnu.properties if need.
 void AArch64TargetStreamer::finish() {
+  ConstantPools->emitAll(Streamer);
+
   if (MarkBTIProperty)
     emitNoteSection(ELF::GNU_PROPERTY_AARCH64_FEATURE_1_BTI);
 }
@@ -76,7 +74,7 @@ void AArch64TargetStreamer::emitNoteSection(unsigned Flags) {
     return;
   }
   MCSection *Cur = OutStreamer.getCurrentSectionOnly();
-  OutStreamer.switchSection(Nt);
+  OutStreamer.SwitchSection(Nt);
 
   // Emit the note header.
   OutStreamer.emitValueToAlignment(Align(8).value());
@@ -92,7 +90,7 @@ void AArch64TargetStreamer::emitNoteSection(unsigned Flags) {
   OutStreamer.emitIntValue(0, 4);     // pad
 
   OutStreamer.endSection(Nt);
-  OutStreamer.switchSection(Cur);
+  OutStreamer.SwitchSection(Cur);
 }
 
 void AArch64TargetStreamer::emitInst(uint32_t Inst) {
@@ -101,8 +99,8 @@ void AArch64TargetStreamer::emitInst(uint32_t Inst) {
   // We can't just use EmitIntValue here, as that will swap the
   // endianness on big-endian systems (instructions are always
   // little-endian).
-  for (char &C : Buffer) {
-    C = uint8_t(Inst);
+  for (unsigned I = 0; I < 4; ++I) {
+    Buffer[I] = uint8_t(Inst);
     Inst >>= 8;
   }
 

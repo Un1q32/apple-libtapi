@@ -5,19 +5,17 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-///
-/// \file
-///  This file provides Any, a non-template class modeled in the spirit of
-///  std::any.  The idea is to provide a type-safe replacement for C's void*.
-///  It can hold a value of any copy-constructible copy-assignable type
-///
+//
+//  This file provides Any, a non-template class modeled in the spirit of
+//  std::any.  The idea is to provide a type-safe replacement for C's void*.
+//  It can hold a value of any copy-constructible copy-assignable type
+//
 //===----------------------------------------------------------------------===//
 
 #ifndef LLVM_ADT_ANY_H
 #define LLVM_ADT_ANY_H
 
-#include "llvm/ADT/STLForwardCompat.h"
-#include "llvm/Support/Compiler.h"
+#include "llvm/ADT/STLExtras.h"
 
 #include <cassert>
 #include <memory>
@@ -31,9 +29,7 @@ class LLVM_EXTERNAL_VISIBILITY Any {
   // identifier for the type `T`. It is explicitly marked with default
   // visibility so that when `-fvisibility=hidden` is used, the loader still
   // merges duplicate definitions across DSO boundaries.
-  template <typename T> struct TypeId {
-    static const char Id;
-  };
+  template <typename T> struct TypeId { static const char Id; };
 
   struct StorageBase {
     virtual ~StorageBase() = default;
@@ -70,8 +66,8 @@ public:
   // instead.
   template <typename T,
             std::enable_if_t<
-                std::conjunction<
-                    std::negation<std::is_same<std::decay_t<T>, Any>>,
+                llvm::conjunction<
+                    llvm::negation<std::is_same<std::decay_t<T>, Any>>,
                     // We also disable this overload when an `Any` object can be
                     // converted to the parameter type because in that case,
                     // this constructor may combine with that conversion during
@@ -82,7 +78,7 @@ public:
                     // DR in `std::any` as well, but we're going ahead and
                     // adopting it to work-around usage of `Any` with types that
                     // need to be implicitly convertible from an `Any`.
-                    std::negation<std::is_convertible<Any, std::decay_t<T>>>,
+                    llvm::negation<std::is_convertible<Any, std::decay_t<T>>>,
                     std::is_copy_constructible<std::decay_t<T>>>::value,
                 int> = 0>
   Any(T &&Value) {
@@ -102,9 +98,7 @@ public:
     return *this;
   }
 
-  LLVM_DEPRECATED("Use has_value instead.", "has_value")
   bool hasValue() const { return !!Storage; }
-  bool has_value() const { return !!Storage; }
 
   void reset() { Storage.reset(); }
 
@@ -120,6 +114,7 @@ private:
 };
 
 template <typename T> const char Any::TypeId<T>::Id = 0;
+
 
 template <typename T> bool any_isa(const Any &Value) {
   if (!Value.Storage)

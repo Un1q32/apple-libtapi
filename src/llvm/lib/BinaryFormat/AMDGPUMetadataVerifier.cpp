@@ -12,14 +12,8 @@
 //===----------------------------------------------------------------------===//
 
 #include "llvm/BinaryFormat/AMDGPUMetadataVerifier.h"
-
-#include "llvm/ADT/STLExtras.h"
-#include "llvm/ADT/STLForwardCompat.h"
 #include "llvm/ADT/StringSwitch.h"
-#include "llvm/BinaryFormat/MsgPackDocument.h"
-
-#include <map>
-#include <utility>
+#include "llvm/Support/AMDGPUMetadata.h"
 
 namespace llvm {
 namespace AMDGPU {
@@ -63,7 +57,11 @@ bool MetadataVerifier::verifyArray(
   auto &Array = Node.getArray();
   if (Size && Array.size() != *Size)
     return false;
-  return llvm::all_of(Array, verifyNode);
+  for (auto &Item : Array)
+    if (!verifyNode(Item))
+      return false;
+
+  return true;
 }
 
 bool MetadataVerifier::verifyEntry(
@@ -106,7 +104,8 @@ bool MetadataVerifier::verifyKernelArgs(msgpack::DocNode &Node) {
     return false;
   if (!verifyIntegerEntry(ArgsMap, ".offset", true))
     return false;
-  if (!verifyScalarEntry(ArgsMap, ".value_kind", true, msgpack::Type::String,
+  if (!verifyScalarEntry(ArgsMap, ".value_kind", true,
+                         msgpack::Type::String,
                          [](msgpack::DocNode &SNode) {
                            return StringSwitch<bool>(SNode.getString())
                                .Case("by_value", true)
@@ -116,29 +115,15 @@ bool MetadataVerifier::verifyKernelArgs(msgpack::DocNode &Node) {
                                .Case("image", true)
                                .Case("pipe", true)
                                .Case("queue", true)
-                               .Case("hidden_block_count_x", true)
-                               .Case("hidden_block_count_y", true)
-                               .Case("hidden_block_count_z", true)
-                               .Case("hidden_group_size_x", true)
-                               .Case("hidden_group_size_y", true)
-                               .Case("hidden_group_size_z", true)
-                               .Case("hidden_remainder_x", true)
-                               .Case("hidden_remainder_y", true)
-                               .Case("hidden_remainder_z", true)
                                .Case("hidden_global_offset_x", true)
                                .Case("hidden_global_offset_y", true)
                                .Case("hidden_global_offset_z", true)
-                               .Case("hidden_grid_dims", true)
                                .Case("hidden_none", true)
                                .Case("hidden_printf_buffer", true)
                                .Case("hidden_hostcall_buffer", true)
-                               .Case("hidden_heap_v1", true)
                                .Case("hidden_default_queue", true)
                                .Case("hidden_completion_action", true)
                                .Case("hidden_multigrid_sync_arg", true)
-                               .Case("hidden_private_base", true)
-                               .Case("hidden_shared_base", true)
-                               .Case("hidden_queue_ptr", true)
                                .Default(false);
                          }))
     return false;
@@ -259,9 +244,6 @@ bool MetadataVerifier::verifyKernel(msgpack::DocNode &Node) {
   if (!verifyIntegerEntry(KernelMap, ".group_segment_fixed_size", true))
     return false;
   if (!verifyIntegerEntry(KernelMap, ".private_segment_fixed_size", true))
-    return false;
-  if (!verifyScalarEntry(KernelMap, ".uses_dynamic_stack", false,
-                         msgpack::Type::Boolean))
     return false;
   if (!verifyIntegerEntry(KernelMap, ".kernarg_segment_align", true))
     return false;

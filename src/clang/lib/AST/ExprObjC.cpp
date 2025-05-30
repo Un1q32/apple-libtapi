@@ -271,7 +271,20 @@ QualType ObjCMessageExpr::getCallReturnType(ASTContext &Ctx) const {
     }
     return QT;
   }
-  return Ctx.getReferenceQualifiedType(this);
+
+  // Expression type might be different from an expected call return type,
+  // as expression type would never be a reference even if call returns a
+  // reference. Reconstruct the original expression type.
+  QualType QT = getType();
+  switch (getValueKind()) {
+  case VK_LValue:
+    return Ctx.getLValueReferenceType(QT);
+  case VK_XValue:
+    return Ctx.getRValueReferenceType(QT);
+  case VK_PRValue:
+    return QT;
+  }
+  llvm_unreachable("Unsupported ExprValueKind");
 }
 
 SourceRange ObjCMessageExpr::getReceiverRange() const {

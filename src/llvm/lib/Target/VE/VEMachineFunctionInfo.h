@@ -29,14 +29,10 @@ private:
   bool IsLeafProc;
 
 public:
-  VEMachineFunctionInfo() : VarArgsFrameOffset(0), IsLeafProc(false) {}
+  VEMachineFunctionInfo()
+      : GlobalBaseReg(), VarArgsFrameOffset(0), IsLeafProc(false) {}
   explicit VEMachineFunctionInfo(MachineFunction &MF)
-      : VarArgsFrameOffset(0), IsLeafProc(false) {}
-
-  MachineFunctionInfo *
-  clone(BumpPtrAllocator &Allocator, MachineFunction &DestMF,
-        const DenseMap<MachineBasicBlock *, MachineBasicBlock *> &Src2DstMBB)
-      const override;
+      : GlobalBaseReg(), VarArgsFrameOffset(0), IsLeafProc(false) {}
 
   Register getGlobalBaseReg() const { return GlobalBaseReg; }
   void setGlobalBaseReg(Register Reg) { GlobalBaseReg = Reg; }

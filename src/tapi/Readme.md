@@ -5,14 +5,14 @@ replaces the Mach-O Dynamic Library Stub files in Apple's SDKs to reduce SDK
 size even further.
 
 The text-based dynamic library stub file format (.tbd) is a human readable and
-editable YAML text file. The _TAPI_ projects uses the _LLVM_ parser to read
+editable YAML text file. The _TAPI_ projects uses the _LLVM_ YAML parser to read
 those files and provides this functionality to the linker as a dynamic library.
 
 
 ## Building TAPI
 
 TAPI is a _CLANG_ project and requires the _LLVM_ and _CLANG_ sources to
-compile. This version is supported to build against <https://github.com/apple/llvm-project/tree/swift-DEVELOPMENT-SNAPSHOT-2023-09-05-a>. This is tagged at `2b5ff47e44b059c03de5779479d01a133ab4d581`.
+compile. This version is supported to build against <https://github.com/apple/llvm-project/tree/apple/stable/20211026>.
 The source root directory should be placed along side _CLANG_ and _LLVM_ in project structure.
 
 Create a separate build directory and configure the project with CMake:

@@ -44,7 +44,6 @@ DefinedOrUnknownSVal getDynamicElementCount(ProgramStateRef State,
                                             const MemRegion *MR,
                                             SValBuilder &SVB,
                                             QualType ElementTy) {
-  assert(MR != nullptr && "Not-null region expected");
   MR = MR->StripCasts();
 
   DefinedOrUnknownSVal Size = getDynamicExtent(State, MR, SVB);

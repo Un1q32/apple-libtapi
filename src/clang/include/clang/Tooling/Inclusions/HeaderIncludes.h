@@ -14,7 +14,6 @@
 #include "clang/Tooling/Inclusions/IncludeStyle.h"
 #include "llvm/Support/Path.h"
 #include "llvm/Support/Regex.h"
-#include <list>
 #include <unordered_map>
 
 namespace clang {
@@ -79,16 +78,13 @@ public:
   /// exactly the same spelling.
   tooling::Replacements remove(llvm::StringRef Header, bool IsAngled) const;
 
-  // Matches a whole #include directive.
-  static const llvm::Regex IncludeRegex;
-
 private:
   struct Include {
     Include(StringRef Name, tooling::Range R) : Name(Name), R(R) {}
 
     // An include header quoted with either <> or "".
     std::string Name;
-    // The range of the whole line of include directive including any leading
+    // The range of the whole line of include directive including any eading
     // whitespaces and trailing comment.
     tooling::Range R;
   };
@@ -101,8 +97,7 @@ private:
   // Map from include name (quotation trimmed) to a list of existing includes
   // (in case there are more than one) with the name in the current file. <x>
   // and "x" will be treated as the same header when deleting #includes.
-  // std::list is used for pointers stability (see IncludesByPriority)
-  llvm::StringMap<std::list<Include>> ExistingIncludes;
+  llvm::StringMap<llvm::SmallVector<Include, 1>> ExistingIncludes;
 
   /// Map from priorities of #include categories to all #includes in the same
   /// category. This is used to find #includes of the same category when
@@ -127,7 +122,11 @@ private:
 
   // All possible priorities.
   std::set<int> Priorities;
+
+  // Matches a whole #include directive.
+  llvm::Regex IncludeRegex;
 };
+
 
 } // namespace tooling
 } // namespace clang

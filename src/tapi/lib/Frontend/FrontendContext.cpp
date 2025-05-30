@@ -16,13 +16,13 @@
 
 TAPI_NAMESPACE_INTERNAL_BEGIN
 
-FrontendContext::FrontendContext(const llvm::Triple &triple,
-                                 SymbolVerifier *verifier,
-                                 IntrusiveRefCntPtr<llvm::vfs::FileSystem> vfs,
-                                 HeaderType type)
-    : target(triple), verifier(verifier),
-      api(std::make_shared<API>(API(triple))), type(type) {
-  fileManager = new FileManager(clang::FileSystemOptions(), vfs);
+FrontendContext::FrontendContext(
+    const llvm::Triple &triple, StringRef workingDirectory,
+    IntrusiveRefCntPtr<FileSystemStatCacheFactory> cacheFactory,
+    IntrusiveRefCntPtr<llvm::vfs::FileSystem> vfs)
+    : target(triple), api(triple) {
+  fileManager = new FileManager(
+      clang::FileSystemOptions{workingDirectory.str()}, cacheFactory, vfs);
 }
 
 llvm::Optional<HeaderType>
@@ -40,19 +40,29 @@ FrontendContext::findAndRecordFile(const FileEntry *file) {
     return llvm::None;
 
   // If file was not found, search by how the header was
-  // included. This is primarily to resolve headers found
-  // in a different location than what passed as input.
-  auto includeName = pp->getHeaderSearchInfo().getIncludeNameForHeader(file);
-  auto backup = knownIncludes.find(includeName.str());
-  if (backup != knownIncludes.end()) {
-    knownFiles[file] = backup->second;
-    return backup->second;
+  // included. This is primarily to resolve headers found via headermaps, as
+  // they remap locations.
+  auto fileInfo = pp->getHeaderSearchInfo().getExistingFileInfo(file);
+  if (!fileInfo || !fileInfo->IsValid)
+    return llvm::None;
+
+  StringRef fileName = file->getName();
+  std::string includeName =
+      fileInfo->Framework.empty()
+          ? fileName.str()
+          : (fileInfo->Framework + "/" + llvm::sys::path::filename(fileName))
+                .str();
+
+  auto backup = knownIncludes.find(includeName);
+  if (backup == knownIncludes.end()) {
+    // Record that the file was found to avoid future string searches for the
+    // same file.
+    unusedFiles.insert(file);
+    return llvm::None;
   }
 
-  // Record that the file was found to avoid future string searches for the
-  // same file.
-  unusedFiles.insert(file);
-  return llvm::None;
+  knownFiles[file] = backup->second;
+  return backup->second;
 }
 
 TAPI_NAMESPACE_INTERNAL_END

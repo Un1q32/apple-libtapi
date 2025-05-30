@@ -113,8 +113,10 @@ int main(int argc, const char *argv[]) {
 
     APIJSONOption options = {};
     options.noUUID = noUUID;
+    options.noElaboratedSymbolInfo = true;
+    options.noUnifiedTypedefEntries = true;
     for (auto &r : *results) {
-      APIJSONSerializer serializer(*r.second, options);
+      APIJSONSerializer serializer(r.second, options);
       serializer.serialize(jsonOut);
     }
   }
@@ -130,9 +132,8 @@ int main(int argc, const char *argv[]) {
       errs().resetColor();
     errs() << r.first << "\n";
 
-    SortedAPI sortedResult(*r.second);
     APIPrinter printer(errs(), !noColors);
-    sortedResult.visit(printer);
+    r.second.visit(printer);
   }
 
   return 0;

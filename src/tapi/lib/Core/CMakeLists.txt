@@ -2,34 +2,36 @@ set( LLVM_LINK_COMPONENTS
   Object
   ObjCMetadata
   BinaryFormat
-  TextAPI
-  DebugInfoDWARF
   )
 
 add_tapi_library(tapiCore
   API.cpp
-  API2SymbolConverter.cpp
   APIJSONSerializer.cpp
   APIPrinter.cpp
   APIVisitor.cpp
   AvailabilityInfo.cpp
   ClangDiagnostics.cpp
-  Demangler.cpp
   FakeSymbols.cpp
   FileListReader.cpp
   FileManager.cpp
   FileSystem.cpp
   Framework.cpp
   HeaderFile.cpp
+  InterfaceFile.cpp
   InterfaceFileManager.cpp
-  JSONReaderWriter.cpp
   MachODylibReader.cpp
   MachOReader.cpp
+  PackedVersion.cpp
   Path.cpp
   ReexportFileWriter.cpp
   Registry.cpp
-  SymbolVerifier.cpp
+  TapiError.cpp
+  TextStub.cpp
+  TextStubv4.cpp
+  TextStubCommon.cpp
   Utils.cpp
+  XPI.cpp
+  XPISet.cpp
   YAMLReaderWriter.cpp
 
   LINK_LIBS

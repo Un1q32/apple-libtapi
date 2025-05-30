@@ -106,6 +106,8 @@ public:
   void reset();
 
 private:
+  void InitializeTypeMap(const Module &M);
+
   void processCompileUnit(DICompileUnit *CU);
   void processScope(DIScope *Scope);
   void processType(DIType *DT);

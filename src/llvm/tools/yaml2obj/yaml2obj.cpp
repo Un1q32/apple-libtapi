@@ -37,11 +37,7 @@ cl::opt<std::string> Input(cl::Positional, cl::desc("<input file>"),
 cl::list<std::string>
     D("D", cl::Prefix,
       cl::desc("Defined the specified macros to their specified "
-               "definition. The syntax is <macro>=<definition>"),
-      cl::cat(Cat));
-
-cl::opt<bool> PreprocessOnly("E", cl::desc("Just print the preprocessed file"),
-                             cl::cat(Cat));
+               "definition. The syntax is <macro>=<definition>"));
 
 cl::opt<unsigned>
     DocNum("docnum", cl::init(1),
@@ -51,8 +47,7 @@ cl::opt<unsigned>
 static cl::opt<uint64_t> MaxSize(
     "max-size", cl::init(10 * 1024 * 1024),
     cl::desc(
-        "Sets the maximum allowed output size (0 means no limit) [ELF only]"),
-    cl::cat(Cat));
+        "Sets the maximum allowed output size (0 means no limit) [ELF only]"));
 
 cl::opt<std::string> OutputFilename("o", cl::desc("Output filename"),
                                     cl::value_desc("filename"), cl::init("-"),
@@ -136,16 +131,11 @@ int main(int argc, char **argv) {
   Optional<std::string> Buffer = preprocess(Buf.get()->getBuffer(), ErrHandler);
   if (!Buffer)
     return 1;
+  yaml::Input YIn(*Buffer);
 
-  if (PreprocessOnly) {
-    Out->os() << Buffer;
-  } else {
-    yaml::Input YIn(*Buffer);
-
-    if (!convertYAML(YIn, Out->os(), ErrHandler, DocNum,
-                     MaxSize == 0 ? UINT64_MAX : MaxSize))
-      return 1;
-  }
+  if (!convertYAML(YIn, Out->os(), ErrHandler, DocNum,
+                   MaxSize == 0 ? UINT64_MAX : MaxSize))
+    return 1;
 
   Out->keep();
   Out->os().flush();

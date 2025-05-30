@@ -91,10 +91,6 @@ public:
     return isNormalDir() ? &u.Dir.getDirEntry() : nullptr;
   }
 
-  Optional<DirectoryEntryRef> getDirRef() const {
-    return isNormalDir() ? Optional<DirectoryEntryRef>(u.Dir) : None;
-  }
-
   /// getFrameworkDir - Return the directory that this framework refers to.
   ///
   const DirectoryEntry *getFrameworkDir() const {
@@ -186,8 +182,7 @@ public:
              SmallVectorImpl<char> *RelativePath, Module *RequestingModule,
              ModuleMap::KnownHeader *SuggestedModule,
              bool &InUserSpecifiedSystemFramework, bool &IsFrameworkFound,
-             bool &IsInHeaderMap, SmallVectorImpl<char> &MappedName,
-             bool OpenFile = true) const;
+             bool &IsInHeaderMap, SmallVectorImpl<char> &MappedName) const;
 
 private:
   Optional<FileEntryRef> DoFrameworkLookup(

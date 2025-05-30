@@ -14,6 +14,7 @@
 #ifndef TAPI_CORE_CONFIGURATION_H
 #define TAPI_CORE_CONFIGURATION_H
 
+#include "tapi/Core/PackedVersion.h"
 #include "tapi/Core/Path.h"
 #include "tapi/Defines.h"
 #include "tapi/Driver/ConfigurationFile.h"
@@ -21,7 +22,6 @@
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/Triple.h"
 #include "llvm/TextAPI/ArchitectureSet.h"
-#include "llvm/TextAPI/PackedVersion.h"
 #include <map>
 #include <string>
 
@@ -83,7 +83,6 @@ public:
   PathSeq getExcludedHeaders(StringRef path, HeaderType type) const;
   std::string getUmbrellaHeader(StringRef path, HeaderType type) const;
   bool isiOSMacProject() const;
-  bool isZipperedProject() const;
   bool isDriverKitProject() const {
     return isDriverKit;
   }
@@ -93,7 +92,6 @@ public:
   bool isPromotedToPublicDylib(StringRef installName) const;
   PathSeq getSDKMaskPaths() const;
   PathSeq getRootMaskPaths() const;
-  std::vector<std::string> getClangExtraArgs(StringRef path) const;
 
   void setProjectName(StringRef name) { projectName = name.str(); }
 

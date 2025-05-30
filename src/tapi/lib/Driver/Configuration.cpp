@@ -379,9 +379,6 @@ std::string Configuration::getUmbrellaHeader(StringRef path,
 bool Configuration::isiOSMacProject() const {
   return isiOSMac || (projectConfig && projectConfig->isiOSMac);
 }
-bool Configuration::isZipperedProject() const {
-  return projectConfig && projectConfig->isZippered;
-}
 
 bool Configuration::useOverlay(StringRef path) const {
   auto it = pathToConfig.find(path.str());
@@ -415,17 +412,6 @@ PathSeq Configuration::getSDKMaskPaths() const {
   if (projectConfig)
     return projectConfig->sdkMaskPaths;
   return PathSeq();
-}
-
-std::vector<std::string>
-Configuration::getClangExtraArgs(StringRef path) const {
-  std::vector<std::string> clangExtraArgs = commandLine.clangExtraArgs;
-  auto it = pathToConfig.find(path.str());
-  if (it != pathToConfig.end())
-    llvm::append_range(clangExtraArgs, it->second->clangExtraArgs);
-  if (projectConfig)
-    llvm::append_range(clangExtraArgs, projectConfig->clangExtraArgs);
-  return clangExtraArgs;
 }
 
 bool Configuration::isPromotedToPublicDylib(StringRef installName) const {

@@ -17,7 +17,6 @@
 #include "tapi/Core/HeaderFile.h"
 #include "tapi/Core/LLVM.h"
 #include "tapi/Core/Path.h"
-#include "tapi/Core/SymbolVerifier.h"
 #include "tapi/Defines.h"
 #include "tapi/Frontend/FrontendContext.h"
 #include "clang/Frontend/FrontendOptions.h"
@@ -26,6 +25,8 @@
 TAPI_NAMESPACE_INTERNAL_BEGIN
 
 struct FrontendJob {
+  std::string workingDirectory;
+  IntrusiveRefCntPtr<FileSystemStatCacheFactory> cacheFactory;
   IntrusiveRefCntPtr<llvm::vfs::FileSystem> vfs;
   llvm::Triple target;
   clang::Language language = clang::Language::Unknown;
@@ -43,7 +44,6 @@ struct FrontendJob {
   std::string visibility;
   std::string isysroot;
   std::string moduleCachePath;
-  std::string productName;
   std::string clangResourcePath;
   std::string clangReproducerPath;
   std::vector<std::pair<std::string, bool /*isUndef*/>> macros;
@@ -56,8 +56,6 @@ struct FrontendJob {
   std::vector<std::string> clangExtraArgs;
   HeaderType type;
   llvm::Optional<std::string> clangExecutablePath;
-  std::unique_ptr<SymbolVerifier> verifier =
-      std::make_unique<SymbolVerifier>(SymbolVerifier());
 };
 
 extern llvm::Expected<FrontendContext>

@@ -11,15 +11,15 @@
 ///
 //===----------------------------------------------------------------------===//
 
-#include "tapi/Core/InterfaceFileManager.h"
 #include "tapi/Core/Registry.h"
+#include "tapi/Core/TapiError.h"
 #include "tapi/Defines.h"
 #include "tapi/Diagnostics/Diagnostics.h"
 #include "tapi/Driver/Driver.h"
 #include "tapi/Driver/Options.h"
+#include "tapi/Driver/Snapshot.h"
 #include "clang/Driver/DriverDiagnostic.h"
 #include "llvm/TextAPI/Architecture.h"
-#include "llvm/TextAPI/TextAPIError.h"
 
 using namespace llvm;
 using namespace llvm::MachO;
@@ -29,8 +29,6 @@ TAPI_NAMESPACE_INTERNAL_BEGIN
 /// \brief Merge or thin text-based stub files.
 bool Driver::Archive::run(DiagnosticsEngine &diag, Options &opts) {
   auto &fm = opts.getFileManager();
-  const InterfaceFileManager manager(fm,
-                                     /*isVolatile=*/opts.tapiOptions.isBnI);
 
   // Handle input files.
   if (opts.driverOptions.inputs.empty()) {
@@ -69,8 +67,6 @@ bool Driver::Archive::run(DiagnosticsEngine &diag, Options &opts) {
   Registry registry;
   registry.addYAMLReaders();
   registry.addYAMLWriters();
-  registry.addJSONReaders();
-  registry.addJSONWriters();
 
   std::vector<std::unique_ptr<InterfaceFile>> inputs;
   for (const auto &path : opts.driverOptions.inputs) {
@@ -80,14 +76,14 @@ bool Driver::Archive::run(DiagnosticsEngine &diag, Options &opts) {
       return false;
     }
 
-    auto file = registry.readTextFile(std::move(bufferOr.get()));
+    auto file = registry.readFile(std::move(bufferOr.get()));
     if (!file) {
       diag.report(diag::err_cannot_read_file)
           << path << toString(file.takeError());
       return false;
     }
 
-    if (file.get()->getFileType() == FileType::Invalid) {
+    if (file.get()->getFileType() != FileType::TBD) {
       diag.report(diag::err_unsupported_file_type);
       return false;
     }
@@ -121,8 +117,8 @@ bool Driver::Archive::run(DiagnosticsEngine &diag, Options &opts) {
     auto file = inputs.front()->remove(opts.archiveOptions.arch);
     file = handleExpected(
         std::move(file), [&]() { return std::move(inputs.front()); },
-        [&](std::unique_ptr<TextAPIError> error) -> Error {
-          if (error->EC != TextAPIErrorCode::NoSuchArchitecture)
+        [&](std::unique_ptr<TapiError> error) -> Error {
+          if (error->ec != TapiErrorCode::NoSuchArchitecture)
             return Error(std::move(error));
           diag.report(diag::warn)
               << ("file doesn't have architecture '" +
@@ -169,19 +165,26 @@ bool Driver::Archive::run(DiagnosticsEngine &diag, Options &opts) {
       diag.report(diag::err_one_target);
       return false;
     }
+  std::vector<Target> targetTriples;
+  for (auto t: opts.frontendOptions.targets) 
+    targetTriples.emplace_back(t);
+  inputs.front()->printSymbols(
+        mapToArchitectureSet(targetTriples));
     break;
   }
   }
 
   if (output) {
-    auto result = manager.writeFile(opts.driverOptions.outputPath, output.get(),
-                                    output.get()->getFileType());
+    auto result = registry.writeFile(opts.driverOptions.outputPath,
+                                     output.get(), output.get()->getFileType());
     if (result) {
       diag.report(diag::err_cannot_write_file)
           << opts.driverOptions.outputPath << toString(std::move(result));
       return false;
     }
   }
+  if (output)
+    globalSnapshot->recordFile(opts.driverOptions.outputPath);
 
   return true;
 }

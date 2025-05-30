@@ -21,13 +21,20 @@ class StringRef;
 class Twine;
 
 namespace object {
+class ELFObjectFileBase;
+class ELFSectionRef;
+class MachOObjectFile;
+class MachOUniversalBinary;
 class RelocationRef;
-struct VersionEntry;
 } // namespace object
 
 namespace objdump {
 
-enum DebugVarsFormat { DVDisabled, DVUnicode, DVASCII, DVInvalid };
+enum DebugVarsFormat {
+  DVDisabled,
+  DVUnicode,
+  DVASCII,
+};
 
 extern bool ArchiveHeaders;
 extern int DbgIndent;
@@ -124,19 +131,18 @@ SectionFilter ToolSectionFilter(llvm::object::ObjectFile const &O,
 bool isRelocAddressLess(object::RelocationRef A, object::RelocationRef B);
 void printRelocations(const object::ObjectFile *O);
 void printDynamicRelocations(const object::ObjectFile *O);
-void printSectionHeaders(object::ObjectFile &O);
+void printSectionHeaders(const object::ObjectFile *O);
 void printSectionContents(const object::ObjectFile *O);
-void printSymbolTable(const object::ObjectFile &O, StringRef ArchiveName,
+void printSymbolTable(const object::ObjectFile *O, StringRef ArchiveName,
                       StringRef ArchitectureName = StringRef(),
                       bool DumpDynamic = false);
-void printSymbol(const object::ObjectFile &O, const object::SymbolRef &Symbol,
-                 ArrayRef<object::VersionEntry> SymbolVersions,
+void printSymbol(const object::ObjectFile *O, const object::SymbolRef &Symbol,
                  StringRef FileName, StringRef ArchiveName,
                  StringRef ArchitectureName, bool DumpDynamic);
-[[noreturn]] void reportError(StringRef File, const Twine &Message);
-[[noreturn]] void reportError(Error E, StringRef FileName,
-                              StringRef ArchiveName = "",
-                              StringRef ArchitectureName = "");
+LLVM_ATTRIBUTE_NORETURN void reportError(StringRef File, const Twine &Message);
+LLVM_ATTRIBUTE_NORETURN void reportError(Error E, StringRef FileName,
+                                         StringRef ArchiveName = "",
+                                         StringRef ArchitectureName = "");
 void reportWarning(const Twine &Message, StringRef File);
 
 template <typename T, typename... Ts>
@@ -148,7 +154,7 @@ T unwrapOrError(Expected<T> EO, Ts &&... Args) {
 
 std::string getFileNameForError(const object::Archive::Child &C,
                                 unsigned Index);
-SymbolInfoTy createSymbolInfo(const object::ObjectFile &Obj,
+SymbolInfoTy createSymbolInfo(const object::ObjectFile *Obj,
                               const object::SymbolRef &Symbol);
 
 } // namespace objdump

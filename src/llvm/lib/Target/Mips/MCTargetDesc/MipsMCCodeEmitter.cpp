@@ -42,11 +42,13 @@ using namespace llvm;
 namespace llvm {
 
 MCCodeEmitter *createMipsMCCodeEmitterEB(const MCInstrInfo &MCII,
+                                         const MCRegisterInfo &MRI,
                                          MCContext &Ctx) {
   return new MipsMCCodeEmitter(MCII, Ctx, false);
 }
 
 MCCodeEmitter *createMipsMCCodeEmitterEL(const MCInstrInfo &MCII,
+                                         const MCRegisterInfo &MRI,
                                          MCContext &Ctx) {
   return new MipsMCCodeEmitter(MCII, Ctx, true);
 }
@@ -177,7 +179,7 @@ encodeInstruction(const MCInst &MI, raw_ostream &OS,
     LowerCompactBranch(TmpInst);
   }
 
-  size_t N = Fixups.size();
+  unsigned long N = Fixups.size();
   uint32_t Binary = getBinaryCodeForInstr(TmpInst, Fixups, STI);
 
   // Check for unimplemented opcodes.

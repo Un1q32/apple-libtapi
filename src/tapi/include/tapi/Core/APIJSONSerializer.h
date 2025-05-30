@@ -28,6 +28,15 @@ struct APIJSONOption {
   bool externalOnly;
   bool publicOnly;
   bool ignoreLineCol;
+  bool noUSR;
+  bool noDocComment;
+  bool noDeprecationInfo;
+  bool noStruct;
+  bool noDeclName;
+  bool noDeclFragments;
+  bool noElaboratedSymbolInfo;
+  bool noMacroDefinitions;
+  bool noUnifiedTypedefEntries;
 };
 
 class APIJSONSerializer {

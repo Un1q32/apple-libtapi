@@ -8,15 +8,14 @@
 
 #include "llvm/DebugInfo/CodeView/TypeDumpVisitor.h"
 
-#include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/SmallString.h"
 #include "llvm/DebugInfo/CodeView/CVTypeVisitor.h"
-#include "llvm/DebugInfo/CodeView/RecordSerialization.h"
+#include "llvm/DebugInfo/CodeView/Formatters.h"
 #include "llvm/DebugInfo/CodeView/TypeCollection.h"
 #include "llvm/DebugInfo/CodeView/TypeIndex.h"
 #include "llvm/DebugInfo/CodeView/TypeRecord.h"
 #include "llvm/Support/FormatVariadic.h"
 #include "llvm/Support/ScopedPrinter.h"
-#include "llvm/Support/raw_ostream.h"
 
 using namespace llvm;
 using namespace llvm::codeview;
@@ -335,7 +334,7 @@ Error TypeDumpVisitor::visitKnownRecord(CVType &CVR, MemberFunctionRecord &MF) {
 
 Error TypeDumpVisitor::visitKnownRecord(CVType &CVR,
                                         MethodOverloadListRecord &MethodList) {
-  for (const auto &M : MethodList.getMethods()) {
+  for (auto &M : MethodList.getMethods()) {
     ListScope S(*W, "Method");
     printMemberAttributes(M.getAccess(), M.getMethodKind(), M.getOptions());
     printTypeIndex("Type", M.getType());

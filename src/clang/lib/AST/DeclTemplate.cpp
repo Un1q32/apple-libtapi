@@ -28,7 +28,6 @@
 #include "llvm/ADT/FoldingSet.h"
 #include "llvm/ADT/None.h"
 #include "llvm/ADT/PointerUnion.h"
-#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/ErrorHandling.h"
@@ -78,7 +77,7 @@ TemplateParameterList::TemplateParameterList(const ASTContext& C,
       if (TTP->hasTypeConstraint())
         HasConstrainedParameters = true;
     } else {
-      llvm_unreachable("unexpected template parameter type");
+      llvm_unreachable("unexpcted template parameter type");
     }
     // FIXME: If a default argument contains an unexpanded parameter pack, the
     // template parameter list does too.
@@ -166,20 +165,14 @@ unsigned TemplateParameterList::getDepth() const {
     return cast<TemplateTemplateParmDecl>(FirstParm)->getDepth();
 }
 
-static bool AdoptTemplateParameterList(TemplateParameterList *Params,
+static void AdoptTemplateParameterList(TemplateParameterList *Params,
                                        DeclContext *Owner) {
-  bool Invalid = false;
   for (NamedDecl *P : *Params) {
     P->setDeclContext(Owner);
 
     if (const auto *TTP = dyn_cast<TemplateTemplateParmDecl>(P))
-      if (AdoptTemplateParameterList(TTP->getTemplateParameters(), Owner))
-        Invalid = true;
-
-    if (P->isInvalidDecl())
-      Invalid = true;
+      AdoptTemplateParameterList(TTP->getTemplateParameters(), Owner);
   }
-  return Invalid;
 }
 
 void TemplateParameterList::
@@ -203,9 +196,8 @@ bool TemplateParameterList::hasAssociatedConstraints() const {
 }
 
 bool TemplateParameterList::shouldIncludeTypeForArgument(
-    const PrintingPolicy &Policy, const TemplateParameterList *TPL,
-    unsigned Idx) {
-  if (!TPL || Idx >= TPL->size() || Policy.AlwaysIncludeTypeForTemplateArgument)
+    const TemplateParameterList *TPL, unsigned Idx) {
+  if (!TPL || Idx >= TPL->size())
     return true;
   const NamedDecl *TemplParam = TPL->getParam(Idx);
   if (const auto *ParamValueDecl =
@@ -248,16 +240,6 @@ bool TemplateDecl::hasAssociatedConstraints() const {
   if (auto *FD = dyn_cast_or_null<FunctionDecl>(getTemplatedDecl()))
     return FD->getTrailingRequiresClause();
   return false;
-}
-
-bool TemplateDecl::isTypeAlias() const {
-  switch (getKind()) {
-  case TemplateDecl::TypeAliasTemplate:
-  case TemplateDecl::BuiltinTemplate:
-    return true;
-  default:
-    return false;
-  };
 }
 
 //===----------------------------------------------------------------------===//
@@ -357,15 +339,14 @@ void RedeclarableTemplateDecl::addSpecializationImpl(
 // FunctionTemplateDecl Implementation
 //===----------------------------------------------------------------------===//
 
-FunctionTemplateDecl *
-FunctionTemplateDecl::Create(ASTContext &C, DeclContext *DC, SourceLocation L,
-                             DeclarationName Name,
-                             TemplateParameterList *Params, NamedDecl *Decl) {
-  bool Invalid = AdoptTemplateParameterList(Params, cast<DeclContext>(Decl));
-  auto *TD = new (C, DC) FunctionTemplateDecl(C, DC, L, Name, Params, Decl);
-  if (Invalid)
-    TD->setInvalidDecl();
-  return TD;
+FunctionTemplateDecl *FunctionTemplateDecl::Create(ASTContext &C,
+                                                   DeclContext *DC,
+                                                   SourceLocation L,
+                                                   DeclarationName Name,
+                                               TemplateParameterList *Params,
+                                                   NamedDecl *Decl) {
+  AdoptTemplateParameterList(Params, cast<DeclContext>(Decl));
+  return new (C, DC) FunctionTemplateDecl(C, DC, L, Name, Params, Decl);
 }
 
 FunctionTemplateDecl *FunctionTemplateDecl::CreateDeserialized(ASTContext &C,
@@ -457,16 +438,15 @@ void FunctionTemplateDecl::mergePrevDecl(FunctionTemplateDecl *Prev) {
 // ClassTemplateDecl Implementation
 //===----------------------------------------------------------------------===//
 
-ClassTemplateDecl *ClassTemplateDecl::Create(ASTContext &C, DeclContext *DC,
+ClassTemplateDecl *ClassTemplateDecl::Create(ASTContext &C,
+                                             DeclContext *DC,
                                              SourceLocation L,
                                              DeclarationName Name,
                                              TemplateParameterList *Params,
                                              NamedDecl *Decl) {
-  bool Invalid = AdoptTemplateParameterList(Params, cast<DeclContext>(Decl));
-  auto *TD = new (C, DC) ClassTemplateDecl(C, DC, L, Name, Params, Decl);
-  if (Invalid)
-    TD->setInvalidDecl();
-  return TD;
+  AdoptTemplateParameterList(Params, cast<DeclContext>(Decl));
+
+  return new (C, DC) ClassTemplateDecl(C, DC, L, Name, Params, Decl);
 }
 
 ClassTemplateDecl *ClassTemplateDecl::CreateDeserialized(ASTContext &C,
@@ -529,9 +509,6 @@ static void ProfileTemplateParameterList(ASTContext &C,
       ID.AddInteger(0);
       ID.AddBoolean(NTTP->isParameterPack());
       NTTP->getType().getCanonicalType().Profile(ID);
-      ID.AddBoolean(NTTP->hasPlaceholderTypeConstraint());
-      if (const Expr *E = NTTP->getPlaceholderTypeConstraint())
-        E->Profile(ID, C, /*Canonical=*/true);
       continue;
     }
     if (const auto *TTP = dyn_cast<TemplateTypeParmDecl>(D)) {
@@ -943,14 +920,6 @@ ClassTemplateSpecializationDecl::Create(ASTContext &Context, TagKind TK,
           SpecializedTemplate, Args, PrevDecl);
   Result->setMayHaveOutOfDateDef(false);
 
-  // If the template decl is incomplete, copy the external lexical storage from
-  // the base template. This allows instantiations of incomplete types to
-  // complete using the external AST if the template's declaration came from an
-  // external AST.
-  if (!SpecializedTemplate->getTemplatedDecl()->isCompleteDefinition())
-    Result->setHasExternalLexicalStorage(
-      SpecializedTemplate->getTemplatedDecl()->hasExternalLexicalStorage());
-
   Context.getTypeDeclType(Result, PrevDecl);
   return Result;
 }
@@ -1036,11 +1005,8 @@ ConceptDecl *ConceptDecl::Create(ASTContext &C, DeclContext *DC,
                                  SourceLocation L, DeclarationName Name,
                                  TemplateParameterList *Params,
                                  Expr *ConstraintExpr) {
-  bool Invalid = AdoptTemplateParameterList(Params, DC);
-  auto *TD = new (C, DC) ConceptDecl(DC, L, Name, Params, ConstraintExpr);
-  if (Invalid)
-    TD->setInvalidDecl();
-  return TD;
+  AdoptTemplateParameterList(Params, DC);
+  return new (C, DC) ConceptDecl(DC, L, Name, Params, ConstraintExpr);
 }
 
 ConceptDecl *ConceptDecl::CreateDeserialized(ASTContext &C,
@@ -1073,8 +1039,7 @@ ClassTemplatePartialSpecializationDecl(ASTContext &Context, TagKind TK,
                                       SpecializedTemplate, Args, PrevDecl),
       TemplateParams(Params), ArgsAsWritten(ArgInfos),
       InstantiatedFromMember(nullptr, false) {
-  if (AdoptTemplateParameterList(Params, this))
-    setInvalidDecl();
+  AdoptTemplateParameterList(Params, this);
 }
 
 ClassTemplatePartialSpecializationDecl *
@@ -1120,13 +1085,7 @@ FriendTemplateDecl::Create(ASTContext &Context, DeclContext *DC,
                            SourceLocation L,
                            MutableArrayRef<TemplateParameterList *> Params,
                            FriendUnion Friend, SourceLocation FLoc) {
-  TemplateParameterList **TPL = nullptr;
-  if (!Params.empty()) {
-    TPL = new (Context) TemplateParameterList *[Params.size()];
-    llvm::copy(Params, TPL);
-  }
-  return new (Context, DC)
-      FriendTemplateDecl(DC, L, TPL, Params.size(), Friend, FLoc);
+  return new (Context, DC) FriendTemplateDecl(DC, L, Params, Friend, FLoc);
 }
 
 FriendTemplateDecl *FriendTemplateDecl::CreateDeserialized(ASTContext &C,
@@ -1138,15 +1097,14 @@ FriendTemplateDecl *FriendTemplateDecl::CreateDeserialized(ASTContext &C,
 // TypeAliasTemplateDecl Implementation
 //===----------------------------------------------------------------------===//
 
-TypeAliasTemplateDecl *
-TypeAliasTemplateDecl::Create(ASTContext &C, DeclContext *DC, SourceLocation L,
-                              DeclarationName Name,
-                              TemplateParameterList *Params, NamedDecl *Decl) {
-  bool Invalid = AdoptTemplateParameterList(Params, DC);
-  auto *TD = new (C, DC) TypeAliasTemplateDecl(C, DC, L, Name, Params, Decl);
-  if (Invalid)
-    TD->setInvalidDecl();
-  return TD;
+TypeAliasTemplateDecl *TypeAliasTemplateDecl::Create(ASTContext &C,
+                                                     DeclContext *DC,
+                                                     SourceLocation L,
+                                                     DeclarationName Name,
+                                                  TemplateParameterList *Params,
+                                                     NamedDecl *Decl) {
+  AdoptTemplateParameterList(Params, DC);
+  return new (C, DC) TypeAliasTemplateDecl(C, DC, L, Name, Params, Decl);
 }
 
 TypeAliasTemplateDecl *TypeAliasTemplateDecl::CreateDeserialized(ASTContext &C,
@@ -1193,11 +1151,8 @@ VarTemplateDecl *VarTemplateDecl::Create(ASTContext &C, DeclContext *DC,
                                          SourceLocation L, DeclarationName Name,
                                          TemplateParameterList *Params,
                                          VarDecl *Decl) {
-  bool Invalid = AdoptTemplateParameterList(Params, DC);
-  auto *TD = new (C, DC) VarTemplateDecl(C, DC, L, Name, Params, Decl);
-  if (Invalid)
-    TD->setInvalidDecl();
-  return TD;
+  AdoptTemplateParameterList(Params, DC);
+  return new (C, DC) VarTemplateDecl(C, DC, L, Name, Params, Decl);
 }
 
 VarTemplateDecl *VarTemplateDecl::CreateDeserialized(ASTContext &C,
@@ -1356,14 +1311,10 @@ VarTemplateDecl *VarTemplateSpecializationDecl::getSpecializedTemplate() const {
 
 void VarTemplateSpecializationDecl::setTemplateArgsInfo(
     const TemplateArgumentListInfo &ArgsInfo) {
-  TemplateArgsInfo =
-      ASTTemplateArgumentListInfo::Create(getASTContext(), ArgsInfo);
-}
-
-void VarTemplateSpecializationDecl::setTemplateArgsInfo(
-    const ASTTemplateArgumentListInfo *ArgsInfo) {
-  TemplateArgsInfo =
-      ASTTemplateArgumentListInfo::Create(getASTContext(), ArgsInfo);
+  TemplateArgsInfo.setLAngleLoc(ArgsInfo.getLAngleLoc());
+  TemplateArgsInfo.setRAngleLoc(ArgsInfo.getRAngleLoc());
+  for (const TemplateArgumentLoc &Loc : ArgsInfo.arguments())
+    TemplateArgsInfo.addArgument(Loc);
 }
 
 //===----------------------------------------------------------------------===//
@@ -1383,8 +1334,8 @@ VarTemplatePartialSpecializationDecl::VarTemplatePartialSpecializationDecl(
                                     TInfo, S, Args),
       TemplateParams(Params), ArgsAsWritten(ArgInfos),
       InstantiatedFromMember(nullptr, false) {
-  if (AdoptTemplateParameterList(Params, DC))
-    setInvalidDecl();
+  // TODO: The template parameters should be in DC by now. Verify.
+  // AdoptTemplateParameterList(Params, DC);
 }
 
 VarTemplatePartialSpecializationDecl *
@@ -1532,28 +1483,19 @@ TemplateParamObjectDecl::CreateDeserialized(ASTContext &C, unsigned ID) {
   return TPOD;
 }
 
-void TemplateParamObjectDecl::printName(llvm::raw_ostream &OS,
-                                        const PrintingPolicy &Policy) const {
+void TemplateParamObjectDecl::printName(llvm::raw_ostream &OS) const {
   OS << "<template param ";
-  printAsExpr(OS, Policy);
+  printAsExpr(OS);
   OS << ">";
 }
 
 void TemplateParamObjectDecl::printAsExpr(llvm::raw_ostream &OS) const {
-  printAsExpr(OS, getASTContext().getPrintingPolicy());
-}
-
-void TemplateParamObjectDecl::printAsExpr(llvm::raw_ostream &OS,
-                                          const PrintingPolicy &Policy) const {
-  getType().getUnqualifiedType().print(OS, Policy);
-  printAsInit(OS, Policy);
+  const ASTContext &Ctx = getASTContext();
+  getType().getUnqualifiedType().print(OS, Ctx.getPrintingPolicy());
+  printAsInit(OS);
 }
 
 void TemplateParamObjectDecl::printAsInit(llvm::raw_ostream &OS) const {
-  printAsInit(OS, getASTContext().getPrintingPolicy());
-}
-
-void TemplateParamObjectDecl::printAsInit(llvm::raw_ostream &OS,
-                                          const PrintingPolicy &Policy) const {
-  getValue().printPretty(OS, Policy, getType(), &getASTContext());
+  const ASTContext &Ctx = getASTContext();
+  getValue().printPretty(OS, Ctx, getType());
 }

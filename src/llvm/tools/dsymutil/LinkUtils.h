@@ -30,9 +30,6 @@ struct LinkOptions {
   /// Statistics
   bool Statistics = false;
 
-  /// Verify the input DWARF.
-  bool VerifyInputDWARF = false;
-
   /// Skip emitting output
   bool NoOutput = false;
 
@@ -49,9 +46,6 @@ struct LinkOptions {
   /// function.
   bool KeepFunctionForStatic = false;
 
-  /// Use a 64-bit header when emitting universal binaries.
-  bool Fat64 = false;
-
   /// Number of threads.
   unsigned Threads = 1;
 
@@ -59,7 +53,7 @@ struct LinkOptions {
   OutputFileType FileType = OutputFileType::Object;
 
   /// The accelerator table kind
-  DwarfLinkerAccelTableKind TheAccelTableKind;
+  AccelTableKind TheAccelTableKind;
 
   /// -oso-prepend-path
   std::string PrependPath;

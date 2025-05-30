@@ -15,6 +15,7 @@
 #include "BitstreamRemarkParser.h"
 #include "YAMLRemarkParser.h"
 #include "llvm-c/Remarks.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/CBindingWrapping.h"
 
 using namespace llvm;
@@ -118,7 +119,7 @@ struct CParser {
                    : createRemarkParser(ParserFormat, Buf))) {}
 
   void handleError(Error E) { Err.emplace(toString(std::move(E))); }
-  bool hasError() const { return Err.has_value(); }
+  bool hasError() const { return Err.hasValue(); }
   const char *getMessage() const { return Err ? Err->c_str() : nullptr; };
 };
 } // namespace

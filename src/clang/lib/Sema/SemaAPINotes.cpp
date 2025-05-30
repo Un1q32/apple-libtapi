@@ -1,8 +1,9 @@
 //===--- SemaAPINotes.cpp - API Notes Handling ----------------------------===//
 //
-// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
-// See https://llvm.org/LICENSE.txt for license information.
-// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//                     The LLVM Compiler Infrastructure
+//
+// This file is distributed under the University of Illinois Open Source
+// License. See LICENSE.TXT for details.
 //
 //===----------------------------------------------------------------------===//
 //
@@ -15,7 +16,6 @@
 #include "clang/Sema/SemaInternal.h"
 #include "clang/AST/DeclObjC.h"
 #include "clang/APINotes/APINotesReader.h"
-#include "clang/Lex/Lexer.h"
 using namespace clang;
 
 namespace {
@@ -235,7 +235,7 @@ static void handleAPINotedRetainCountConvention(
     Optional<api_notes::RetainCountConventionKind> convention) {
   if (!convention)
     return;
-  switch (*convention) {
+  switch (convention.getValue()) {
   case api_notes::RetainCountConventionKind::None:
     if (isa<FunctionDecl>(D)) {
       handleAPINotedRetainCountAttribute<CFUnknownTransferAttr>(
@@ -627,29 +627,13 @@ static void ProcessAPINotes(Sema &S, ObjCMethodDecl *D,
 static void ProcessAPINotes(Sema &S, TagDecl *D,
                             const api_notes::TagInfo &info,
                             VersionedInfoMetadata metadata) {
-  if (auto ImportAs = info.SwiftImportAs) {
-    auto str = "import_" + ImportAs.value();
-    auto attr = SwiftAttrAttr::Create(S.Context, str, AttributeCommonInfo(clang::SourceRange()));
-    D->addAttr(attr);
-  }
-  if (auto RetainOp = info.SwiftRetainOp) {
-    auto str = "retain:" + RetainOp.value();
-    auto attr = SwiftAttrAttr::Create(S.Context, str, AttributeCommonInfo(clang::SourceRange()));
-    D->addAttr(attr);
-  }
-  if (auto ReleaseOp = info.SwiftReleaseOp) {
-    auto str = "release:" + ReleaseOp.value();
-    auto attr = SwiftAttrAttr::Create(S.Context, str, AttributeCommonInfo(clang::SourceRange()));
-    D->addAttr(attr);
-  }
-
   if (auto extensibility = info.EnumExtensibility) {
     using api_notes::EnumExtensibilityKind;
     bool shouldAddAttribute = (*extensibility != EnumExtensibilityKind::None);
     handleAPINotedAttribute<EnumExtensibilityAttr>(S, D, shouldAddAttribute,
                                                    metadata, [&] {
       EnumExtensibilityAttr::Kind kind;
-      switch (*extensibility) {
+      switch (extensibility.getValue()) {
       case EnumExtensibilityKind::None:
         llvm_unreachable("remove only");
       case EnumExtensibilityKind::Open:
@@ -666,7 +650,7 @@ static void ProcessAPINotes(Sema &S, TagDecl *D,
   }
 
   if (auto flagEnum = info.isFlagEnum()) {
-    handleAPINotedAttribute<FlagEnumAttr>(S, D, *flagEnum, metadata,
+    handleAPINotedAttribute<FlagEnumAttr>(S, D, flagEnum.getValue(), metadata,
                                           [&] {
       return new (S.Context) FlagEnumAttr(S.Context, getDummyAttrInfo());
     });
@@ -803,7 +787,7 @@ static void ProcessVersionedAPINotes(
 
   maybeAttachUnversionedSwiftName(S, D, Info);
 
-  unsigned Selected = Info.getSelected().value_or(Info.size());
+  unsigned Selected = Info.getSelected().getValueOr(Info.size());
 
   VersionTuple Version;
   SpecificInfo InfoSlice;
@@ -827,44 +811,11 @@ void Sema::ProcessAPINotes(Decl *D) {
     return;
 
   // Globals.
-  if (D->getDeclContext()->isFileContext() ||
-      D->getDeclContext()->isNamespace() ||
-      D->getDeclContext()->isExternCContext() ||
-      D->getDeclContext()->isExternCXXContext()) {
-    std::optional<api_notes::Context> APINotesContext;
-    if (auto NamespaceContext = dyn_cast<NamespaceDecl>(D->getDeclContext())) {
-      for (auto Reader :
-           APINotes.findAPINotes(NamespaceContext->getLocation())) {
-        // Retrieve the context ID for the parent namespace of the decl.
-        std::stack<NamespaceDecl *> NamespaceStack;
-        {
-          for (auto CurrentNamespace = NamespaceContext; CurrentNamespace;
-               CurrentNamespace =
-                   dyn_cast<NamespaceDecl>(CurrentNamespace->getParent())) {
-            if (!CurrentNamespace->isInlineNamespace())
-              NamespaceStack.push(CurrentNamespace);
-          }
-        }
-        Optional<api_notes::ContextID> NamespaceID;
-        while (!NamespaceStack.empty()) {
-          auto CurrentNamespace = NamespaceStack.top();
-          NamespaceStack.pop();
-          NamespaceID = Reader->lookupNamespaceID(CurrentNamespace->getName(),
-                                                  NamespaceID);
-          if (!NamespaceID)
-            break;
-        }
-        if (NamespaceID)
-          APINotesContext = api_notes::Context(
-              *NamespaceID, api_notes::ContextKind::Namespace);
-      }
-    }
-
+  if (D->getDeclContext()->isFileContext()) {
     // Global variables.
     if (auto VD = dyn_cast<VarDecl>(D)) {
       for (auto Reader : APINotes.findAPINotes(D->getLocation())) {
-        auto Info =
-            Reader->lookupGlobalVariable(VD->getName(), APINotesContext);
+        auto Info = Reader->lookupGlobalVariable(VD->getName());
         ProcessVersionedAPINotes(*this, VD, Info);
       }
 
@@ -875,8 +826,7 @@ void Sema::ProcessAPINotes(Decl *D) {
     if (auto FD = dyn_cast<FunctionDecl>(D)) {
       if (FD->getDeclName().isIdentifier()) {
         for (auto Reader : APINotes.findAPINotes(D->getLocation())) {
-          auto Info =
-              Reader->lookupGlobalFunction(FD->getName(), APINotesContext);
+          auto Info = Reader->lookupGlobalFunction(FD->getName());
           ProcessVersionedAPINotes(*this, FD, Info);
         }
       }
@@ -906,32 +856,8 @@ void Sema::ProcessAPINotes(Decl *D) {
 
     // Tags
     if (auto Tag = dyn_cast<TagDecl>(D)) {
-      std::string LookupName = Tag->getName().str();
-
-      // Use the source location to discern if this Tag is an OPTIONS macro.
-      // For now we would like to limit this trick of looking up the APINote tag
-      // using the EnumDecl's QualType in the case where the enum is anonymous.
-      // This is only being used to support APINotes lookup for C++ NS/CF_OPTIONS
-      // when C++-Interop is enabled.
-      std::string MacroName =
-          LookupName.empty() && Tag->getOuterLocStart().isMacroID()
-              ? clang::Lexer::getImmediateMacroName(
-                    Tag->getOuterLocStart(),
-                    Tag->getASTContext().getSourceManager(), LangOpts)
-                    .str()
-              : "";
-
-      if (LookupName.empty() && isa<clang::EnumDecl>(Tag) &&
-          (MacroName == "CF_OPTIONS" || MacroName == "NS_OPTIONS" ||
-           MacroName == "OBJC_OPTIONS" || MacroName == "SWIFT_OPTIONS")) {
-
-        clang::QualType T = llvm::cast<clang::EnumDecl>(Tag)->getIntegerType();
-        LookupName = clang::QualType::getAsString(
-            T.split(), getASTContext().getPrintingPolicy());
-      }
-
       for (auto Reader : APINotes.findAPINotes(D->getLocation())) {
-        auto Info = Reader->lookupTag(LookupName, APINotesContext);
+        auto Info = Reader->lookupTag(Tag->getName());
         ProcessVersionedAPINotes(*this, Tag, Info);
       }
 
@@ -941,17 +867,18 @@ void Sema::ProcessAPINotes(Decl *D) {
     // Typedefs
     if (auto Typedef = dyn_cast<TypedefNameDecl>(D)) {
       for (auto Reader : APINotes.findAPINotes(D->getLocation())) {
-        auto Info = Reader->lookupTypedef(Typedef->getName(), APINotesContext);
+        auto Info = Reader->lookupTypedef(Typedef->getName());
         ProcessVersionedAPINotes(*this, Typedef, Info);
       }
 
       return;
     }
+
+    return;
   }
 
   // Enumerators.
-  if (D->getDeclContext()->getRedeclContext()->isFileContext() ||
-      D->getDeclContext()->getRedeclContext()->isExternCContext()) {
+  if (D->getDeclContext()->getRedeclContext()->isFileContext()) {
     if (auto EnumConstant = dyn_cast<EnumConstantDecl>(D)) {
       for (auto Reader : APINotes.findAPINotes(D->getLocation())) {
         auto Info = Reader->lookupEnumConstant(EnumConstant->getName());

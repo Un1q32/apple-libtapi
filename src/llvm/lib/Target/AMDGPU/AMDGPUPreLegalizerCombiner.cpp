@@ -12,11 +12,9 @@
 //===----------------------------------------------------------------------===//
 
 #include "AMDGPU.h"
-#include "AMDGPUCombinerHelper.h"
 #include "AMDGPULegalizerInfo.h"
 #include "GCNSubtarget.h"
 #include "MCTargetDesc/AMDGPUMCTargetDesc.h"
-#include "llvm/CodeGen/GlobalISel/CSEInfo.h"
 #include "llvm/CodeGen/GlobalISel/Combiner.h"
 #include "llvm/CodeGen/GlobalISel/CombinerHelper.h"
 #include "llvm/CodeGen/GlobalISel/CombinerInfo.h"
@@ -36,11 +34,10 @@ protected:
   MachineIRBuilder &B;
   MachineFunction &MF;
   MachineRegisterInfo &MRI;
-  AMDGPUCombinerHelper &Helper;
+  CombinerHelper &Helper;
 
 public:
-  AMDGPUPreLegalizerCombinerHelper(MachineIRBuilder &B,
-                                   AMDGPUCombinerHelper &Helper)
+  AMDGPUPreLegalizerCombinerHelper(MachineIRBuilder &B, CombinerHelper &Helper)
       : B(B), MF(B.getMF()), MRI(*B.getMRI()), Helper(Helper){};
 
   struct ClampI64ToI16MatchInfo {
@@ -126,6 +123,7 @@ void AMDGPUPreLegalizerCombinerHelper::applyClampI64ToI16(
          LLT::scalar(64));
   const LLT S32 = LLT::scalar(32);
 
+  B.setMBB(*MI.getParent());
   B.setInstrAndDebugLoc(MI);
 
   auto Unmerge = B.buildUnmerge(S32, Src);
@@ -156,12 +154,12 @@ void AMDGPUPreLegalizerCombinerHelper::applyClampI64ToI16(
 
 class AMDGPUPreLegalizerCombinerHelperState {
 protected:
-  AMDGPUCombinerHelper &Helper;
+  CombinerHelper &Helper;
   AMDGPUPreLegalizerCombinerHelper &PreLegalizerHelper;
 
 public:
   AMDGPUPreLegalizerCombinerHelperState(
-      AMDGPUCombinerHelper &Helper,
+      CombinerHelper &Helper,
       AMDGPUPreLegalizerCombinerHelper &PreLegalizerHelper)
       : Helper(Helper), PreLegalizerHelper(PreLegalizerHelper) {}
 };
@@ -191,22 +189,24 @@ public:
       report_fatal_error("Invalid rule identifier");
   }
 
-  bool combine(GISelChangeObserver &Observer, MachineInstr &MI,
-               MachineIRBuilder &B) const override;
+  virtual bool combine(GISelChangeObserver &Observer, MachineInstr &MI,
+                       MachineIRBuilder &B) const override;
 };
 
 bool AMDGPUPreLegalizerCombinerInfo::combine(GISelChangeObserver &Observer,
                                               MachineInstr &MI,
                                               MachineIRBuilder &B) const {
-  AMDGPUCombinerHelper Helper(Observer, B, /*IsPreLegalize*/ true, KB, MDT);
+  CombinerHelper Helper(Observer, B, KB, MDT);
   AMDGPUPreLegalizerCombinerHelper PreLegalizerHelper(B, Helper);
   AMDGPUGenPreLegalizerCombinerHelper Generated(GeneratedRuleCfg, Helper,
                                                 PreLegalizerHelper);
 
-  if (Generated.tryCombineAll(Observer, MI, B))
+  if (Generated.tryCombineAll(Observer, MI, B, Helper))
     return true;
 
   switch (MI.getOpcode()) {
+  case TargetOpcode::G_MEMCPY_INLINE:
+    return Helper.tryEmitMemcpyInline(MI);
   case TargetOpcode::G_CONCAT_VECTORS:
     return Helper.tryCombineConcatVectors(MI);
   case TargetOpcode::G_SHUFFLE_VECTOR:

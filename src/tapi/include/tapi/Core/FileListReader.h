@@ -39,19 +39,12 @@ public:
 
   int getVersion() const;
 
-  struct HeaderInfo {
-    HeaderType type;
-    std::string path;
-    llvm::Optional<clang::Language> language;
-    bool isSwiftCompatibilityHeader;
-  };
-
   /// Visitor used when walking the contents of the file list.
   class Visitor {
   public:
     virtual ~Visitor();
 
-    virtual void visitHeaderFile(HeaderInfo &header);
+    virtual void visitHeaderFile(HeaderType type, StringRef path);
   };
 
   /// Visit the contents of the header list file, passing each entity to the

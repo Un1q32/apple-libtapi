@@ -60,7 +60,7 @@ std::string LoopHintAttr::getValueString(const PrintingPolicy &Policy) const {
   else
     OS << "disable";
   OS << ")";
-  return ValueName;
+  return OS.str();
 }
 
 // Return a string suitable for identifying this attribute in diagnostics.
@@ -139,13 +139,6 @@ void OMPDeclareTargetDeclAttr::printPrettyPragma(
     OS << " device_type(" << ConvertDevTypeTyToStr(getDevType()) << ")";
   if (getMapType() != MT_To)
     OS << ' ' << ConvertMapTypeTyToStr(getMapType());
-  if (Expr *E = getIndirectExpr()) {
-    OS << " indirect(";
-    E->printPretty(OS, nullptr, Policy);
-    OS << ")";
-  } else if (getIndirect()) {
-    OS << " indirect";
-  }
 }
 
 llvm::Optional<OMPDeclareTargetDeclAttr *>
@@ -168,24 +161,24 @@ OMPDeclareTargetDeclAttr::getActiveAttr(const ValueDecl *VD) {
 llvm::Optional<OMPDeclareTargetDeclAttr::MapTypeTy>
 OMPDeclareTargetDeclAttr::isDeclareTargetDeclaration(const ValueDecl *VD) {
   llvm::Optional<OMPDeclareTargetDeclAttr *> ActiveAttr = getActiveAttr(VD);
-  if (ActiveAttr)
-    return ActiveAttr.value()->getMapType();
+  if (ActiveAttr.hasValue())
+    return ActiveAttr.getValue()->getMapType();
   return llvm::None;
 }
 
 llvm::Optional<OMPDeclareTargetDeclAttr::DevTypeTy>
 OMPDeclareTargetDeclAttr::getDeviceType(const ValueDecl *VD) {
   llvm::Optional<OMPDeclareTargetDeclAttr *> ActiveAttr = getActiveAttr(VD);
-  if (ActiveAttr)
-    return ActiveAttr.value()->getDevType();
+  if (ActiveAttr.hasValue())
+    return ActiveAttr.getValue()->getDevType();
   return llvm::None;
 }
 
 llvm::Optional<SourceLocation>
 OMPDeclareTargetDeclAttr::getLocation(const ValueDecl *VD) {
   llvm::Optional<OMPDeclareTargetDeclAttr *> ActiveAttr = getActiveAttr(VD);
-  if (ActiveAttr)
-    return ActiveAttr.value()->getRange().getBegin();
+  if (ActiveAttr.hasValue())
+    return ActiveAttr.getValue()->getRange().getBegin();
   return llvm::None;
 }
 
@@ -202,40 +195,6 @@ void OMPDeclareVariantAttr::printPrettyPragma(
     OS << ")";
   }
   OS << " match(" << traitInfos << ")";
-
-  auto PrintExprs = [&OS, &Policy](Expr **Begin, Expr **End) {
-    for (Expr **I = Begin; I != End; ++I) {
-      assert(*I && "Expected non-null Stmt");
-      if (I != Begin)
-        OS << ",";
-      (*I)->printPretty(OS, nullptr, Policy);
-    }
-  };
-  if (adjustArgsNothing_size()) {
-    OS << " adjust_args(nothing:";
-    PrintExprs(adjustArgsNothing_begin(), adjustArgsNothing_end());
-    OS << ")";
-  }
-  if (adjustArgsNeedDevicePtr_size()) {
-    OS << " adjust_args(need_device_ptr:";
-    PrintExprs(adjustArgsNeedDevicePtr_begin(), adjustArgsNeedDevicePtr_end());
-    OS << ")";
-  }
-
-  auto PrintInteropInfo = [&OS](OMPInteropInfo *Begin, OMPInteropInfo *End) {
-    for (OMPInteropInfo *I = Begin; I != End; ++I) {
-      if (I != Begin)
-        OS << ", ";
-      OS << "interop(";
-      OS << getInteropTypeString(I);
-      OS << ")";
-    }
-  };
-  if (appendArgs_size()) {
-    OS << " append_args(";
-    PrintInteropInfo(appendArgs_begin(), appendArgs_end());
-    OS << ")";
-  }
 }
 
 #include "clang/AST/AttrImpl.inc"

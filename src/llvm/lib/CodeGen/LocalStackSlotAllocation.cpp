@@ -23,6 +23,7 @@
 #include "llvm/CodeGen/MachineFunctionPass.h"
 #include "llvm/CodeGen/MachineInstr.h"
 #include "llvm/CodeGen/MachineOperand.h"
+#include "llvm/CodeGen/MachineRegisterInfo.h"
 #include "llvm/CodeGen/TargetFrameLowering.h"
 #include "llvm/CodeGen/TargetOpcodes.h"
 #include "llvm/CodeGen/TargetRegisterInfo.h"
@@ -117,7 +118,7 @@ bool LocalStackSlotPass::runOnMachineFunction(MachineFunction &MF) {
   // If the target doesn't want/need this pass, or if there are no locals
   // to consider, early exit.
   if (LocalObjectCount == 0 || !TRI->requiresVirtualBaseRegisters(MF))
-    return false;
+    return true;
 
   // Make sure we have enough space to store the local offsets.
   LocalOffsets.resize(MFI.getObjectIndexEnd());
@@ -209,11 +210,7 @@ void LocalStackSlotPass::calculateFrameObjectOffsets(MachineFunction &Fn) {
     StackObjSet SmallArrayObjs;
     StackObjSet AddrOfObjs;
 
-    // Only place the stack protector in the local stack area if the target
-    // allows it.
-    if (TFI.isStackIdSafeForLocalArea(MFI.getStackID(StackProtectorFI)))
-      AdjustStackOffset(MFI, StackProtectorFI, Offset, StackGrowsDown,
-                        MaxAlign);
+    AdjustStackOffset(MFI, StackProtectorFI, Offset, StackGrowsDown, MaxAlign);
 
     // Assign large stack objects first.
     for (unsigned i = 0, e = MFI.getObjectIndexEnd(); i != e; ++i) {
@@ -319,14 +316,14 @@ bool LocalStackSlotPass::insertFrameReferenceRegisters(MachineFunction &Fn) {
       // than that, but the increased register pressure makes that a
       // tricky thing to balance. Investigate if re-materializing these
       // becomes an issue.
-      for (const MachineOperand &MO : MI.operands()) {
+      for (unsigned i = 0, e = MI.getNumOperands(); i != e; ++i) {
         // Consider replacing all frame index operands that reference
         // an object allocated in the local block.
-        if (MO.isFI()) {
+        if (MI.getOperand(i).isFI()) {
           // Don't try this with values not in the local block.
-          if (!MFI.isObjectPreAllocated(MO.getIndex()))
+          if (!MFI.isObjectPreAllocated(MI.getOperand(i).getIndex()))
             break;
-          int Idx = MO.getIndex();
+          int Idx = MI.getOperand(i).getIndex();
           int64_t LocalOffset = LocalOffsets[Idx];
           if (!TRI->needsFrameBaseReg(&MI, LocalOffset))
             break;
@@ -343,7 +340,7 @@ bool LocalStackSlotPass::insertFrameReferenceRegisters(MachineFunction &Fn) {
 
   MachineBasicBlock *Entry = &Fn.front();
 
-  Register BaseReg;
+  unsigned BaseReg = 0;
   int64_t BaseOffset = 0;
 
   // Loop through the frame references and allocate for them as necessary.
@@ -413,14 +410,20 @@ bool LocalStackSlotPass::insertFrameReferenceRegisters(MachineFunction &Fn) {
         continue;
       }
 
+      const MachineFunction *MF = MI.getMF();
+      const TargetRegisterClass *RC = TRI->getPointerRegClass(*MF);
+      BaseReg = Fn.getRegInfo().createVirtualRegister(RC);
+
+      LLVM_DEBUG(dbgs() << "  Materializing base register"
+                        << " at frame local offset "
+                        << LocalOffset + InstrOffset);
+
       // Tell the target to insert the instruction to initialize
       // the base register.
       //            MachineBasicBlock::iterator InsertionPt = Entry->begin();
       BaseReg = TRI->materializeFrameBaseRegister(Entry, FrameIdx, InstrOffset);
 
-      LLVM_DEBUG(dbgs() << "  Materialized base register at frame local offset "
-                        << LocalOffset + InstrOffset
-                        << " into " << printReg(BaseReg, TRI) << '\n');
+      LLVM_DEBUG(dbgs() << " into " << printReg(BaseReg, TRI) << '\n');
 
       // The base register already includes any offset specified
       // by the instruction, so account for that so it doesn't get
@@ -430,7 +433,7 @@ bool LocalStackSlotPass::insertFrameReferenceRegisters(MachineFunction &Fn) {
       ++NumBaseRegisters;
       UsedBaseReg = true;
     }
-    assert(BaseReg && "Unable to allocate virtual base register!");
+    assert(BaseReg != 0 && "Unable to allocate virtual base register!");
 
     // Modify the instruction to use the new base register rather
     // than the frame index operand.

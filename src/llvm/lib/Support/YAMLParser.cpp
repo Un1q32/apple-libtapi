@@ -27,6 +27,7 @@
 #include "llvm/Support/SourceMgr.h"
 #include "llvm/Support/Unicode.h"
 #include "llvm/Support/raw_ostream.h"
+#include <algorithm>
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
@@ -392,9 +393,6 @@ private:
   ///        Pos is whitespace or a new line
   bool isBlankOrBreak(StringRef::iterator Position);
 
-  /// Return true if the line is a line break, false otherwise.
-  bool isLineEmpty(StringRef Line);
-
   /// Consume a single b-break[28] if it's present at the current position.
   ///
   /// Return false if the code unit at the current position isn't a line break.
@@ -472,18 +470,6 @@ private:
 
   /// Scan a block scalar starting with | or >.
   bool scanBlockScalar(bool IsLiteral);
-
-  /// Scan a block scalar style indicator and header.
-  ///
-  /// Note: This is distinct from scanBlockScalarHeader to mirror the fact that
-  /// YAML does not consider the style indicator to be a part of the header.
-  ///
-  /// Return false if an error occurred.
-  bool scanBlockScalarIndicators(char &StyleIndicator, char &ChompingIndicator,
-                                 unsigned &IndentIndicator, bool &IsDone);
-
-  /// Scan a style indicator in a block scalar header.
-  char scanBlockStyleIndicator();
 
   /// Scan a chomping indicator in a block scalar header.
   char scanBlockChompingIndicator();
@@ -778,7 +764,7 @@ llvm::Optional<bool> yaml::parseBool(StringRef S) {
     case 'O':
       if (S[1] == 'N') // ON
         return true;
-      [[fallthrough]];
+      LLVM_FALLTHROUGH;
     case 'o':
       if (S[1] == 'n') //[Oo]n
         return true;
@@ -786,7 +772,7 @@ llvm::Optional<bool> yaml::parseBool(StringRef S) {
     case 'N':
       if (S[1] == 'O') // NO
         return false;
-      [[fallthrough]];
+      LLVM_FALLTHROUGH;
     case 'n':
       if (S[1] == 'o') //[Nn]o
         return false;
@@ -799,7 +785,7 @@ llvm::Optional<bool> yaml::parseBool(StringRef S) {
     case 'O':
       if (S.drop_front() == "FF") // OFF
         return false;
-      [[fallthrough]];
+      LLVM_FALLTHROUGH;
     case 'o':
       if (S.drop_front() == "ff") //[Oo]ff
         return false;
@@ -807,7 +793,7 @@ llvm::Optional<bool> yaml::parseBool(StringRef S) {
     case 'Y':
       if (S.drop_front() == "ES") // YES
         return true;
-      [[fallthrough]];
+      LLVM_FALLTHROUGH;
     case 'y':
       if (S.drop_front() == "es") //[Yy]es
         return true;
@@ -820,7 +806,7 @@ llvm::Optional<bool> yaml::parseBool(StringRef S) {
     case 'T':
       if (S.drop_front() == "RUE") // TRUE
         return true;
-      [[fallthrough]];
+      LLVM_FALLTHROUGH;
     case 't':
       if (S.drop_front() == "rue") //[Tt]rue
         return true;
@@ -833,7 +819,7 @@ llvm::Optional<bool> yaml::parseBool(StringRef S) {
     case 'F':
       if (S.drop_front() == "ALSE") // FALSE
         return false;
-      [[fallthrough]];
+      LLVM_FALLTHROUGH;
     case 'f':
       if (S.drop_front() == "alse") //[Ff]alse
         return false;
@@ -1047,13 +1033,6 @@ bool Scanner::isBlankOrBreak(StringRef::iterator Position) {
     return false;
   return *Position == ' ' || *Position == '\t' || *Position == '\r' ||
          *Position == '\n';
-}
-
-bool Scanner::isLineEmpty(StringRef Line) {
-  for (const auto *Position = Line.begin(); Position != Line.end(); ++Position)
-    if (!isBlankOrBreak(Position))
-      return false;
-  return true;
 }
 
 bool Scanner::consumeLineBreakIfPresent() {
@@ -1538,25 +1517,6 @@ bool Scanner::scanAliasOrAnchor(bool IsAlias) {
   return true;
 }
 
-bool Scanner::scanBlockScalarIndicators(char &StyleIndicator,
-                                        char &ChompingIndicator,
-                                        unsigned &IndentIndicator,
-                                        bool &IsDone) {
-  StyleIndicator = scanBlockStyleIndicator();
-  if (!scanBlockScalarHeader(ChompingIndicator, IndentIndicator, IsDone))
-    return false;
-  return true;
-}
-
-char Scanner::scanBlockStyleIndicator() {
-  char Indicator = ' ';
-  if (Current != End && (*Current == '>' || *Current == '|')) {
-    Indicator = *Current;
-    skip(1);
-  }
-  return Indicator;
-}
-
 char Scanner::scanBlockChompingIndicator() {
   char Indicator = ' ';
   if (Current != End && (*Current == '+' || *Current == '-')) {
@@ -1695,19 +1655,19 @@ bool Scanner::scanBlockScalarIndent(unsigned BlockIndent,
 }
 
 bool Scanner::scanBlockScalar(bool IsLiteral) {
+  // Eat '|' or '>'
   assert(*Current == '|' || *Current == '>');
-  char StyleIndicator;
+  skip(1);
+
   char ChompingIndicator;
   unsigned BlockIndent;
   bool IsDone = false;
-  if (!scanBlockScalarIndicators(StyleIndicator, ChompingIndicator, BlockIndent,
-                                 IsDone))
+  if (!scanBlockScalarHeader(ChompingIndicator, BlockIndent, IsDone))
     return false;
   if (IsDone)
     return true;
-  bool IsFolded = StyleIndicator == '>';
 
-  const auto *Start = Current;
+  auto Start = Current;
   unsigned BlockExitIndent = Indent < 0 ? 0 : (unsigned)Indent;
   unsigned LineBreaks = 0;
   if (BlockIndent == 0) {
@@ -1728,22 +1688,6 @@ bool Scanner::scanBlockScalar(bool IsLiteral) {
     auto LineStart = Current;
     advanceWhile(&Scanner::skip_nb_char);
     if (LineStart != Current) {
-      if (LineBreaks && IsFolded && !Scanner::isLineEmpty(Str)) {
-        // The folded style "folds" any single line break between content into a
-        // single space, except when that content is "empty" (only contains
-        // whitespace) in which case the line break is left as-is.
-        if (LineBreaks == 1) {
-          Str.append(LineBreaks,
-                     isLineEmpty(StringRef(LineStart, Current - LineStart))
-                         ? '\n'
-                         : ' ');
-        }
-        // If we saw a single line break, we are completely replacing it and so
-        // want `LineBreaks == 0`. Otherwise this decrement accounts for the
-        // fact that the first line break is "trimmed", only being used to
-        // signal a sequence of line breaks which should not be folded.
-        LineBreaks--;
-      }
       Str.append(LineBreaks, '\n');
       Str.append(StringRef(LineStart, Current - LineStart));
       LineBreaks = 0;
@@ -1897,11 +1841,11 @@ bool Scanner::fetchMoreTokens() {
 
 Stream::Stream(StringRef Input, SourceMgr &SM, bool ShowColors,
                std::error_code *EC)
-    : scanner(new Scanner(Input, SM, ShowColors, EC)) {}
+    : scanner(new Scanner(Input, SM, ShowColors, EC)), CurrentDoc() {}
 
 Stream::Stream(MemoryBufferRef InputBuffer, SourceMgr &SM, bool ShowColors,
                std::error_code *EC)
-    : scanner(new Scanner(InputBuffer, SM, ShowColors, EC)) {}
+    : scanner(new Scanner(InputBuffer, SM, ShowColors, EC)), CurrentDoc() {}
 
 Stream::~Stream() = default;
 
@@ -1932,8 +1876,8 @@ document_iterator Stream::end() {
 }
 
 void Stream::skip() {
-  for (Document &Doc : *this)
-    Doc.skip();
+  for (document_iterator i = begin(), e = end(); i != e; ++i)
+    i->skip();
 }
 
 Node::Node(unsigned int Type, std::unique_ptr<Document> &D, StringRef A,
@@ -2285,7 +2229,7 @@ void MappingNode::increment() {
       break;
     default:
       setError("Unexpected token. Expected Key or Block End", T);
-      [[fallthrough]];
+      LLVM_FALLTHROUGH;
     case Token::TK_Error:
       IsAtEnd = true;
       CurrentEntry = nullptr;
@@ -2298,7 +2242,7 @@ void MappingNode::increment() {
       return increment();
     case Token::TK_FlowMappingEnd:
       getNext();
-      [[fallthrough]];
+      LLVM_FALLTHROUGH;
     case Token::TK_Error:
       // Set this to end iterator.
       IsAtEnd = true;
@@ -2341,7 +2285,7 @@ void SequenceNode::increment() {
     default:
       setError( "Unexpected token. Expected Block Entry or Block End."
               , T);
-      [[fallthrough]];
+      LLVM_FALLTHROUGH;
     case Token::TK_Error:
       IsAtEnd = true;
       CurrentEntry = nullptr;
@@ -2370,7 +2314,7 @@ void SequenceNode::increment() {
       return increment();
     case Token::TK_FlowSequenceEnd:
       getNext();
-      [[fallthrough]];
+      LLVM_FALLTHROUGH;
     case Token::TK_Error:
       // Set this to end iterator.
       IsAtEnd = true;

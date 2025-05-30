@@ -12,11 +12,14 @@
 //===----------------------------------------------------------------------===//
 
 #include "APINormalizer.h"
-#include "tapi/Core/Utils.h"
 #include "llvm/Support/FileSystem.h"
-#include "llvm/Support/Path.h"
+#include "tapi/Core/Utils.h"
 
 TAPI_NAMESPACE_INTERNAL_BEGIN
+
+void APINormalizer::visitMacroDefinition(MacroDefinitionRecord &record) {
+  updateAPIRecord(record);
+}
 
 void APINormalizer::visitGlobal(GlobalRecord &record) {
   updateAPIRecord(record);
@@ -26,6 +29,12 @@ void APINormalizer::visitEnum(EnumRecord &record) {
   updateAPIRecord(record);
   for (auto *constant : record.constants)
     updateAPIRecord(*constant);
+}
+
+void APINormalizer::visitStruct(StructRecord &record) {
+  updateAPIRecord(record);
+  for (auto *field : record.fields)
+    updateAPIRecord(*field);
 }
 
 void APINormalizer::visitObjCInterface(ObjCInterfaceRecord &record) {
@@ -50,16 +59,14 @@ void APINormalizer::visitTypeDef(TypedefRecord &record) {
 void APINormalizer::updateAPIRecord(APIRecord &record) {
   updateAPILoc(record);
 
-  // If the library is not in a public location, sets the APIAccess to private.
-  if (record.access == APIAccess::Public && !isPublicLibrary)
+  // If the header is not in a public location, sets the APIAccess to private.
+  if (record.access == APIAccess::Public &&
+      record.loc.getFilename().startswith("/") &&
+      !isWithinPublicLocation(record.loc.getFilename()))
     record.access = APIAccess::Private;
 }
 
 void APINormalizer::updateAPILoc(APIRecord &record) {
-  // FIXME: Recovering the real file path depends on how records were
-  // resolved during AST traversal and is sensitive to header search path
-  // resolution. The real path should be saved instead from initial input,
-  // either from directory scanning or via filelist.
   auto path = record.loc.getFilename();
   auto cachedPath = fileMap.find(path);
   // If the realPath is cached, update the path if needed, and return.

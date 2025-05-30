@@ -18,38 +18,21 @@
 #include "clang/Basic/Diagnostic.h"
 #include "llvm/TextAPI/Architecture.h"
 #include "llvm/TextAPI/ArchitectureSet.h"
-#include "llvm/TextAPI/InterfaceFile.h"
 #include "llvm/TextAPI/Platform.h"
-
 namespace llvm {
 namespace MachO {
 
 const clang::DiagnosticBuilder &operator<<(const clang::DiagnosticBuilder &db,
-                                           PlatformType platform);
+                                           PlatformKind platform);
 
 const clang::DiagnosticBuilder &operator<<(const clang::DiagnosticBuilder &db,
-                                           PlatformVersionSet platforms);
+                                           PlatformSet platforms);
 
 const clang::DiagnosticBuilder &operator<<(const clang::DiagnosticBuilder &db,
                                            Architecture arch);
 
 const clang::DiagnosticBuilder &operator<<(const clang::DiagnosticBuilder &db,
                                            ArchitectureSet architectureSet);
-
-const clang::DiagnosticBuilder &operator<<(const clang::DiagnosticBuilder &db,
-                                           FileType type);
-
-const clang::DiagnosticBuilder &operator<<(const clang::DiagnosticBuilder &db,
-                                           const PackedVersion &version);
-
-inline const clang::DiagnosticBuilder &
-operator<<(const clang::DiagnosticBuilder &db, const InterfaceFileRef &ref) {
-  auto str = std::string(ref.getInstallName()) + " [ " +
-             std::string(ref.getArchitectures()) + " ]";
-  db.AddString(str);
-  return db;
-}
-
 } // namespace MachO
 } // namespace llvm
 #endif // TAPI_CLANG_DIAGNOSTICS_H

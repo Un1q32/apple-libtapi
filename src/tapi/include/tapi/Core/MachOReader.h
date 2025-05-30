@@ -25,7 +25,7 @@
 TAPI_NAMESPACE_INTERNAL_BEGIN
 
 struct MachOParseOption {
-  ArchitectureSet arches = ArchitectureSet::All();
+  ArchitectureSet arches = ArchitectureSet();
   bool parseMachOHeader = true;
   bool parseSymbolTable = true;
   bool parseObjCMetadata = true;
@@ -35,8 +35,7 @@ struct MachOParseOption {
 /// Returns macho file type. Unknown if the format is not supported.
 llvm::Expected<FileType> getMachOFileType(llvm::MemoryBufferRef bufferRef);
 
-using MachOParseResult =
-    std::vector<std::pair<Architecture, std::shared_ptr<API>>>;
+using MachOParseResult = std::vector<std::pair<Architecture, API>>;
 
 /// Read APIs from the macho buffer.
 llvm::Expected<MachOParseResult> readMachOFile(llvm::MemoryBufferRef memBuffer,
@@ -44,10 +43,6 @@ llvm::Expected<MachOParseResult> readMachOFile(llvm::MemoryBufferRef memBuffer,
 
 std::vector<llvm::Triple>
 constructTripleFromMachO(llvm::object::MachOObjectFile *object);
-
-using SymbolToSourceLocMap = llvm::StringMap<APILoc>;
-SymbolToSourceLocMap accumulateSourceLocFromDSYM(const StringRef dSYMFile,
-                                                 const Target &triple);
 
 TAPI_NAMESPACE_INTERNAL_END
 

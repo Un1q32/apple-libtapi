@@ -31,9 +31,6 @@
 #include <immintrin.h>
 #include <intrin.h>
 #endif
-#if defined(__x86_64__) && defined(_MSC_VER)
-#include <float.h> // For _clearfp in ~X86SavedState().
-#endif
 
 namespace llvm {
 namespace exegesis {
@@ -921,9 +918,8 @@ std::vector<InstructionTemplate> ExegesisX86Target::generateInstructionVariants(
       continue;
     case X86::OperandType::OPERAND_COND_CODE: {
       Exploration = true;
-      auto CondCodes = enum_seq_inclusive(X86::CondCode::COND_O,
-                                          X86::CondCode::LAST_VALID_COND,
-                                          force_iteration_on_noniterable_enum);
+      auto CondCodes =
+          seq_inclusive(X86::CondCode::COND_O, X86::CondCode::LAST_VALID_COND);
       Choices.reserve(CondCodes.size());
       for (int CondCode : CondCodes)
         Choices.emplace_back(MCOperand::createImm(CondCode));

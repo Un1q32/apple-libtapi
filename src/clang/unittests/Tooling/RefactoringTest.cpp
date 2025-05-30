@@ -122,18 +122,18 @@ static bool checkReplacementError(llvm::Error &&Error,
       OS << "Unexpected error code: " << int(RE.get()) << "\n";
     if (ExpectedExisting != RE.getExistingReplacement()) {
       OS << "Expected Existing != Actual Existing.\n";
-      if (ExpectedExisting)
+      if (ExpectedExisting.hasValue())
         OS << "Expected existing replacement: " << ExpectedExisting->toString()
            << "\n";
-      if (RE.getExistingReplacement())
+      if (RE.getExistingReplacement().hasValue())
         OS << "Actual existing replacement: "
            << RE.getExistingReplacement()->toString() << "\n";
     }
     if (ExpectedNew != RE.getNewReplacement()) {
       OS << "Expected New != Actual New.\n";
-      if (ExpectedNew)
+      if (ExpectedNew.hasValue())
         OS << "Expected new replacement: " << ExpectedNew->toString() << "\n";
-      if (RE.getNewReplacement())
+      if (RE.getNewReplacement().hasValue())
         OS << "Actual new replacement: " << RE.getNewReplacement()->toString()
            << "\n";
     }
@@ -1035,17 +1035,18 @@ TEST_F(MergeReplacementsTest, OverlappingRanges) {
       toReplacements({{"", 0, 3, "cc"}, {"", 3, 3, "dd"}}));
 }
 
-static constexpr bool usesWindowsPaths() {
-  return is_style_windows(llvm::sys::path::Style::native);
-}
-
 TEST(DeduplicateByFileTest, PathsWithDots) {
   std::map<std::string, Replacements> FileToReplaces;
   llvm::IntrusiveRefCntPtr<llvm::vfs::InMemoryFileSystem> VFS(
       new llvm::vfs::InMemoryFileSystem());
   FileManager FileMgr(FileSystemOptions(), VFS);
-  StringRef Path1 = usesWindowsPaths() ? "a\\b\\..\\.\\c.h" : "a/b/.././c.h";
-  StringRef Path2 = usesWindowsPaths() ? "a\\c.h" : "a/c.h";
+#if !defined(_WIN32)
+  StringRef Path1 = "a/b/.././c.h";
+  StringRef Path2 = "a/c.h";
+#else
+  StringRef Path1 = "a\\b\\..\\.\\c.h";
+  StringRef Path2 = "a\\c.h";
+#endif
   EXPECT_TRUE(VFS->addFile(Path1, 0, llvm::MemoryBuffer::getMemBuffer("")));
   EXPECT_TRUE(VFS->addFile(Path2, 0, llvm::MemoryBuffer::getMemBuffer("")));
   FileToReplaces[std::string(Path1)] = Replacements();
@@ -1060,8 +1061,13 @@ TEST(DeduplicateByFileTest, PathWithDotSlash) {
   llvm::IntrusiveRefCntPtr<llvm::vfs::InMemoryFileSystem> VFS(
       new llvm::vfs::InMemoryFileSystem());
   FileManager FileMgr(FileSystemOptions(), VFS);
-  StringRef Path1 = usesWindowsPaths() ? ".\\a\\b\\c.h" : "./a/b/c.h";
-  StringRef Path2 = usesWindowsPaths() ? "a\\b\\c.h" : "a/b/c.h";
+#if !defined(_WIN32)
+  StringRef Path1 = "./a/b/c.h";
+  StringRef Path2 = "a/b/c.h";
+#else
+  StringRef Path1 = ".\\a\\b\\c.h";
+  StringRef Path2 = "a\\b\\c.h";
+#endif
   EXPECT_TRUE(VFS->addFile(Path1, 0, llvm::MemoryBuffer::getMemBuffer("")));
   EXPECT_TRUE(VFS->addFile(Path2, 0, llvm::MemoryBuffer::getMemBuffer("")));
   FileToReplaces[std::string(Path1)] = Replacements();
@@ -1076,8 +1082,13 @@ TEST(DeduplicateByFileTest, NonExistingFilePath) {
   llvm::IntrusiveRefCntPtr<llvm::vfs::InMemoryFileSystem> VFS(
       new llvm::vfs::InMemoryFileSystem());
   FileManager FileMgr(FileSystemOptions(), VFS);
-  StringRef Path1 = usesWindowsPaths() ? ".\\a\\b\\c.h" : "./a/b/c.h";
-  StringRef Path2 = usesWindowsPaths() ? "a\\b\\c.h" : "a/b/c.h";
+#if !defined(_WIN32)
+  StringRef Path1 = "./a/b/c.h";
+  StringRef Path2 = "a/b/c.h";
+#else
+  StringRef Path1 = ".\\a\\b\\c.h";
+  StringRef Path2 = "a\\b\\c.h";
+#endif
   FileToReplaces[std::string(Path1)] = Replacements();
   FileToReplaces[std::string(Path2)] = Replacements();
   FileToReplaces = groupReplacementsByFile(FileMgr, FileToReplaces);
@@ -1465,7 +1476,7 @@ TEST_F(AtomicChangeTest, Metadata) {
 
 TEST_F(AtomicChangeTest, NoMetadata) {
   AtomicChange Change(Context.Sources, DefaultLoc);
-  EXPECT_FALSE(Change.getMetadata().has_value());
+  EXPECT_FALSE(Change.getMetadata().hasValue());
 }
 
 class ApplyAtomicChangesTest : public ::testing::Test {

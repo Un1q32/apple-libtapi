@@ -118,7 +118,6 @@ void CodeGenFunction::EmitDecl(const Decl &D) {
   case Decl::Label:        // __label__ x;
   case Decl::Import:
   case Decl::MSGuid:    // __declspec(uuid("..."))
-  case Decl::UnnamedGlobalConstant:
   case Decl::TemplateParamObject:
   case Decl::OMPThreadPrivate:
   case Decl::OMPAllocate:
@@ -179,9 +178,6 @@ void CodeGenFunction::EmitDecl(const Decl &D) {
       EmitVariablyModifiedType(Ty);
     return;
   }
-  case Decl::HLSLBuffer:
-    // FIXME: add codegen for HLSLBuffer.
-    return;
   }
 }
 
@@ -345,8 +341,6 @@ CodeGenFunction::AddInitializerToStaticVarDecl(const VarDecl &D,
   if (!Init) {
     if (!getLangOpts().CPlusPlus)
       CGM.ErrorUnsupported(D.getInit(), "constant l-value expression");
-    else if (D.hasFlexibleArrayInit(getContext()))
-      CGM.ErrorUnsupported(D.getInit(), "flexible array initializer");
     else if (HaveInsertPoint()) {
       // Since we have a static initializer, this global variable can't
       // be constant.
@@ -356,14 +350,6 @@ CodeGenFunction::AddInitializerToStaticVarDecl(const VarDecl &D,
     }
     return GV;
   }
-
-#ifndef NDEBUG
-  CharUnits VarSize = CGM.getContext().getTypeSizeInChars(D.getType()) +
-                      D.getFlexibleArrayInitChars(getContext());
-  CharUnits CstSize = CharUnits::fromQuantity(
-      CGM.getDataLayout().getTypeAllocSize(Init->getType()));
-  assert(VarSize == CstSize && "Emitted constant has unexpected size");
-#endif
 
   // The initializer may differ in type from the global. Rewrite
   // the global to match the initializer.  (We have to do this
@@ -419,8 +405,7 @@ void CodeGenFunction::EmitStaticVarDecl(const VarDecl &D,
 
   // Store into LocalDeclMap before generating initializer to handle
   // circular references.
-  llvm::Type *elemTy = ConvertTypeForMem(D.getType());
-  setAddrOfLocalVar(&D, Address(addr, elemTy, alignment));
+  setAddrOfLocalVar(&D, Address(addr, alignment));
 
   // We can't have a VLA here, but we can have a pointer to a VLA,
   // even though that doesn't really make any sense.
@@ -473,10 +458,11 @@ void CodeGenFunction::EmitStaticVarDecl(const VarDecl &D,
   // RAUW's the GV uses of this constant will be invalid.
   llvm::Constant *castedAddr =
     llvm::ConstantExpr::getPointerBitCastOrAddrSpaceCast(var, expectedType);
-  LocalDeclMap.find(&D)->second = Address(castedAddr, elemTy, alignment);
+  if (var != castedAddr)
+    LocalDeclMap.find(&D)->second = Address(castedAddr, alignment);
   CGM.setStaticLocalDeclAddress(&D, castedAddr);
 
-  CGM.getSanitizerMetadata()->reportGlobal(var, D);
+  CGM.getSanitizerMetadata()->reportGlobalToASan(var, D);
 
   // Emit global variable debug descriptor for static vars.
   CGDebugInfo *DI = getDebugInfo();
@@ -728,10 +714,10 @@ static bool tryEmitARCCopyWeakInit(CodeGenFunction &CGF,
       }
 
       // If it was an l-value, use objc_copyWeak.
-      if (srcExpr->isLValue()) {
+      if (srcExpr->getValueKind() == VK_LValue) {
         CGF.EmitARCCopyWeak(destLV.getAddress(CGF), srcAddr);
       } else {
-        assert(srcExpr->isXValue());
+        assert(srcExpr->getValueKind() == VK_XValue);
         CGF.EmitARCMoveWeak(destLV.getAddress(CGF), srcAddr);
       }
       return true;
@@ -848,7 +834,7 @@ void CodeGenFunction::EmitScalarInit(const Expr *init, const ValueDecl *D,
     // If D is pseudo-strong, treat it like __unsafe_unretained here. This means
     // that we omit the retain, and causes non-autoreleased return values to be
     // immediately released.
-    [[fallthrough]];
+    LLVM_FALLTHROUGH;
   }
 
   case Qualifiers::OCL_ExplicitNone:
@@ -1162,11 +1148,11 @@ Address CodeGenModule::createUnnamedGlobalFrom(const VarDecl &D,
     GV->setAlignment(Align.getAsAlign());
     GV->setUnnamedAddr(llvm::GlobalValue::UnnamedAddr::Global);
     CacheEntry = GV;
-  } else if (CacheEntry->getAlignment() < uint64_t(Align.getQuantity())) {
+  } else if (CacheEntry->getAlignment() < Align.getQuantity()) {
     CacheEntry->setAlignment(Align.getAsAlign());
   }
 
-  return Address(CacheEntry, CacheEntry->getValueType(), Align);
+  return Address(CacheEntry, Align);
 }
 
 static Address createUnnamedGlobalForMemcpyFrom(CodeGenModule &CGM,
@@ -1175,7 +1161,11 @@ static Address createUnnamedGlobalForMemcpyFrom(CodeGenModule &CGM,
                                                 llvm::Constant *Constant,
                                                 CharUnits Align) {
   Address SrcPtr = CGM.createUnnamedGlobalFrom(D, Constant, Align);
-  return Builder.CreateElementBitCast(SrcPtr, CGM.Int8Ty);
+  llvm::Type *BP = llvm::PointerType::getInt8PtrTy(CGM.getLLVMContext(),
+                                                   SrcPtr.getAddressSpace());
+  if (SrcPtr.getType() != BP)
+    SrcPtr = Builder.CreateBitCast(SrcPtr, BP);
+  return SrcPtr;
 }
 
 static void emitStoresForConstant(CodeGenModule &CGM, const VarDecl &D,
@@ -1209,7 +1199,7 @@ static void emitStoresForConstant(CodeGenModule &CGM, const VarDecl &D,
     bool valueAlreadyCorrect =
         constant->isNullValue() || isa<llvm::UndefValue>(constant);
     if (!valueAlreadyCorrect) {
-      Loc = Builder.CreateElementBitCast(Loc, Ty);
+      Loc = Builder.CreateBitCast(Loc, Ty->getPointerTo(Loc.getAddressSpace()));
       emitStoresForInitAfterBZero(CGM, constant, Loc, isVolatile, Builder,
                                   IsAutoInit);
     }
@@ -1408,11 +1398,9 @@ void CodeGenFunction::EmitAndRegisterVariableArrayDimensions(
     else {
       // Create an artificial VarDecl to generate debug info for.
       IdentifierInfo *NameIdent = VLAExprNames[NameIdx++];
-      assert(cast<llvm::PointerType>(VlaSize.NumElts->getType())
-                 ->isOpaqueOrPointeeTypeMatches(SizeTy) &&
-             "Number of VLA elements must be SizeTy");
+      auto VlaExprTy = VlaSize.NumElts->getType()->getPointerElementType();
       auto QT = getContext().getIntTypeForBitwidth(
-          SizeTy->getScalarSizeInBits(), false);
+          VlaExprTy->getScalarSizeInBits(), false);
       auto *ArtificialDecl = VarDecl::Create(
           getContext(), const_cast<DeclContext *>(D.getDeclContext()),
           D.getLocation(), D.getLocation(), NameIdent, QT,
@@ -1465,7 +1453,6 @@ CodeGenFunction::EmitAutoVarAlloca(const VarDecl &D) {
 
   if (getLangOpts().OpenMP && OpenMPLocalAddr.isValid()) {
     address = OpenMPLocalAddr;
-    AllocaAddr = OpenMPLocalAddr;
   } else if (Ty->isConstantSizeType()) {
     // If this value is an array or struct with a statically determinable
     // constant initializer, there are optimizations we can do.
@@ -1511,7 +1498,6 @@ CodeGenFunction::EmitAutoVarAlloca(const VarDecl &D) {
       // return slot, so that we can elide the copy when returning this
       // variable (C++0x [class.copy]p34).
       address = ReturnValue;
-      AllocaAddr = ReturnValue;
 
       if (const RecordType *RecordTy = Ty->getAs<RecordType>()) {
         const auto *RD = RecordTy->getDecl();
@@ -1523,8 +1509,7 @@ CodeGenFunction::EmitAutoVarAlloca(const VarDecl &D) {
           // applied.
           llvm::Value *Zero = Builder.getFalse();
           Address NRVOFlag =
-              CreateTempAlloca(Zero->getType(), CharUnits::One(), "nrvo",
-                               /*ArraySize=*/nullptr, &AllocaAddr);
+            CreateTempAlloca(Zero->getType(), CharUnits::One(), "nrvo");
           EnsureInsertPoint();
           Builder.CreateStore(Zero, NRVOFlag);
 
@@ -1626,11 +1611,10 @@ CodeGenFunction::EmitAutoVarAlloca(const VarDecl &D) {
     DI->setLocation(D.getLocation());
 
     // If NRVO, use a pointer to the return address.
-    if (UsePointerValue) {
+    if (UsePointerValue)
       DebugAddr = ReturnValuePointer;
-      AllocaAddr = ReturnValuePointer;
-    }
-    (void)DI->EmitDeclareOfAutoVariable(&D, AllocaAddr.getPointer(), Builder,
+
+    (void)DI->EmitDeclareOfAutoVariable(&D, DebugAddr.getPointer(), Builder,
                                         UsePointerValue);
   }
 
@@ -1802,7 +1786,7 @@ void CodeGenFunction::emitZeroOrPatternForAutoVarInit(QualType type,
     Cur->addIncoming(Begin.getPointer(), OriginBB);
     CharUnits CurAlign = Loc.getAlignment().alignmentOfArrayElement(EltSize);
     auto *I =
-        Builder.CreateMemCpy(Address(Cur, Int8Ty, CurAlign),
+        Builder.CreateMemCpy(Address(Cur, CurAlign),
                              createUnnamedGlobalForMemcpyFrom(
                                  CGM, D, Builder, Constant, ConstantAlign),
                              BaseSizeInChars, isVolatile);
@@ -1924,9 +1908,10 @@ void CodeGenFunction::EmitAutoVarInit(const AutoVarEmission &emission) {
     return EmitStoreThroughLValue(RValue::get(constant), lv, true);
   }
 
-  emitStoresForConstant(CGM, D, Builder.CreateElementBitCast(Loc, CGM.Int8Ty),
-                        type.isVolatileQualified(), Builder, constant,
-                        /*IsAutoInit=*/false);
+  llvm::Type *BP = CGM.Int8Ty->getPointerTo(Loc.getAddressSpace());
+  emitStoresForConstant(
+      CGM, D, (Loc.getType() == BP) ? Loc : Builder.CreateBitCast(Loc, BP),
+      type.isVolatileQualified(), Builder, constant, /*IsAutoInit=*/false);
 }
 
 /// Emit an expression as an initializer for an object (variable, field, etc.)
@@ -2267,17 +2252,16 @@ void CodeGenFunction::emitArrayDestroy(llvm::Value *begin,
 
   // Shift the address back by one element.
   llvm::Value *negativeOne = llvm::ConstantInt::get(SizeTy, -1, true);
-  llvm::Type *llvmElementType = ConvertTypeForMem(elementType);
   llvm::Value *element = Builder.CreateInBoundsGEP(
-      llvmElementType, elementPast, negativeOne, "arraydestroy.element");
+      elementPast->getType()->getPointerElementType(), elementPast, negativeOne,
+      "arraydestroy.element");
 
   if (useEHCleanup)
     pushRegularPartialArrayCleanup(begin, element, elementType, elementAlign,
                                    destroyer);
 
   // Perform the actual destruction there.
-  destroyer(*this, Address(element, llvmElementType, elementAlign),
-            elementType);
+  destroyer(*this, Address(element, elementAlign), elementType);
 
   if (useEHCleanup)
     PopCleanupBlock();
@@ -2297,8 +2281,6 @@ static void emitPartialArrayDestroy(CodeGenFunction &CGF,
                                     llvm::Value *begin, llvm::Value *end,
                                     QualType type, CharUnits elementAlign,
                                     CodeGenFunction::Destroyer *destroyer) {
-  llvm::Type *elemTy = CGF.ConvertTypeForMem(type);
-
   // If the element type is itself an array, drill down.
   unsigned arrayDepth = 0;
   while (const ArrayType *arrayType = CGF.getContext().getAsArrayType(type)) {
@@ -2312,6 +2294,7 @@ static void emitPartialArrayDestroy(CodeGenFunction &CGF,
     llvm::Value *zero = llvm::ConstantInt::get(CGF.SizeTy, 0);
 
     SmallVector<llvm::Value*,4> gepIndices(arrayDepth+1, zero);
+    llvm::Type *elemTy = begin->getType()->getPointerElementType();
     begin = CGF.Builder.CreateInBoundsGEP(
         elemTy, begin, gepIndices, "pad.arraybegin");
     end = CGF.Builder.CreateInBoundsGEP(
@@ -2451,7 +2434,6 @@ namespace {
 /// for the specified parameter and set up LocalDeclMap.
 void CodeGenFunction::EmitParmDecl(const VarDecl &D, ParamValue Arg,
                                    unsigned ArgNo) {
-  bool NoDebugInfo = false;
   // FIXME: Why isn't ImplicitParamDecl a ParmVarDecl?
   assert((isa<ParmVarDecl>(D) || isa<ImplicitParamDecl>(D)) &&
          "Invalid argument to EmitParmDecl");
@@ -2471,30 +2453,23 @@ void CodeGenFunction::EmitParmDecl(const VarDecl &D, ParamValue Arg,
       setBlockContextParameter(IPD, ArgNo, V);
       return;
     }
-    // Suppressing debug info for ThreadPrivateVar parameters, else it hides
-    // debug info of TLS variables.
-    NoDebugInfo =
-        (IPD->getParameterKind() == ImplicitParamDecl::ThreadPrivateVar);
   }
 
   Address DeclPtr = Address::invalid();
-  Address AllocaPtr = Address::invalid();
   bool DoStore = false;
   bool IsScalar = hasScalarEvaluationKind(Ty);
-  bool UseIndirectDebugAddress = false;
-
   // If we already have a pointer to the argument, reuse the input pointer.
   if (Arg.isIndirect()) {
-    // If we have a prettier pointer type at this point, bitcast to that.
     DeclPtr = Arg.getIndirectAddress();
-    DeclPtr = Builder.CreateElementBitCast(DeclPtr, ConvertTypeForMem(Ty),
-                                           D.getName());
+    // If we have a prettier pointer type at this point, bitcast to that.
+    unsigned AS = DeclPtr.getType()->getAddressSpace();
+    llvm::Type *IRTy = ConvertTypeForMem(Ty)->getPointerTo(AS);
+    if (DeclPtr.getType() != IRTy)
+      DeclPtr = Builder.CreateBitCast(DeclPtr, IRTy, D.getName());
     // Indirect argument is in alloca address space, which may be different
     // from the default address space.
     auto AllocaAS = CGM.getASTAllocaAddressSpace();
     auto *V = DeclPtr.getPointer();
-    AllocaPtr = DeclPtr;
-
     auto SrcLangAS = getLangOpts().OpenCL ? LangAS::opencl_private : AllocaAS;
     auto DestLangAS =
         getLangOpts().OpenCL ? LangAS::opencl_private : LangAS::Default;
@@ -2502,24 +2477,10 @@ void CodeGenFunction::EmitParmDecl(const VarDecl &D, ParamValue Arg,
       assert(getContext().getTargetAddressSpace(SrcLangAS) ==
              CGM.getDataLayout().getAllocaAddrSpace());
       auto DestAS = getContext().getTargetAddressSpace(DestLangAS);
-      auto *T = DeclPtr.getElementType()->getPointerTo(DestAS);
-      DeclPtr =
-          DeclPtr.withPointer(getTargetHooks().performAddrSpaceCast(
-                                  *this, V, SrcLangAS, DestLangAS, T, true),
-                              DeclPtr.isKnownNonNull());
-    }
-
-    // For truly ABI indirect arguments -- those that are not `byval` -- store
-    // the address of the argument on the stack to preserve debug information.
-    ABIArgInfo ArgInfo = CurFnInfo->arguments()[ArgNo - 1].info;
-    if (ArgInfo.isIndirect())
-      UseIndirectDebugAddress = !ArgInfo.getIndirectByVal();
-    if (UseIndirectDebugAddress) {
-      auto PtrTy = getContext().getPointerType(Ty);
-      AllocaPtr = CreateMemTemp(PtrTy, getContext().getTypeAlignInChars(PtrTy),
-                                D.getName() + ".indirect_addr");
-      EmitStoreOfScalar(DeclPtr.getPointer(), AllocaPtr, /* Volatile */ false,
-                        PtrTy);
+      auto *T = V->getType()->getPointerElementType()->getPointerTo(DestAS);
+      DeclPtr = Address(getTargetHooks().performAddrSpaceCast(
+                            *this, V, SrcLangAS, DestLangAS, T, true),
+                        DeclPtr.getAlignment());
     }
 
     // Push a destructor cleanup for this parameter if the ABI requires it.
@@ -2545,11 +2506,10 @@ void CodeGenFunction::EmitParmDecl(const VarDecl &D, ParamValue Arg,
             : Address::invalid();
     if (getLangOpts().OpenMP && OpenMPLocalAddr.isValid()) {
       DeclPtr = OpenMPLocalAddr;
-      AllocaPtr = DeclPtr;
     } else {
       // Otherwise, create a temporary to hold the value.
       DeclPtr = CreateMemTemp(Ty, getContext().getDeclAlign(&D),
-                              D.getName() + ".addr", &AllocaPtr);
+                              D.getName() + ".addr");
     }
     DoStore = true;
   }
@@ -2623,10 +2583,9 @@ void CodeGenFunction::EmitParmDecl(const VarDecl &D, ParamValue Arg,
 
   // Emit debug info for param declarations in non-thunk functions.
   if (CGDebugInfo *DI = getDebugInfo()) {
-    if (CGM.getCodeGenOpts().hasReducedDebugInfo() && !CurFuncIsThunk &&
-        !NoDebugInfo) {
+    if (CGM.getCodeGenOpts().hasReducedDebugInfo() && !CurFuncIsThunk) {
       llvm::DILocalVariable *DILocalVar = DI->EmitDeclareOfArgVariable(
-          &D, AllocaPtr.getPointer(), ArgNo, Builder, UseIndirectDebugAddress);
+          &D, DeclPtr.getPointer(), ArgNo, Builder);
       if (const auto *Var = dyn_cast_or_null<ParmVarDecl>(&D))
         DI->getParamDbgMappings().insert({Var, DILocalVar});
     }
@@ -2720,23 +2679,4 @@ void CodeGenModule::EmitOMPAllocateDecl(const OMPAllocateDecl *D) {
     DummyGV->replaceAllUsesWith(NewPtrForOldDecl);
     DummyGV->eraseFromParent();
   }
-}
-
-llvm::Optional<CharUnits>
-CodeGenModule::getOMPAllocateAlignment(const VarDecl *VD) {
-  if (const auto *AA = VD->getAttr<OMPAllocateDeclAttr>()) {
-    if (Expr *Alignment = AA->getAlignment()) {
-      unsigned UserAlign =
-          Alignment->EvaluateKnownConstInt(getContext()).getExtValue();
-      CharUnits NaturalAlign =
-          getNaturalTypeAlignment(VD->getType().getNonReferenceType());
-
-      // OpenMP5.1 pg 185 lines 7-10
-      //   Each item in the align modifier list must be aligned to the maximum
-      //   of the specified alignment and the type's natural alignment.
-      return CharUnits::fromQuantity(
-          std::max<unsigned>(UserAlign, NaturalAlign.getQuantity()));
-    }
-  }
-  return llvm::None;
 }

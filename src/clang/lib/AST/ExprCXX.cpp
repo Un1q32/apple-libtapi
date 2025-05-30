@@ -196,7 +196,7 @@ CXXNewExpr::CXXNewExpr(bool IsGlobalNew, FunctionDecl *OperatorNew,
          "Only NoInit can have no initializer!");
 
   CXXNewExprBits.IsGlobalNew = IsGlobalNew;
-  CXXNewExprBits.IsArray = ArraySize.has_value();
+  CXXNewExprBits.IsArray = ArraySize.hasValue();
   CXXNewExprBits.ShouldPassAlignment = ShouldPassAlignment;
   CXXNewExprBits.UsualArrayDeleteWantsSize = UsualArrayDeleteWantsSize;
   CXXNewExprBits.StoredInitializationStyle =
@@ -248,7 +248,7 @@ CXXNewExpr::Create(const ASTContext &Ctx, bool IsGlobalNew,
                    InitializationStyle InitializationStyle, Expr *Initializer,
                    QualType Ty, TypeSourceInfo *AllocatedTypeInfo,
                    SourceRange Range, SourceRange DirectInitRange) {
-  bool IsArray = ArraySize.has_value();
+  bool IsArray = ArraySize.hasValue();
   bool HasInit = Initializer != nullptr;
   unsigned NumPlacementArgs = PlacementArgs.size();
   bool IsParenTypeId = TypeIdParens.isValid();
@@ -314,7 +314,7 @@ QualType CXXDeleteExpr::getDestroyedType() const {
 // CXXPseudoDestructorExpr
 PseudoDestructorTypeStorage::PseudoDestructorTypeStorage(TypeSourceInfo *Info)
     : Type(Info) {
-  Location = Info->getTypeLoc().getBeginLoc();
+  Location = Info->getTypeLoc().getLocalSourceRange().getBegin();
 }
 
 CXXPseudoDestructorExpr::CXXPseudoDestructorExpr(
@@ -341,7 +341,7 @@ QualType CXXPseudoDestructorExpr::getDestroyedType() const {
 SourceLocation CXXPseudoDestructorExpr::getEndLoc() const {
   SourceLocation End = DestroyedType.getLocation();
   if (TypeSourceInfo *TInfo = DestroyedType.getTypeSourceInfo())
-    End = TInfo->getTypeLoc().getSourceRange().getEnd();
+    End = TInfo->getTypeLoc().getLocalSourceRange().getEnd();
   return End;
 }
 
@@ -989,9 +989,7 @@ CXXTemporaryObjectExpr::CXXTemporaryObjectExpr(
           Cons, /* Elidable=*/false, Args, HadMultipleCandidates,
           ListInitialization, StdInitListInitialization, ZeroInitialization,
           CXXConstructExpr::CK_Complete, ParenOrBraceRange),
-      TSI(TSI) {
-  setDependence(computeDependence(this));
-}
+      TSI(TSI) {}
 
 CXXTemporaryObjectExpr::CXXTemporaryObjectExpr(EmptyShell Empty,
                                                unsigned NumArgs)
@@ -1077,9 +1075,7 @@ CXXConstructExpr::CXXConstructExpr(
     TrailingArgs[I] = Args[I];
   }
 
-  // CXXTemporaryObjectExpr does this itself after setting its TypeSourceInfo.
-  if (SC == CXXConstructExprClass)
-    setDependence(computeDependence(this));
+  setDependence(computeDependence(this));
 }
 
 CXXConstructExpr::CXXConstructExpr(StmtClass SC, EmptyShell Empty,
@@ -1087,7 +1083,7 @@ CXXConstructExpr::CXXConstructExpr(StmtClass SC, EmptyShell Empty,
     : Expr(SC, Empty), NumArgs(NumArgs) {}
 
 LambdaCapture::LambdaCapture(SourceLocation Loc, bool Implicit,
-                             LambdaCaptureKind Kind, ValueDecl *Var,
+                             LambdaCaptureKind Kind, VarDecl *Var,
                              SourceLocation EllipsisLoc)
     : DeclAndBits(Var, 0), Loc(Loc), EllipsisLoc(EllipsisLoc) {
   unsigned Bits = 0;
@@ -1097,7 +1093,7 @@ LambdaCapture::LambdaCapture(SourceLocation Loc, bool Implicit,
   switch (Kind) {
   case LCK_StarThis:
     Bits |= Capture_ByCopy;
-    [[fallthrough]];
+    LLVM_FALLTHROUGH;
   case LCK_This:
     assert(!Var && "'this' capture cannot have a variable!");
     Bits |= Capture_This;
@@ -1105,7 +1101,7 @@ LambdaCapture::LambdaCapture(SourceLocation Loc, bool Implicit,
 
   case LCK_ByCopy:
     Bits |= Capture_ByCopy;
-    [[fallthrough]];
+    LLVM_FALLTHROUGH;
   case LCK_ByRef:
     assert(Var && "capture must have a variable!");
     break;
@@ -1211,8 +1207,8 @@ const CompoundStmt *LambdaExpr::getCompoundStmtBody() const {
 }
 
 bool LambdaExpr::isInitCapture(const LambdaCapture *C) const {
-  return C->capturesVariable() && C->getCapturedVar()->isInitCapture() &&
-         getCallOperator() == C->getCapturedVar()->getDeclContext();
+  return (C->capturesVariable() && C->getCapturedVar()->isInitCapture() &&
+          (getCallOperator() == C->getCapturedVar()->getDeclContext()));
 }
 
 LambdaExpr::capture_iterator LambdaExpr::capture_begin() const {

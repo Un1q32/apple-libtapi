@@ -12,12 +12,13 @@
 #include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/PointerIntPair.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/CodeGen/LexicalScopes.h"
 #include <utility>
 
 namespace llvm {
 
+class DILocalVariable;
 class DILocation;
-class LexicalScopes;
 class DINode;
 class MachineFunction;
 class MachineInstr;

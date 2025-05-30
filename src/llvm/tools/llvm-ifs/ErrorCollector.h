@@ -21,13 +21,10 @@
 #ifndef LLVM_TOOLS_LLVM_IFS_ERRORCOLLECTOR_H
 #define LLVM_TOOLS_LLVM_IFS_ERRORCOLLECTOR_H
 
-#include "llvm/Support/raw_ostream.h"
+#include "llvm/Support/Error.h"
 #include <vector>
 
 namespace llvm {
-
-class Error;
-
 namespace ifs {
 
 class ErrorCollector {
@@ -64,7 +61,7 @@ private:
   bool allErrorsHandled() const;
 
   /// Dump output and crash.
-  [[noreturn]] void fatalUnhandledError();
+  LLVM_ATTRIBUTE_NORETURN void fatalUnhandledError();
 
   bool ErrorsAreFatal;
   std::vector<Error> Errors;

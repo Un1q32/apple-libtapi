@@ -10,9 +10,9 @@
 #include "MipsInstrInfo.h"
 #include "TestBase.h"
 #include "llvm/ADT/SmallString.h"
-#include "llvm/MC/TargetRegistry.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/Path.h"
+#include "llvm/Support/TargetRegistry.h"
 #include "llvm/Support/TargetSelect.h"
 #include "llvm/Support/YAMLTraits.h"
 #include "llvm/Support/raw_ostream.h"
@@ -30,6 +30,11 @@ using llvm::unittest::TempDir;
 
 namespace llvm {
 namespace exegesis {
+
+bool operator==(const BenchmarkMeasure &A, const BenchmarkMeasure &B) {
+  return std::tie(A.Key, A.PerInstructionValue, A.PerSnippetValue) ==
+         std::tie(B.Key, B.PerInstructionValue, B.PerSnippetValue);
+}
 
 static std::string Dump(const MCInst &McInst) {
   std::string Buffer;
@@ -50,9 +55,9 @@ MATCHER(EqMCInst, "") {
 
 namespace {
 
-class MipsBenchmarkResultTest : public MipsTestBase {};
+class BenchmarkResultTest : public MipsTestBase {};
 
-TEST_F(MipsBenchmarkResultTest, WriteToAndReadFromDisk) {
+TEST_F(BenchmarkResultTest, WriteToAndReadFromDisk) {
   ExitOnError ExitOnErr;
 
   InstructionBenchmark ToDisk;
@@ -80,13 +85,10 @@ TEST_F(MipsBenchmarkResultTest, WriteToAndReadFromDisk) {
   errs() << Filename << "-------\n";
   ExitOnErr(ToDisk.writeYaml(State, Filename));
 
-  const std::unique_ptr<MemoryBuffer> Buffer =
-      std::move(*MemoryBuffer::getFile(Filename));
-
   {
     // One-element version.
     const auto FromDisk =
-        ExitOnErr(InstructionBenchmark::readYaml(State, *Buffer));
+        ExitOnErr(InstructionBenchmark::readYaml(State, Filename));
 
     EXPECT_THAT(FromDisk.Key.Instructions,
                 Pointwise(EqMCInst(), ToDisk.Key.Instructions));
@@ -102,7 +104,7 @@ TEST_F(MipsBenchmarkResultTest, WriteToAndReadFromDisk) {
   {
     // Vector version.
     const auto FromDiskVector =
-        ExitOnErr(InstructionBenchmark::readYamls(State, *Buffer));
+        ExitOnErr(InstructionBenchmark::readYamls(State, Filename));
     ASSERT_EQ(FromDiskVector.size(), size_t{1});
     const auto FromDisk = FromDiskVector[0];
     EXPECT_THAT(FromDisk.Key.Instructions,
@@ -118,7 +120,7 @@ TEST_F(MipsBenchmarkResultTest, WriteToAndReadFromDisk) {
   }
 }
 
-TEST_F(MipsBenchmarkResultTest, PerInstructionStats) {
+TEST_F(BenchmarkResultTest, PerInstructionStats) {
   PerInstructionStats Stats;
   Stats.push(BenchmarkMeasure{"a", 0.5, 0.0});
   Stats.push(BenchmarkMeasure{"a", 1.5, 0.0});

@@ -23,8 +23,10 @@
 
 namespace llvm {
 
+template <typename T> struct DenseMapInfo;
+
 class FoldingSetNodeID;
-template <typename T, typename Enable> struct FoldingSetTrait;
+template <typename T> struct FoldingSetTrait;
 
 } // namespace llvm
 
@@ -87,7 +89,7 @@ class SourceLocation {
   friend class ASTReader;
   friend class ASTWriter;
   friend class SourceManager;
-  friend struct llvm::FoldingSetTrait<SourceLocation, void>;
+  friend struct llvm::FoldingSetTrait<SourceLocation>;
 
 public:
   using UIntTy = uint32_t;
@@ -398,12 +400,6 @@ public:
   unsigned getExpansionLineNumber(bool *Invalid = nullptr) const;
   unsigned getExpansionColumnNumber(bool *Invalid = nullptr) const;
 
-  /// Decompose the underlying \c SourceLocation into a raw (FileID + Offset)
-  /// pair, after walking through all expansion records.
-  ///
-  /// \see SourceManager::getDecomposedExpansionLoc
-  std::pair<FileID, unsigned> getDecomposedExpansionLoc() const;
-
   unsigned getSpellingLineNumber(bool *Invalid = nullptr) const;
   unsigned getSpellingColumnNumber(bool *Invalid = nullptr) const;
 
@@ -471,7 +467,7 @@ namespace llvm {
   /// Define DenseMapInfo so that FileID's can be used as keys in DenseMap and
   /// DenseSets.
   template <>
-  struct DenseMapInfo<clang::FileID, void> {
+  struct DenseMapInfo<clang::FileID> {
     static clang::FileID getEmptyKey() {
       return {};
     }
@@ -492,7 +488,7 @@ namespace llvm {
   /// Define DenseMapInfo so that SourceLocation's can be used as keys in
   /// DenseMap and DenseSet. This trait class is eqivalent to
   /// DenseMapInfo<unsigned> which uses SourceLocation::ID is used as a key.
-  template <> struct DenseMapInfo<clang::SourceLocation, void> {
+  template <> struct DenseMapInfo<clang::SourceLocation> {
     static clang::SourceLocation getEmptyKey() {
       constexpr clang::SourceLocation::UIntTy Zero = 0;
       return clang::SourceLocation::getFromRawEncoding(~Zero);
@@ -513,7 +509,7 @@ namespace llvm {
   };
 
   // Allow calling FoldingSetNodeID::Add with SourceLocation object as parameter
-  template <> struct FoldingSetTrait<clang::SourceLocation, void> {
+  template <> struct FoldingSetTrait<clang::SourceLocation> {
     static void Profile(const clang::SourceLocation &X, FoldingSetNodeID &ID);
   };
 

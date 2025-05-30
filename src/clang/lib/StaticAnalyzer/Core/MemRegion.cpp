@@ -28,7 +28,6 @@
 #include "clang/Basic/IdentifierTable.h"
 #include "clang/Basic/LLVM.h"
 #include "clang/Basic/SourceManager.h"
-#include "clang/StaticAnalyzer/Core/AnalyzerOptions.h"
 #include "clang/StaticAnalyzer/Core/PathSensitive/DynamicExtent.h"
 #include "clang/StaticAnalyzer/Core/PathSensitive/SValBuilder.h"
 #include "clang/StaticAnalyzer/Core/PathSensitive/SVals.h"
@@ -162,9 +161,7 @@ const StackFrameContext *VarRegion::getStackFrame() const {
 }
 
 ObjCIvarRegion::ObjCIvarRegion(const ObjCIvarDecl *ivd, const SubRegion *sReg)
-    : DeclRegion(sReg, ObjCIvarRegionKind), IVD(ivd) {
-  assert(IVD);
-}
+    : DeclRegion(sReg, ObjCIvarRegionKind), IVD(ivd) {}
 
 const ObjCIvarDecl *ObjCIvarRegion::getDecl() const { return IVD; }
 
@@ -446,7 +443,7 @@ std::string MemRegion::getString() const {
   std::string s;
   llvm::raw_string_ostream os(s);
   dumpToStream(os);
-  return s;
+  return os.str();
 }
 
 void MemRegion::dumpToStream(raw_ostream &os) const {
@@ -482,7 +479,7 @@ void CompoundLiteralRegion::dumpToStream(raw_ostream &os) const {
 }
 
 void CXXTempObjectRegion::dumpToStream(raw_ostream &os) const {
-  os << "temp_object{" << getValueType() << ", "
+  os << "temp_object{" << getValueType().getAsString() << ", "
      << "S" << Ex->getID(getContext()) << '}';
 }
 
@@ -499,8 +496,8 @@ void CXXThisRegion::dumpToStream(raw_ostream &os) const {
 }
 
 void ElementRegion::dumpToStream(raw_ostream &os) const {
-  os << "Element{" << superRegion << ',' << Index << ',' << getElementType()
-     << '}';
+  os << "Element{" << superRegion << ','
+     << Index << ',' << getElementType().getAsString() << '}';
 }
 
 void FieldRegion::dumpToStream(raw_ostream &os) const {
@@ -771,47 +768,14 @@ DefinedOrUnknownSVal MemRegionManager::getStaticSize(const MemRegion *MR,
       return UnknownVal();
 
     QualType Ty = cast<TypedValueRegion>(SR)->getDesugaredValueType(Ctx);
-    const DefinedOrUnknownSVal Size = getElementExtent(Ty, SVB);
+    DefinedOrUnknownSVal Size = getElementExtent(Ty, SVB);
 
-    // We currently don't model flexible array members (FAMs), which are:
-    //  - int array[]; of IncompleteArrayType
-    //  - int array[0]; of ConstantArrayType with size 0
-    //  - int array[1]; of ConstantArrayType with size 1 (*)
-    // (*): Consider single element array object members as FAM candidates only
-    //      if the consider-single-element-arrays-as-flexible-array-members
-    //      analyzer option is true.
-    // https://gcc.gnu.org/onlinedocs/gcc/Zero-Length.html
-    const auto isFlexibleArrayMemberCandidate = [this,
-                                                 &SVB](QualType Ty) -> bool {
-      const ArrayType *AT = Ctx.getAsArrayType(Ty);
-      if (!AT)
-        return false;
-      if (isa<IncompleteArrayType>(AT))
-        return true;
-
-      if (const auto *CAT = dyn_cast<ConstantArrayType>(AT)) {
-        const llvm::APInt &Size = CAT->getSize();
-        if (Size.isZero())
-          return true;
-
-        using FAMKind = LangOptions::StrictFlexArraysLevelKind;
-        const FAMKind StrictFlexArraysLevel =
-          Ctx.getLangOpts().getStrictFlexArraysLevel();
-        if (StrictFlexArraysLevel == FAMKind::ZeroOrIncomplete ||
-            StrictFlexArraysLevel == FAMKind::Incomplete)
-          return false;
-
-        const AnalyzerOptions &Opts = SVB.getAnalyzerOptions();
-        // FIXME: this option is probably redundant with -fstrict-flex-arrays=1.
-        if (Opts.ShouldConsiderSingleElementArraysAsFlexibleArrayMembers &&
-            Size.isOne())
-          return true;
-      }
-      return false;
-    };
-
-    if (isFlexibleArrayMemberCandidate(Ty))
-      return UnknownVal();
+    // A zero-length array at the end of a struct often stands for dynamically
+    // allocated extra memory.
+    if (Size.isZeroConstant()) {
+      if (isa<ConstantArrayType>(Ty))
+        return UnknownVal();
+    }
 
     return Size;
   }
@@ -981,14 +945,26 @@ const VarRegion *MemRegionManager::getVarRegion(const VarDecl *D,
   const MemRegion *sReg = nullptr;
 
   if (D->hasGlobalStorage() && !D->isStaticLocal()) {
-    QualType Ty = D->getType();
-    assert(!Ty.isNull());
-    if (Ty.isConstQualified()) {
-      sReg = getGlobalsRegion(MemRegion::GlobalImmutableSpaceRegionKind);
-    } else if (Ctx.getSourceManager().isInSystemHeader(D->getLocation())) {
-      sReg = getGlobalsRegion(MemRegion::GlobalSystemSpaceRegionKind);
+
+    // First handle the globals defined in system headers.
+    if (Ctx.getSourceManager().isInSystemHeader(D->getLocation())) {
+      // Whitelist the system globals which often DO GET modified, assume the
+      // rest are immutable.
+      if (D->getName().find("errno") != StringRef::npos)
+        sReg = getGlobalsRegion(MemRegion::GlobalSystemSpaceRegionKind);
+      else
+        sReg = getGlobalsRegion(MemRegion::GlobalImmutableSpaceRegionKind);
+
+    // Treat other globals as GlobalInternal unless they are constants.
     } else {
-      sReg = getGlobalsRegion(MemRegion::GlobalInternalSpaceRegionKind);
+      QualType GQT = D->getType();
+      const Type *GT = GQT.getTypePtrOrNull();
+      // TODO: We could walk the complex types here and see if everything is
+      // constified.
+      if (GT && GQT.isConstQualified() && GT->isArithmeticType())
+        sReg = getGlobalsRegion(MemRegion::GlobalImmutableSpaceRegionKind);
+      else
+        sReg = getGlobalsRegion();
     }
 
   // Finally handle static locals.
@@ -1010,15 +986,14 @@ const VarRegion *MemRegionManager::getVarRegion(const VarDecl *D,
       sReg = getUnknownRegion();
     } else {
       if (D->hasLocalStorage()) {
-        sReg =
-            isa<ParmVarDecl, ImplicitParamDecl>(D)
-                ? static_cast<const MemRegion *>(getStackArgumentsRegion(STC))
-                : static_cast<const MemRegion *>(getStackLocalsRegion(STC));
+        sReg = isa<ParmVarDecl>(D) || isa<ImplicitParamDecl>(D)
+               ? static_cast<const MemRegion*>(getStackArgumentsRegion(STC))
+               : static_cast<const MemRegion*>(getStackLocalsRegion(STC));
       }
       else {
         assert(D->isStaticLocal());
         const Decl *STCD = STC->getDecl();
-        if (isa<FunctionDecl, ObjCMethodDecl>(STCD))
+        if (isa<FunctionDecl>(STCD) || isa<ObjCMethodDecl>(STCD))
           sReg = getGlobalsRegion(MemRegion::StaticGlobalSpaceRegionKind,
                                   getFunctionCodeRegion(cast<NamedDecl>(STCD)));
         else if (const auto *BD = dyn_cast<BlockDecl>(STCD)) {
@@ -1031,10 +1006,8 @@ const VarRegion *MemRegionManager::getVarRegion(const VarDecl *D,
             T = TSI->getType();
           if (T.isNull())
             T = getContext().VoidTy;
-          if (!T->getAs<FunctionType>()) {
-            FunctionProtoType::ExtProtoInfo Ext;
-            T = getContext().getFunctionType(T, std::nullopt, Ext);
-          }
+          if (!T->getAs<FunctionType>())
+            T = getContext().getFunctionNoProtoType(T);
           T = getContext().getBlockPointerType(T);
 
           const BlockCodeRegion *BTR =
@@ -1080,18 +1053,14 @@ MemRegionManager::getBlockDataRegion(const BlockCodeRegion *BC,
     sReg = getGlobalsRegion(MemRegion::GlobalImmutableSpaceRegionKind);
   }
   else {
-    bool IsArcManagedBlock = Ctx.getLangOpts().ObjCAutoRefCount;
-
-    // ARC managed blocks can be initialized on stack or directly in heap
-    // depending on the implementations.  So we initialize them with
-    // UnknownRegion.
-    if (!IsArcManagedBlock && LC) {
+    if (LC) {
       // FIXME: Once we implement scope handling, we want the parent region
       // to be the scope.
       const StackFrameContext *STC = LC->getStackFrame();
       assert(STC);
       sReg = getStackLocalsRegion(STC);
-    } else {
+    }
+    else {
       // We allow 'LC' to be NULL for cases where want BlockDataRegions
       // without context-sensitivity.
       sReg = getUnknownRegion();
@@ -1157,12 +1126,9 @@ MemRegionManager::getBlockCodeRegion(const BlockDecl *BD, CanQualType locTy,
   return getSubRegion<BlockCodeRegion>(BD, locTy, AC, getCodeRegion());
 }
 
-const SymbolicRegion *
-MemRegionManager::getSymbolicRegion(SymbolRef sym,
-                                    const MemSpaceRegion *MemSpace) {
-  if (MemSpace == nullptr)
-    MemSpace = getUnknownRegion();
-  return getSubRegion<SymbolicRegion>(sym, MemSpace);
+/// getSymbolicRegion - Retrieve or create a "symbolic" memory region.
+const SymbolicRegion *MemRegionManager::getSymbolicRegion(SymbolRef sym) {
+  return getSubRegion<SymbolicRegion>(sym, getUnknownRegion());
 }
 
 const SymbolicRegion *MemRegionManager::getSymbolicHeapRegion(SymbolRef Sym) {
@@ -1291,11 +1257,13 @@ bool MemRegion::hasStackParametersStorage() const {
 }
 
 bool MemRegion::hasGlobalsOrParametersStorage() const {
-  return isa<StackArgumentsSpaceRegion, GlobalsSpaceRegion>(getMemorySpace());
+  const MemSpaceRegion *MS = getMemorySpace();
+  return isa<StackArgumentsSpaceRegion>(MS) ||
+         isa<GlobalsSpaceRegion>(MS);
 }
 
-// Strips away all elements and fields.
-// Returns the base region of them.
+// getBaseRegion strips away all elements and fields, and get the base region
+// of them.
 const MemRegion *MemRegion::getBaseRegion() const {
   const MemRegion *R = this;
   while (true) {
@@ -1315,7 +1283,8 @@ const MemRegion *MemRegion::getBaseRegion() const {
   return R;
 }
 
-// Returns the region of the root class of a C++ class hierarchy.
+// getgetMostDerivedObjectRegion gets the region of the root class of a C++
+// class hierarchy.
 const MemRegion *MemRegion::getMostDerivedObjectRegion() const {
   const MemRegion *R = this;
   while (const auto *BR = dyn_cast<CXXBaseObjectRegion>(R))
@@ -1489,7 +1458,7 @@ static RegionOffset calculateOffset(const MemRegion *R) {
         // If our base region is symbolic, we don't know what type it really is.
         // Pretend the type of the symbol is the true dynamic type.
         // (This will at least be self-consistent for the life of the symbol.)
-        Ty = SR->getPointeeStaticType();
+        Ty = SR->getSymbol()->getType()->getPointeeType();
         RootIsSymbolic = true;
       }
 

@@ -14,12 +14,10 @@
 #define LLVM_EXECUTIONENGINE_ORC_EPCEHFRAMEREGISTRAR_H
 
 #include "llvm/ExecutionEngine/JITLink/EHFrameSupport.h"
-#include "llvm/ExecutionEngine/Orc/Shared/ExecutorAddress.h"
+#include "llvm/ExecutionEngine/Orc/ExecutorProcessControl.h"
 
 namespace llvm {
 namespace orc {
-
-class ExecutionSession;
 
 /// Register/Deregisters EH frames in a remote process via a
 /// ExecutorProcessControl instance.
@@ -29,23 +27,25 @@ public:
   /// the EPC's lookupSymbols method to find the registration/deregistration
   /// funciton addresses by name.
   static Expected<std::unique_ptr<EPCEHFrameRegistrar>>
-  Create(ExecutionSession &ES);
+  Create(ExecutorProcessControl &EPC);
 
   /// Create a EPCEHFrameRegistrar with the given ExecutorProcessControl
   /// object and registration/deregistration function addresses.
-  EPCEHFrameRegistrar(ExecutionSession &ES,
-                      ExecutorAddr RegisterEHFrameWrapperFnAddr,
-                      ExecutorAddr DeregisterEHFRameWrapperFnAddr)
-      : ES(ES), RegisterEHFrameWrapperFnAddr(RegisterEHFrameWrapperFnAddr),
+  EPCEHFrameRegistrar(ExecutorProcessControl &EPC,
+                      JITTargetAddress RegisterEHFrameWrapperFnAddr,
+                      JITTargetAddress DeregisterEHFRameWrapperFnAddr)
+      : EPC(EPC), RegisterEHFrameWrapperFnAddr(RegisterEHFrameWrapperFnAddr),
         DeregisterEHFrameWrapperFnAddr(DeregisterEHFRameWrapperFnAddr) {}
 
-  Error registerEHFrames(ExecutorAddrRange EHFrameSection) override;
-  Error deregisterEHFrames(ExecutorAddrRange EHFrameSection) override;
+  Error registerEHFrames(JITTargetAddress EHFrameSectionAddr,
+                         size_t EHFrameSectionSize) override;
+  Error deregisterEHFrames(JITTargetAddress EHFrameSectionAddr,
+                           size_t EHFrameSectionSize) override;
 
 private:
-  ExecutionSession &ES;
-  ExecutorAddr RegisterEHFrameWrapperFnAddr;
-  ExecutorAddr DeregisterEHFrameWrapperFnAddr;
+  ExecutorProcessControl &EPC;
+  JITTargetAddress RegisterEHFrameWrapperFnAddr;
+  JITTargetAddress DeregisterEHFrameWrapperFnAddr;
 };
 
 } // end namespace orc

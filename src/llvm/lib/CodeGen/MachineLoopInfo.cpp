@@ -17,12 +17,12 @@
 #include "llvm/Analysis/LoopInfoImpl.h"
 #include "llvm/CodeGen/MachineDominators.h"
 #include "llvm/CodeGen/MachineRegisterInfo.h"
-#include "llvm/CodeGen/TargetInstrInfo.h"
+#include "llvm/CodeGen/Passes.h"
 #include "llvm/CodeGen/TargetSubtargetInfo.h"
 #include "llvm/Config/llvm-config.h"
 #include "llvm/InitializePasses.h"
-#include "llvm/Pass.h"
-#include "llvm/PassRegistry.h"
+#include "llvm/Support/Debug.h"
+#include "llvm/Support/raw_ostream.h"
 
 using namespace llvm;
 
@@ -154,9 +154,7 @@ MachineLoopInfo::findLoopPreheader(MachineLoop *L, bool SpeculativePreheader,
 bool MachineLoop::isLoopInvariant(MachineInstr &I) const {
   MachineFunction *MF = I.getParent()->getParent();
   MachineRegisterInfo *MRI = &MF->getRegInfo();
-  const TargetSubtargetInfo &ST = MF->getSubtarget();
-  const TargetRegisterInfo *TRI = ST.getRegisterInfo();
-  const TargetInstrInfo *TII = ST.getInstrInfo();
+  const TargetRegisterInfo *TRI = MF->getSubtarget().getRegisterInfo();
 
   // The instruction is loop invariant if all of its operands are.
   for (const MachineOperand &MO : I.operands()) {
@@ -176,8 +174,7 @@ bool MachineLoop::isLoopInvariant(MachineInstr &I) const {
         // However, if the physreg is known to always be caller saved/restored
         // then this use is safe to hoist.
         if (!MRI->isConstantPhysReg(Reg) &&
-            !(TRI->isCallerPreservedPhysReg(Reg.asMCReg(), *I.getMF())) &&
-            !TII->isIgnorableUse(MO))
+            !(TRI->isCallerPreservedPhysReg(Reg.asMCReg(), *I.getMF())))
           return false;
         // Otherwise it's safe to move.
         continue;

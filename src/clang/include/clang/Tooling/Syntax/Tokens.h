@@ -27,6 +27,7 @@
 #ifndef LLVM_CLANG_TOOLING_SYNTAX_TOKENS_H
 #define LLVM_CLANG_TOOLING_SYNTAX_TOKENS_H
 
+#include "clang/Basic/FileManager.h"
 #include "clang/Basic/LangOptions.h"
 #include "clang/Basic/SourceLocation.h"
 #include "clang/Basic/SourceManager.h"
@@ -425,7 +426,7 @@ public:
 
   /// Finalizes token collection. Should be called after preprocessing is
   /// finished, i.e. after running Execute().
-  [[nodiscard]] TokenBuffer consume() &&;
+  LLVM_NODISCARD TokenBuffer consume() &&;
 
 private:
   /// Maps from a start to an end spelling location of transformations

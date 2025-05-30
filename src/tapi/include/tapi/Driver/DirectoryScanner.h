@@ -63,6 +63,7 @@ public:
 
   // Access scanner internal.
   void setMode(ScannerMode scanMode) { mode = scanMode; }
+  void setConfiguration(Configuration *conf) { config = conf; }
   void setSplitHeaderDir(bool splitHeader) { useSplitHeaderDir = splitHeader; }
 
   // Get scanner output.
@@ -70,7 +71,7 @@ public:
 
   using FileMap = std::vector<std::pair<std::string, std::string>>;
   // Get VFS overlay for the scanner result.
-  FileMap getVFSFileMap(StringRef sysroot, ArrayRef<StringRef> rootPaths) const;
+  FileMap getVFSFileMap(StringRef sysroot) const;
 
 private:
   // Private helper functions.
@@ -98,7 +99,6 @@ private:
   bool scanSDKContent(StringRef directory);
 
   void addVFSForFramework(FileMap &output, StringRef sysroot,
-                          ArrayRef<StringRef> rootPaths,
                           const Framework &framework) const;
 
 private:
@@ -108,6 +108,7 @@ private:
   StringRef rootPath;
 
   ScannerMode mode;
+  Configuration *config;
   std::vector<Framework> frameworks;
   bool useSplitHeaderDir = false;
 };

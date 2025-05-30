@@ -29,17 +29,16 @@
 #include "llvm/ADT/Optional.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallString.h"
-#include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/FormatCommon.h"
 #include "llvm/Support/FormatProviders.h"
 #include "llvm/Support/FormatVariadicDetails.h"
 #include "llvm/Support/raw_ostream.h"
-#include <array>
 #include <cstddef>
 #include <string>
 #include <tuple>
 #include <utility>
+#include <vector>
 
 namespace llvm {
 
@@ -95,7 +94,7 @@ public:
         continue;
       }
 
-      auto *W = Adapters[R.Index];
+      auto W = Adapters[R.Index];
 
       FmtAlign Align(*W, R.Where, R.Align, R.Pad);
       Align.format(S, R.Options);
@@ -152,7 +151,7 @@ public:
   formatv_object(StringRef Fmt, Tuple &&Params)
       : formatv_object_base(Fmt, ParameterPointers),
         Parameters(std::move(Params)) {
-    ParameterPointers = std::apply(create_adapters(), Parameters);
+    ParameterPointers = apply_tuple(create_adapters(), Parameters);
   }
 
   formatv_object(formatv_object const &rhs) = delete;
@@ -160,7 +159,7 @@ public:
   formatv_object(formatv_object &&rhs)
       : formatv_object_base(std::move(rhs)),
         Parameters(std::move(rhs.Parameters)) {
-    ParameterPointers = std::apply(create_adapters(), Parameters);
+    ParameterPointers = apply_tuple(create_adapters(), Parameters);
     Adapters = ParameterPointers;
   }
 };
@@ -172,7 +171,7 @@ public:
 // Formats textual output.  `Fmt` is a string consisting of one or more
 // replacement sequences with the following grammar:
 //
-// rep_field ::= "{" index ["," layout] [":" format] "}"
+// rep_field ::= "{" [index] ["," layout] [":" format] "}"
 // index     ::= <non-negative integer>
 // layout    ::= [[[char]loc]width]
 // format    ::= <any string not containing "{" or "}">

@@ -12,6 +12,7 @@
 
 #include "llvm/CodeGen/MachineRegisterInfo.h"
 #include "llvm/ADT/iterator_range.h"
+#include "llvm/CodeGen/LowLevelType.h"
 #include "llvm/CodeGen/MachineBasicBlock.h"
 #include "llvm/CodeGen/MachineFunction.h"
 #include "llvm/CodeGen/MachineInstr.h"
@@ -42,7 +43,8 @@ void MachineRegisterInfo::Delegate::anchor() {}
 
 MachineRegisterInfo::MachineRegisterInfo(MachineFunction *MF)
     : MF(MF), TracksSubRegLiveness(MF->getSubtarget().enableSubRegLiveness() &&
-                                   EnableSubRegLiveness) {
+                                   EnableSubRegLiveness),
+      IsUpdatedCSRsInitialized(false) {
   unsigned NumRegs = getTargetRegisterInfo()->getNumRegs();
   VRegInfo.reserve(256);
   RegAllocHints.reserve(256);
@@ -79,10 +81,10 @@ constrainRegClass(MachineRegisterInfo &MRI, Register Reg,
   return NewRC;
 }
 
-const TargetRegisterClass *MachineRegisterInfo::constrainRegClass(
-    Register Reg, const TargetRegisterClass *RC, unsigned MinNumRegs) {
-  if (Reg.isPhysical())
-    return nullptr;
+const TargetRegisterClass *
+MachineRegisterInfo::constrainRegClass(Register Reg,
+                                       const TargetRegisterClass *RC,
+                                       unsigned MinNumRegs) {
   return ::constrainRegClass(*this, Reg, getRegClass(Reg), RC, MinNumRegs);
 }
 
@@ -381,7 +383,9 @@ void MachineRegisterInfo::replaceRegWith(Register FromReg, Register ToReg) {
   const TargetRegisterInfo *TRI = getTargetRegisterInfo();
 
   // TODO: This could be more efficient by bulk changing the operands.
-  for (MachineOperand &O : llvm::make_early_inc_range(reg_operands(FromReg))) {
+  for (reg_iterator I = reg_begin(FromReg), E = reg_end(); I != E; ) {
+    MachineOperand &O = *I;
+    ++I;
     if (Register::isPhysicalRegister(ToReg)) {
       O.substPhysReg(ToReg, *TRI);
     } else {
@@ -418,12 +422,6 @@ bool MachineRegisterInfo::hasOneNonDBGUse(Register RegNo) const {
 
 bool MachineRegisterInfo::hasOneNonDBGUser(Register RegNo) const {
   return hasSingleElement(use_nodbg_instructions(RegNo));
-}
-
-bool MachineRegisterInfo::hasAtMostUserInstrs(Register Reg,
-                                              unsigned MaxUsers) const {
-  return hasNItemsOrLess(use_instr_nodbg_begin(Reg), use_instr_nodbg_end(),
-                         MaxUsers);
 }
 
 /// clearKillFlags - Iterate over all the uses of the given register and
@@ -656,35 +654,3 @@ bool MachineRegisterInfo::isReservedRegUnit(unsigned Unit) const {
   }
   return false;
 }
-
-bool MachineRegisterInfo::isArgumentRegister(const MachineFunction &MF,
-                                             MCRegister Reg) const {
-  return getTargetRegisterInfo()->isArgumentRegister(MF, Reg);
-}
-
-bool MachineRegisterInfo::isFixedRegister(const MachineFunction &MF,
-                                          MCRegister Reg) const {
-  return getTargetRegisterInfo()->isFixedRegister(MF, Reg);
-}
-
-bool MachineRegisterInfo::isGeneralPurposeRegister(const MachineFunction &MF,
-                                                   MCRegister Reg) const {
-  return getTargetRegisterInfo()->isGeneralPurposeRegister(MF, Reg);
-}
-
-// BEGIN SWIFT
-bool llvm::isSwiftAsyncContext(const MachineFunction &MF, Register Reg) {
-  const llvm::Function &F = MF.getFunction();
-  if (!MF.getProperties().hasProperty(
-          MachineFunctionProperties::Property::TracksLiveness))
-    return false;
-  unsigned I = 0;
-  for (auto R : MF.getRegInfo().liveins()) {
-    if (R.first == (unsigned)Reg &&
-        F.hasParamAttribute(I, Attribute::SwiftAsync))
-      return true;
-    ++I;
-  }
-  return false;
-}
-// END SWIFT

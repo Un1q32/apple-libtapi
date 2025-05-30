@@ -30,7 +30,7 @@ public:
                   HeaderSeq &headerFiles)
       : fm(fm), diag(diag), headerFiles(headerFiles) {}
 
-  void visitHeaderFile(FileListReader::HeaderInfo &header) override;
+  void visitHeaderFile(HeaderType type, StringRef path) override;
 };
 
 TAPI_NAMESPACE_INTERNAL_END

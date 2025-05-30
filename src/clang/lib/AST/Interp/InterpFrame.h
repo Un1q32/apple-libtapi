@@ -14,6 +14,7 @@
 #define LLVM_CLANG_AST_INTERP_INTERPFRAME_H
 
 #include "Frame.h"
+#include "Pointer.h"
 #include "Program.h"
 #include "State.h"
 #include <cstdint>
@@ -23,7 +24,6 @@ namespace clang {
 namespace interp {
 class Function;
 class InterpState;
-class Pointer;
 
 /// Frame storing local variables.
 class InterpFrame final : public Frame {
@@ -63,7 +63,7 @@ public:
   size_t getFrameOffset() const { return FrameOffset; }
 
   /// Returns the value of a local variable.
-  template <typename T> const T &getLocal(unsigned Offset) const {
+  template <typename T> const T &getLocal(unsigned Offset) {
     return localRef<T>(Offset);
   }
 
@@ -76,7 +76,7 @@ public:
   Pointer getLocalPointer(unsigned Offset);
 
   /// Returns the value of an argument.
-  template <typename T> const T &getParam(unsigned Offset) const {
+  template <typename T> const T &getParam(unsigned Offset) {
     auto Pt = Params.find(Offset);
     if (Pt == Params.end()) {
       return stackRef<T>(Offset);
@@ -112,18 +112,17 @@ public:
 
 private:
   /// Returns an original argument from the stack.
-  template <typename T> const T &stackRef(unsigned Offset) const {
-    assert(Args);
+  template <typename T> const T &stackRef(unsigned Offset) {
     return *reinterpret_cast<const T *>(Args - ArgSize + Offset);
   }
 
   /// Returns an offset to a local.
-  template <typename T> T &localRef(unsigned Offset) const {
+  template <typename T> T &localRef(unsigned Offset) {
     return *reinterpret_cast<T *>(Locals.get() + Offset);
   }
 
   /// Returns a pointer to a local's block.
-  void *localBlock(unsigned Offset) const {
+  void *localBlock(unsigned Offset) {
     return Locals.get() + Offset - sizeof(Block);
   }
 

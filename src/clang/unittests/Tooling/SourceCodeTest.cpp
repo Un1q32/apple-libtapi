@@ -247,26 +247,15 @@ TEST(SourceCodeTest, getAssociatedRange) {
 
   // Includes attributes.
   Visitor.runOverAnnotated(R"cpp(
-      $r[[__attribute__((deprecated("message")))
+      #define ATTR __attribute__((deprecated("message")))
+      $r[[ATTR
       int x;]])cpp");
 
   // Includes attributes and comments together.
   Visitor.runOverAnnotated(R"cpp(
-      $r[[__attribute__((deprecated("message")))
-      // Comment.
-      int x;]])cpp");
-
-  // Includes attributes through macro expansion.
-  Visitor.runOverAnnotated(R"cpp(
-      #define MACRO_EXPANSION __attribute__((deprecated("message")))
-      $r[[MACRO_EXPANSION
-      int x;]])cpp");
-
-  // Includes attributes through macro expansion with comments.
-  Visitor.runOverAnnotated(R"cpp(
-      #define MACRO_EXPANSION __attribute__((deprecated("message")))
-      $r[[MACRO_EXPANSION
-      // Comment.
+      #define ATTR __attribute__((deprecated("message")))
+      $r[[ATTR
+      // Commment.
       int x;]])cpp");
 }
 
@@ -413,26 +402,15 @@ TEST(SourceCodeTest, getAssociatedRangeWithComments) {
 
   // Includes attributes.
   Visit(R"cpp(
-      $r[[__attribute__((deprecated("message")))
+      #define ATTR __attribute__((deprecated("message")))
+      $r[[ATTR
       int x;]])cpp");
 
   // Includes attributes and comments together.
   Visit(R"cpp(
-      $r[[__attribute__((deprecated("message")))
-      // Comment.
-      int x;]])cpp");
-
-  // Includes attributes through macro expansion.
-  Visitor.runOverAnnotated(R"cpp(
-      #define MACRO_EXPANSION __attribute__((deprecated("message")))
-      $r[[MACRO_EXPANSION
-      int x;]])cpp");
-
-  // Includes attributes through macro expansion with comments.
-  Visitor.runOverAnnotated(R"cpp(
-      #define MACRO_EXPANSION __attribute__((deprecated("message")))
-      $r[[MACRO_EXPANSION
-      // Comment.
+      #define ATTR __attribute__((deprecated("message")))
+      $r[[ATTR
+      // Commment.
       int x;]])cpp");
 }
 
@@ -496,7 +474,7 @@ int c = BAR 3.0;
   IntLitVisitor Visitor;
   Visitor.OnIntLit = [](IntegerLiteral *Expr, ASTContext *Context) {
     auto Range = CharSourceRange::getTokenRange(Expr->getSourceRange());
-    EXPECT_FALSE(getRangeForEdit(Range, *Context));
+    EXPECT_FALSE(getRangeForEdit(Range, *Context).hasValue());
   };
   Visitor.runOver(Code);
 }

@@ -6,8 +6,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef LLVM_TEXTAPI_TEXTAPIWRITER_H
-#define LLVM_TEXTAPI_TEXTAPIWRITER_H
+#ifndef LLVM_TEXTAPI_MACHO_TEXTAPIWRITER_H
+#define LLVM_TEXTAPI_MACHO_TEXTAPIWRITER_H
 
 namespace llvm {
 
@@ -22,11 +22,10 @@ class TextAPIWriter {
 public:
   TextAPIWriter() = delete;
 
-  static Error writeToStream(raw_ostream &OS, const InterfaceFile &File,
-                             bool Compact = false);
+  static Error writeToStream(raw_ostream &os, const InterfaceFile &);
 };
 
 } // end namespace MachO.
 } // end namespace llvm.
 
-#endif // LLVM_TEXTAPI_TEXTAPIWRITER_H
+#endif // LLVM_TEXTAPI_MACHO_TEXTAPIWRITER_H

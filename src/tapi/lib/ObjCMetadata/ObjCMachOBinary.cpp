@@ -70,16 +70,16 @@ MachOMetadata::MachOMetadata(object::MachOObjectFile *Binary, Error &Err)
 
   // Cache export entries for lookups.
   StringMap<uint64_t> ExportsToAddress;
-  for (const auto &Export : OwningBinary->exports(Err))
-    ExportsToAddress[Export.name()] = Export.address();
+  for (const auto &Export : OwningBinary->exports(Err)) {
+    if (Err)
+      return;
 
-  if (Err)
-    return;
+    ExportsToAddress[Export.name()] = Export.address();
+  }
 
   // Cache the address of binds from the binary. Since we are walking ObjC
   // Metadata, the external symbols cannot be weak binds.
 
-  // For binaries uses chained fixups.
     // FIXME: Threaded rebase logic should move to libObject.
     uint64_t TextAddress = 0;
     for (const auto &Command : Binary->load_commands()) {
@@ -105,10 +105,13 @@ MachOMetadata::MachOMetadata(object::MachOObjectFile *Binary, Error &Err)
       if (Entry.ordinal() == MachO::BIND_SPECIAL_DYLIB_SELF) {
         // This is a bind to local symbol. Resolve it to actual address.
         auto Addr = ExportsToAddress.find(Entry.symbolName());
-        if (Addr != ExportsToAddress.end()) {
-          VMAddrPointToValueMap[Entry.address()] = Addr->second;
-          continue;
+        if (Addr == ExportsToAddress.end()) {
+          Err = make_error<StringError>("local bind symbol is not found",
+                                        object_error::parse_failed);
+          return;
         }
+        VMAddrPointToValueMap[Entry.address()] = Addr->second;
+        continue;
       }
       VMAddrToSymbolMap[Entry.address()] = Entry.symbolName();
     }

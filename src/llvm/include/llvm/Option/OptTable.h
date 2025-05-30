@@ -44,7 +44,7 @@ public:
     /// A null terminated array of prefix strings to apply to name while
     /// matching.
     const char *const *Prefixes;
-    StringLiteral PrefixedName;
+    const char *Name;
     const char *HelpText;
     const char *MetaVar;
     unsigned ID;
@@ -55,11 +55,6 @@ public:
     unsigned short AliasID;
     const char *AliasArgs;
     const char *Values;
-
-    StringRef getName() const {
-      unsigned PrefixLength = !Prefixes ? 0 : StringRef(Prefixes[0]).size();
-      return PrefixedName.drop_front(PrefixLength);
-    }
   };
 
 private:
@@ -69,8 +64,8 @@ private:
   bool GroupedShortOptions = false;
   const char *EnvVar = nullptr;
 
-  unsigned InputOptionID = 0;
-  unsigned UnknownOptionID = 0;
+  unsigned TheInputOptionID = 0;
+  unsigned TheUnknownOptionID = 0;
 
   /// The index of the first option which can be parsed (i.e., is not a
   /// special option like 'input' or 'unknown', and is not an option group).
@@ -88,8 +83,7 @@ private:
     return OptionInfos[id - 1];
   }
 
-  std::unique_ptr<Arg> parseOneArgGrouped(InputArgList &Args,
-                                          unsigned &Index) const;
+  Arg *parseOneArgGrouped(InputArgList &Args, unsigned &Index) const;
 
 protected:
   OptTable(ArrayRef<Info> OptionInfos, bool IgnoreCase = false);
@@ -108,7 +102,7 @@ public:
 
   /// Lookup the name of the given option.
   const char *getOptionName(OptSpecifier id) const {
-    return getInfo(id).getName().data();
+    return getInfo(id).Name;
   }
 
   /// Get the kind of the given option.
@@ -205,9 +199,9 @@ public:
   /// \return The parsed argument, or 0 if the argument is missing values
   /// (in which case Index still points at the conceptual next argument string
   /// to parse).
-  std::unique_ptr<Arg> ParseOneArg(const ArgList &Args, unsigned &Index,
-                                   unsigned FlagsToInclude = 0,
-                                   unsigned FlagsToExclude = 0) const;
+  Arg *ParseOneArg(const ArgList &Args, unsigned &Index,
+                   unsigned FlagsToInclude = 0,
+                   unsigned FlagsToExclude = 0) const;
 
   /// Parse an list of arguments into an InputArgList.
   ///
@@ -266,34 +260,5 @@ public:
 } // end namespace opt
 
 } // end namespace llvm
-
-#define LLVM_MAKE_OPT_ID_WITH_ID_PREFIX(ID_PREFIX, PREFIX, PREFIXED_NAME, ID,  \
-                                        KIND, GROUP, ALIAS, ALIASARGS, FLAGS,  \
-                                        PARAM, HELPTEXT, METAVAR, VALUES)      \
-  ID_PREFIX##ID
-
-#define LLVM_MAKE_OPT_ID(PREFIX, PREFIXED_NAME, ID, KIND, GROUP, ALIAS,        \
-                         ALIASARGS, FLAGS, PARAM, HELPTEXT, METAVAR, VALUES)   \
-  LLVM_MAKE_OPT_ID_WITH_ID_PREFIX(OPT_, PREFIX, PREFIXED_NAME, ID, KIND,       \
-                                  GROUP, ALIAS, ALIASARGS, FLAGS, PARAM,       \
-                                  HELPTEXT, METAVAR, VALUE)
-
-#define LLVM_CONSTRUCT_OPT_INFO_WITH_ID_PREFIX(                                \
-    ID_PREFIX, PREFIX, PREFIXED_NAME, ID, KIND, GROUP, ALIAS, ALIASARGS,       \
-    FLAGS, PARAM, HELPTEXT, METAVAR, VALUES)                                   \
-  llvm::opt::OptTable::Info {                                                  \
-    ID_PREFIX##PREFIX, PREFIXED_NAME, HELPTEXT, METAVAR, ID_PREFIX##ID,                 \
-        llvm::opt::Option::KIND##Class, PARAM, FLAGS, ID_PREFIX##GROUP,        \
-        ID_PREFIX##ALIAS, ALIASARGS, VALUES                                    \
-  }
-
-#define LLVM_CONSTRUCT_OPT_INFO(PREFIX, PREFIXED_NAME, ID, KIND, GROUP, ALIAS, \
-                                ALIASARGS, FLAGS, PARAM, HELPTEXT, METAVAR,    \
-                                VALUES)                                        \
-  llvm::opt::OptTable::Info {                                                  \
-    PREFIX, PREFIXED_NAME, HELPTEXT, METAVAR, OPT_##ID,                        \
-        llvm::opt::Option::KIND##Class, PARAM, FLAGS, OPT_##GROUP,             \
-        OPT_##ALIAS, ALIASARGS, VALUES                                         \
-  }
 
 #endif // LLVM_OPTION_OPTTABLE_H

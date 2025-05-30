@@ -212,7 +212,8 @@ FixupLEAPass::postRAConvertToLEA(MachineBasicBlock &MBB,
     // These instructions are all fine to convert.
     break;
   }
-  return TII->convertToThreeAddress(MI, nullptr, nullptr);
+  MachineFunction::iterator MFI = MBB.getIterator();
+  return TII->convertToThreeAddress(MFI, MI, nullptr);
 }
 
 FunctionPass *llvm::createX86FixupLEAs() { return new FixupLEAPass(); }
@@ -229,7 +230,7 @@ bool FixupLEAPass::runOnMachineFunction(MachineFunction &MF) {
   const X86Subtarget &ST = MF.getSubtarget<X86Subtarget>();
   bool IsSlowLEA = ST.slowLEA();
   bool IsSlow3OpsLEA = ST.slow3OpsLEA();
-  bool LEAUsesAG = ST.leaUsesAG();
+  bool LEAUsesAG = ST.LEAusesAG();
 
   bool OptIncDec = !ST.slowIncDec() || MF.getFunction().hasOptSize();
   bool UseLEAForSP = ST.useLeaForSP();
@@ -278,9 +279,10 @@ FixupLEAPass::usesRegister(MachineOperand &p, MachineBasicBlock::iterator I) {
   RegUsageState RegUsage = RU_NotUsed;
   MachineInstr &MI = *I;
 
-  for (const MachineOperand &MO : MI.operands()) {
-    if (MO.isReg() && MO.getReg() == p.getReg()) {
-      if (MO.isDef())
+  for (unsigned i = 0; i < MI.getNumOperands(); ++i) {
+    MachineOperand &opnd = MI.getOperand(i);
+    if (opnd.isReg() && opnd.getReg() == p.getReg()) {
+      if (opnd.isDef())
         return RU_Write;
       RegUsage = RU_Read;
     }
@@ -546,6 +548,7 @@ bool FixupLEAPass::optLEAALU(MachineBasicBlock::iterator &I,
   if (KilledIndex)
     KilledIndex->setIsKill(false);
 
+  MBB.getParent()->substituteDebugValuesForInst(*AluI, *NewMI1, 1);
   MBB.getParent()->substituteDebugValuesForInst(*AluI, *NewMI2, 1);
   MBB.erase(I);
   MBB.erase(AluI);

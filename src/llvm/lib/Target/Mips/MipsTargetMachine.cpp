@@ -18,14 +18,12 @@
 #include "MipsSEISelDAGToDAG.h"
 #include "MipsSubtarget.h"
 #include "MipsTargetObjectFile.h"
-#include "MipsTargetTransformInfo.h"
 #include "TargetInfo/MipsTargetInfo.h"
 #include "llvm/ADT/Optional.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Analysis/TargetTransformInfo.h"
 #include "llvm/CodeGen/BasicTTIImpl.h"
-#include "llvm/CodeGen/GlobalISel/CSEInfo.h"
 #include "llvm/CodeGen/GlobalISel/IRTranslator.h"
 #include "llvm/CodeGen/GlobalISel/InstructionSelect.h"
 #include "llvm/CodeGen/GlobalISel/Legalizer.h"
@@ -36,9 +34,9 @@
 #include "llvm/IR/Attributes.h"
 #include "llvm/IR/Function.h"
 #include "llvm/InitializePasses.h"
-#include "llvm/MC/TargetRegistry.h"
 #include "llvm/Support/CodeGen.h"
 #include "llvm/Support/Debug.h"
+#include "llvm/Support/TargetRegistry.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Target/TargetOptions.h"
 #include <string>
@@ -46,10 +44,6 @@
 using namespace llvm;
 
 #define DEBUG_TYPE "mips"
-
-static cl::opt<bool>
-    EnableMulMulFix("mfix4300", cl::init(false),
-                    cl::desc("Enable the VR4300 mulmul bug fix."), cl::Hidden);
 
 extern "C" LLVM_EXTERNAL_VISIBILITY void LLVMInitializeMipsTarget() {
   // Register the target.
@@ -64,8 +58,6 @@ extern "C" LLVM_EXTERNAL_VISIBILITY void LLVMInitializeMipsTarget() {
   initializeMipsBranchExpansionPass(*PR);
   initializeMicroMipsSizeReducePass(*PR);
   initializeMipsPreLegalizerCombinerPass(*PR);
-  initializeMipsPostLegalizerCombinerPass(*PR);
-  initializeMipsMulMulBugFixPass(*PR);
 }
 
 static std::string computeDataLayout(const Triple &TT, StringRef CPU,
@@ -106,7 +98,7 @@ static std::string computeDataLayout(const Triple &TT, StringRef CPU,
 
 static Reloc::Model getEffectiveRelocModel(bool JIT,
                                            Optional<Reloc::Model> RM) {
-  if (!RM || JIT)
+  if (!RM.hasValue() || JIT)
     return Reloc::Static;
   return *RM;
 }
@@ -241,7 +233,6 @@ public:
   bool addIRTranslator() override;
   void addPreLegalizeMachineIR() override;
   bool addLegalizeMachineIR() override;
-  void addPreRegBankSelect() override;
   bool addRegBankSelect() override;
   bool addGlobalInstructionSelect() override;
 
@@ -280,7 +271,7 @@ void MipsPassConfig::addPreRegAlloc() {
 }
 
 TargetTransformInfo
-MipsTargetMachine::getTargetTransformInfo(const Function &F) const {
+MipsTargetMachine::getTargetTransformInfo(const Function &F) {
   if (Subtarget->allowMixed16_32()) {
     LLVM_DEBUG(errs() << "No Target Transform Info Pass Added\n");
     // FIXME: This is no longer necessary as the TTI returned is per-function.
@@ -288,7 +279,7 @@ MipsTargetMachine::getTargetTransformInfo(const Function &F) const {
   }
 
   LLVM_DEBUG(errs() << "Target Transform Info Pass Added\n");
-  return TargetTransformInfo(MipsTTIImpl(this, F));
+  return TargetTransformInfo(BasicTTIImpl(this, F));
 }
 
 // Implemented by targets that want to run passes immediately before
@@ -300,11 +291,6 @@ void MipsPassConfig::addPreEmitPass() {
   // The microMIPS size reduction pass performs instruction reselection for
   // instructions which can be remapped to a 16 bit instruction.
   addPass(createMicroMipsSizeReducePass());
-
-  // This pass inserts a nop instruction between two back-to-back multiplication
-  // instructions when the "mfix4300" flag is passed.
-  if (EnableMulMulFix)
-    addPass(createMipsMulMulBugPass());
 
   // The delay slot filler pass can potientially create forbidden slot hazards
   // for MIPSR6 and therefore it should go before MipsBranchExpansion pass.
@@ -335,11 +321,6 @@ void MipsPassConfig::addPreLegalizeMachineIR() {
 bool MipsPassConfig::addLegalizeMachineIR() {
   addPass(new Legalizer());
   return false;
-}
-
-void MipsPassConfig::addPreRegBankSelect() {
-  bool IsOptNone = getOptLevel() == CodeGenOpt::None;
-  addPass(createMipsPostLegalizeCombiner(IsOptNone));
 }
 
 bool MipsPassConfig::addRegBankSelect() {

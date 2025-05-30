@@ -22,8 +22,6 @@ using namespace tapi;
 #endif
 
 namespace {
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wdeprecated-declarations"
 
 class LibTapiTest_TBDv3 : public LibTapiTest {};
 
@@ -241,7 +239,8 @@ TEST_F(LibTapiTest_TBDv3, LIF_Load_zippered) {
       ParsingFlags::None, PackedVersion32(10, 14, 0), errorMessage));
   ASSERT_TRUE(errorMessage.empty());
   ASSERT_NE(nullptr, file);
-  EXPECT_EQ((std::vector<uint32_t>{PLATFORM_MACOS}), file->getPlatformSet());
+  EXPECT_EQ((std::vector<uint32_t>{PLATFORM_MACOS, PLATFORM_MACCATALYST}),
+            file->getPlatformSet());
 
   exports.clear();
   for (const auto &sym : file->exports())
@@ -289,5 +288,4 @@ TEST_F(LibTapiTest_TBDv3, LIF_MacCatalyst) {
   EXPECT_TRUE(file->exports().empty());
 }
 
-#pragma clang diagnostic pop
 } // namespace

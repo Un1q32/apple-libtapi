@@ -14,8 +14,10 @@
 #include "tapi/Core/MachODylibReader.h"
 #include "tapi/Core/API.h"
 #include "tapi/Core/APIVisitor.h"
+#include "tapi/Core/InterfaceFile.h"
 #include "tapi/Core/LLVM.h"
 #include "tapi/Core/MachOReader.h"
+#include "tapi/Core/XPI.h"
 #include "tapi/ObjCMetadata/ObjCMachOBinary.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/Triple.h"
@@ -52,7 +54,59 @@ bool MachODylibReader::canRead(file_magic magic, MemoryBufferRef bufferRef,
   return types & fileType.get();
 }
 
-Expected<APIs>
+static std::tuple<StringRef, XPIKind> parseSymbol(StringRef symbolName) {
+  StringRef name;
+  XPIKind kind;
+  if (symbolName.startswith(".objc_class_name_")) {
+    name = symbolName.drop_front(17);
+    kind = XPIKind::ObjectiveCClass;
+  } else if (symbolName.startswith("_OBJC_CLASS_$_")) {
+    name = symbolName.drop_front(14);
+    kind = XPIKind::ObjectiveCClass;
+  } else if (symbolName.startswith("_OBJC_METACLASS_$_")) {
+    name = symbolName.drop_front(18);
+    kind = XPIKind::ObjectiveCClass;
+  } else if (symbolName.startswith("_OBJC_EHTYPE_$_")) {
+    name = symbolName.drop_front(15);
+    kind = XPIKind::ObjectiveCClassEHType;
+  } else if (symbolName.startswith("_OBJC_IVAR_$_")) {
+    name = symbolName.drop_front(13);
+    kind = XPIKind::ObjectiveCInstanceVariable;
+  } else {
+    name = symbolName;
+    kind = XPIKind::GlobalSymbol;
+  }
+  return std::make_tuple(name, kind);
+}
+
+class InterfaceFileConverter : public APIVisitor {
+public:
+  InterfaceFileConverter(InterfaceFile *file, const Target &target,
+                         bool includeUndefs)
+      : file(file), target(target), includeUndefs(includeUndefs) {}
+  ~InterfaceFileConverter() override {}
+
+  void visitGlobal(const GlobalRecord &) override;
+
+  // No typedef and enum in binary.
+private:
+  InterfaceFile *file;
+  const Target &target;
+  bool includeUndefs;
+};
+
+void InterfaceFileConverter::visitGlobal(const GlobalRecord &record) {
+  // ignore internal and unknown linkage it unless came from flat namespace
+  if ( !(record.isExported() || (includeUndefs && record.isExternal())) )
+    return;
+
+  StringRef name;
+  XPIKind kind;
+  std::tie(name, kind) = parseSymbol(record.name);
+  file->addSymbol(kind, name, target, record.linkage, record.flags);
+}
+
+Expected<std::unique_ptr<InterfaceFile>>
 MachODylibReader::readFile(std::unique_ptr<MemoryBuffer> memBuffer,
                            ReadFlags readFlags, ArchitectureSet arches) const {
   MachOParseOption option;
@@ -70,16 +124,46 @@ MachODylibReader::readFile(std::unique_ptr<MemoryBuffer> memBuffer,
   if (!results)
     return results.takeError();
 
-  APIs apis;
-  for (auto &result : *results) {
-    if (result.second->hasBinaryInfo()) {
-      auto &binaryInfo = result.second->getBinaryInfo();
-      binaryInfo.path =
-          result.second->copyString(memBuffer->getBufferIdentifier());
+  auto file = std::unique_ptr<InterfaceFile>(new InterfaceFile);
+  file->setPath(memBuffer->getBufferIdentifier());
+  file->setMemoryBuffer(std::move(memBuffer));
+
+  for (const auto &result : *results) {
+    const auto &triple = result.second.getTarget();
+    auto target = Target(triple);
+    file->addTarget(target);
+    bool includeUndefs = false;
+    if (result.second.hasBinaryInfo()) {
+      auto &binaryInfo = result.second.getBinaryInfo();
+      file->setFileType(binaryInfo.fileType);
+      if (binaryInfo.isAppExtensionSafe)
+        file->setApplicationExtensionSafe();
+
+      if (binaryInfo.isTwoLevelNamespace)
+        file->setTwoLevelNamespace();
+      else
+        // Only record undef symbols for flat namespace dylibs.
+        includeUndefs = true;
+
+      file->setCurrentVersion(binaryInfo.currentVersion);
+      file->setCompatibilityVersion(binaryInfo.compatibilityVersion);
+      file->addParentUmbrella(target, binaryInfo.parentUmbrella);
+      file->setSwiftABIVersion(binaryInfo.swiftABIVersion);
+      if (!binaryInfo.uuid.empty())
+        file->addUUID(target, binaryInfo.uuid);
+      if (!binaryInfo.installName.empty())
+        file->setInstallName(binaryInfo.installName);
+      for (const auto &client : binaryInfo.allowableClients)
+        file->addAllowableClient(client, target);
+      for (const auto &lib : binaryInfo.reexportedLibraries)
+        file->addReexportedLibrary(lib, target);
     }
-    apis.emplace_back(std::move(result.second));
+
+    InterfaceFileConverter converter(file.get(), target, includeUndefs);
+    result.second.visit(converter);
   }
-  return apis;
+
+  return file;
 }
 
 TAPI_NAMESPACE_INTERNAL_END

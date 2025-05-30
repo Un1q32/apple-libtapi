@@ -20,6 +20,10 @@
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/raw_ostream.h"
 #include <algorithm>
+#include <cassert>
+#include <cstddef>
+#include <cstring>
+#include <iterator>
 #include <string>
 #include <vector>
 
@@ -52,7 +56,7 @@ std::string SubtargetFeatures::getString() const {
 }
 
 void SubtargetFeatures::print(raw_ostream &OS) const {
-  for (const auto &F : Features)
+  for (auto &F : Features)
     OS << F << " ";
   OS << "\n";
 }

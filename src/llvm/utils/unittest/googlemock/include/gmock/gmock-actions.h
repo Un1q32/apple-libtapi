@@ -27,6 +27,7 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
+
 // Google Mock - a framework for writing C++ mock classes.
 //
 // This file implements some commonly used actions.
@@ -34,7 +35,6 @@
 // GOOGLETEST_CM0002 DO NOT DELETE
 
 // IWYU pragma: private, include "gmock/gmock.h"
-// IWYU pragma: friend gmock/.*
 
 #ifndef GMOCK_INCLUDE_GMOCK_GMOCK_ACTIONS_H_
 #define GMOCK_INCLUDE_GMOCK_GMOCK_ACTIONS_H_
@@ -825,8 +825,7 @@ struct InvokeMethodWithoutArgsAction {
   Class* const obj_ptr;
   const MethodPtr method_ptr;
 
-  using ReturnType =
-      decltype((std::declval<Class*>()->*std::declval<MethodPtr>())());
+  using ReturnType = typename std::result_of<MethodPtr(Class*)>::type;
 
   template <typename... Args>
   ReturnType operator()(const Args&...) const {

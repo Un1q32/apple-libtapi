@@ -14,7 +14,6 @@
 #define LLVM_UTILS_TABLEGEN_CODEGENINTRINSICS_H
 
 #include "SDNodeProperties.h"
-#include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/MachineValueType.h"
 #include <string>
 #include <vector>
@@ -22,12 +21,13 @@
 namespace llvm {
 class Record;
 class RecordKeeper;
+class CodeGenTarget;
 
 struct CodeGenIntrinsic {
   Record *TheDef;             // The actual record defining this intrinsic.
   std::string Name;           // The name of the LLVM function "llvm.bswap.i32"
   std::string EnumName;       // The name of the enum "bswap_i32"
-  std::string ClangBuiltinName; // Name of the corresponding GCC builtin, or "".
+  std::string GCCBuiltinName; // Name of the corresponding GCC builtin, or "".
   std::string MSBuiltinName;  // Name of the corresponding MS builtin, or "".
   std::string TargetPrefix;   // Target prefix, e.g. "ppc" for t-s intrinsics.
 
@@ -126,9 +126,6 @@ struct CodeGenIntrinsic {
   /// True if the intrinsic is no-return.
   bool isNoReturn;
 
-  /// True if the intrinsic is no-callback.
-  bool isNoCallback;
-
   /// True if the intrinsic is no-sync.
   bool isNoSync;
 
@@ -155,7 +152,6 @@ struct CodeGenIntrinsic {
     NoCapture,
     NoAlias,
     NoUndef,
-    NonNull,
     Returned,
     ReadOnly,
     WriteOnly,
@@ -165,20 +161,20 @@ struct CodeGenIntrinsic {
   };
 
   struct ArgAttribute {
+    unsigned Index;
     ArgAttrKind Kind;
     uint64_t Value;
 
-    ArgAttribute(ArgAttrKind K, uint64_t V) : Kind(K), Value(V) {}
+    ArgAttribute(unsigned Idx, ArgAttrKind K, uint64_t V)
+        : Index(Idx), Kind(K), Value(V) {}
 
     bool operator<(const ArgAttribute &Other) const {
-      return std::tie(Kind, Value) < std::tie(Other.Kind, Other.Value);
+      return std::tie(Index, Kind, Value) <
+             std::tie(Other.Index, Other.Kind, Other.Value);
     }
   };
 
-  /// Vector of attributes for each argument.
-  SmallVector<SmallVector<ArgAttribute, 0>> ArgumentAttributes;
-
-  void addArgAttribute(unsigned Idx, ArgAttrKind AK, uint64_t V = 0);
+  std::vector<ArgAttribute> ArgumentAttributes;
 
   bool hasProperty(enum SDNP Prop) const {
     return Properties & (1 << Prop);
@@ -219,8 +215,6 @@ public:
 
   bool empty() const { return Intrinsics.empty(); }
   size_t size() const { return Intrinsics.size(); }
-  auto begin() const { return Intrinsics.begin(); }
-  auto end() const { return Intrinsics.end(); }
   CodeGenIntrinsic &operator[](size_t Pos) { return Intrinsics[Pos]; }
   const CodeGenIntrinsic &operator[](size_t Pos) const {
     return Intrinsics[Pos];

@@ -67,9 +67,6 @@ public:
     return Abstract;
   }
 
-  bool isInConstantContext() const { return InConstantContext; }
-  void setInConstantContext(bool var) { InConstantContext = var; }
-
   /// Try to emit the initiaizer of the given declaration as an abstract
   /// constant.  If this succeeds, the emission must be finalized.
   llvm::Constant *tryEmitForInitializer(const VarDecl &D);

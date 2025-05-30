@@ -16,25 +16,21 @@
 
 TAPI_NAMESPACE_INTERNAL_BEGIN
 
-void FileListVisitor::visitHeaderFile(FileListReader::HeaderInfo &header) {
-  if (!fm.exists(header.path)) {
-    diag.report(diag::err_no_such_header_file)
-        << header.path << (unsigned)header.type;
+void FileListVisitor::visitHeaderFile(HeaderType type, StringRef path) {
+  if (!fm.exists(path)) {
+    diag.report(diag::err_no_such_header_file) << path << (unsigned)type;
     return;
   }
 
-  if (header.type == HeaderType::Project) {
-    headerFiles.emplace_back(header.path, header.type,
-                             /*relativePath*/ "", /*includeName*/ "",
-                             header.language,
-                             header.isSwiftCompatibilityHeader);
+  if (type == HeaderType::Project) {
+    headerFiles.emplace_back(path, type);
     return;
   }
 
-  auto includeName = createIncludeHeaderName(header.path);
-  headerFiles.emplace_back(header.path, header.type, /*relativePath*/ "",
-                           includeName.has_value() ? includeName.value() : "",
-                           header.language, header.isSwiftCompatibilityHeader);
+  auto includeName = createIncludeHeaderName(path);
+  headerFiles.emplace_back(path, type, /*relativePath*/ "",
+                           includeName.hasValue() ? includeName.getValue()
+                                                  : "");
 }
 
 TAPI_NAMESPACE_INTERNAL_END

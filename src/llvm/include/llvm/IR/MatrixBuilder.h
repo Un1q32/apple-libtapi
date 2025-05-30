@@ -30,8 +30,8 @@ class Function;
 class Twine;
 class Module;
 
-class MatrixBuilder {
-  IRBuilderBase &B;
+template <class IRBuilderTy> class MatrixBuilder {
+  IRBuilderTy &B;
   Module *getModule() { return B.GetInsertBlock()->getParent()->getParent(); }
 
   std::pair<Value *, Value *> splatScalarOperandIfNeeded(Value *LHS,
@@ -55,22 +55,26 @@ class MatrixBuilder {
   }
 
 public:
-  MatrixBuilder(IRBuilderBase &Builder) : B(Builder) {}
+  MatrixBuilder(IRBuilderTy &Builder) : B(Builder) {}
 
   /// Create a column major, strided matrix load.
-  /// \p EltTy   - Matrix element type
   /// \p DataPtr - Start address of the matrix read
   /// \p Rows    - Number of rows in matrix (must be a constant)
   /// \p Columns - Number of columns in matrix (must be a constant)
   /// \p Stride  - Space between columns
-  CallInst *CreateColumnMajorLoad(Type *EltTy, Value *DataPtr, Align Alignment,
+  CallInst *CreateColumnMajorLoad(Value *DataPtr, Align Alignment,
                                   Value *Stride, bool IsVolatile, unsigned Rows,
                                   unsigned Columns, const Twine &Name = "") {
+
+    // Deal with the pointer
+    PointerType *PtrTy = cast<PointerType>(DataPtr->getType());
+    Type *EltTy = PtrTy->getElementType();
+
     auto *RetType = FixedVectorType::get(EltTy, Rows * Columns);
 
     Value *Ops[] = {DataPtr, Stride, B.getInt1(IsVolatile), B.getInt32(Rows),
                     B.getInt32(Columns)};
-    Type *OverloadedTypes[] = {RetType, Stride->getType()};
+    Type *OverloadedTypes[] = {RetType};
 
     Function *TheFn = Intrinsic::getDeclaration(
         getModule(), Intrinsic::matrix_column_major_load, OverloadedTypes);
@@ -78,7 +82,7 @@ public:
     CallInst *Call = B.CreateCall(TheFn->getFunctionType(), TheFn, Ops, Name);
     Attribute AlignAttr =
         Attribute::getWithAlignment(Call->getContext(), Alignment);
-    Call->addParamAttr(0, AlignAttr);
+    Call->addAttribute(1, AlignAttr);
     return Call;
   }
 
@@ -93,7 +97,7 @@ public:
     Value *Ops[] = {Matrix,           Ptr,
                     Stride,           B.getInt1(IsVolatile),
                     B.getInt32(Rows), B.getInt32(Columns)};
-    Type *OverloadedTypes[] = {Matrix->getType(), Stride->getType()};
+    Type *OverloadedTypes[] = {Matrix->getType()};
 
     Function *TheFn = Intrinsic::getDeclaration(
         getModule(), Intrinsic::matrix_column_major_store, OverloadedTypes);
@@ -101,7 +105,7 @@ public:
     CallInst *Call = B.CreateCall(TheFn->getFunctionType(), TheFn, Ops, Name);
     Attribute AlignAttr =
         Attribute::getWithAlignment(Call->getContext(), Alignment);
-    Call->addParamAttr(1, AlignAttr);
+    Call->addAttribute(2, AlignAttr);
     return Call;
   }
 
@@ -230,11 +234,12 @@ public:
   /// Create an assumption that \p Idx is less than \p NumElements.
   void CreateIndexAssumption(Value *Idx, unsigned NumElements,
                              Twine const &Name = "") {
+
     Value *NumElts =
         B.getIntN(Idx->getType()->getScalarSizeInBits(), NumElements);
     auto *Cmp = B.CreateICmpULT(Idx, NumElts);
-    if (isa<ConstantInt>(Cmp))
-      assert(cast<ConstantInt>(Cmp)->isOne() && "Index must be valid!");
+    if (auto *ConstCond = dyn_cast<ConstantInt>(Cmp))
+      assert(ConstCond->isOne() && "Index must be valid!");
     else
       B.CreateAssumption(Cmp);
   }
@@ -243,6 +248,7 @@ public:
   /// a matrix with \p NumRows embedded in a vector.
   Value *CreateIndex(Value *RowIdx, Value *ColumnIdx, unsigned NumRows,
                      Twine const &Name = "") {
+
     unsigned MaxWidth = std::max(RowIdx->getType()->getScalarSizeInBits(),
                                  ColumnIdx->getType()->getScalarSizeInBits());
     Type *IntTy = IntegerType::get(RowIdx->getType()->getContext(), MaxWidth);

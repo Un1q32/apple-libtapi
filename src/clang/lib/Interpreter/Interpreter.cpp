@@ -30,13 +30,13 @@
 #include "clang/Lex/PreprocessorOptions.h"
 
 #include "llvm/IR/Module.h"
-#include "llvm/Support/Errc.h"
 #include "llvm/Support/Host.h"
 
 using namespace clang;
 
 // FIXME: Figure out how to unify with namespace init_convenience from
-//        tools/clang-import-test/clang-import-test.cpp
+//        tools/clang-import-test/clang-import-test.cpp and
+//        examples/clang-interpreter/main.cpp
 namespace {
 /// Retrieves the clang CC1 specific flags out of the compilation's jobs.
 /// \returns NULL on error.
@@ -47,14 +47,14 @@ GetCC1Arguments(DiagnosticsEngine *Diagnostics,
   // failed. Extract that job from the Compilation.
   const driver::JobList &Jobs = Compilation->getJobs();
   if (!Jobs.size() || !isa<driver::Command>(*Jobs.begin()))
-    return llvm::createStringError(llvm::errc::not_supported,
+    return llvm::createStringError(std::errc::state_not_recoverable,
                                    "Driver initialization failed. "
                                    "Unable to create a driver job");
 
   // The one job we find should be to invoke clang again.
   const driver::Command *Cmd = cast<driver::Command>(&(*Jobs.begin()));
   if (llvm::StringRef(Cmd->getCreator().getName()) != "clang")
-    return llvm::createStringError(llvm::errc::not_supported,
+    return llvm::createStringError(std::errc::state_not_recoverable,
                                    "Driver initialization failed");
 
   return &Cmd->getArguments();
@@ -89,13 +89,13 @@ CreateCI(const llvm::opt::ArgStringList &Argv) {
   // Create the actual diagnostics engine.
   Clang->createDiagnostics();
   if (!Clang->hasDiagnostics())
-    return llvm::createStringError(llvm::errc::not_supported,
+    return llvm::createStringError(std::errc::state_not_recoverable,
                                    "Initialization failed. "
                                    "Unable to create diagnostics engine");
 
   DiagsBuffer->FlushDiagnostics(Clang->getDiagnostics());
   if (!Success)
-    return llvm::createStringError(llvm::errc::not_supported,
+    return llvm::createStringError(std::errc::state_not_recoverable,
                                    "Initialization failed. "
                                    "Unable to flush diagnostics");
 
@@ -106,18 +106,11 @@ CreateCI(const llvm::opt::ArgStringList &Argv) {
   Clang->setTarget(TargetInfo::CreateTargetInfo(
       Clang->getDiagnostics(), Clang->getInvocation().TargetOpts));
   if (!Clang->hasTarget())
-    return llvm::createStringError(llvm::errc::not_supported,
+    return llvm::createStringError(std::errc::state_not_recoverable,
                                    "Initialization failed. "
                                    "Target is missing");
 
   Clang->getTarget().adjust(Clang->getDiagnostics(), Clang->getLangOpts());
-
-  // Don't clear the AST before backend codegen since we do codegen multiple
-  // times, reusing the same AST.
-  Clang->getCodeGenOpts().ClearASTBeforeBackend = false;
-
-  Clang->getFrontendOpts().DisableFree = false;
-  Clang->getCodeGenOpts().DisableFree = false;
 
   return std::move(Clang);
 }
@@ -150,6 +143,7 @@ IncrementalCompilerBuilder::create(std::vector<const char *> &ClangArgv) {
   // driver to construct.
   ClangArgv.push_back("<<< inputs >>>");
 
+  CompilerInvocation Invocation;
   // Buffer diagnostics from argument parsing so that we can output them using a
   // well formed diagnostic object.
   IntrusiveRefCntPtr<DiagnosticIDs> DiagID(new DiagnosticIDs());
@@ -183,14 +177,7 @@ Interpreter::Interpreter(std::unique_ptr<CompilerInstance> CI,
                                                    *TSCtx->getContext(), Err);
 }
 
-Interpreter::~Interpreter() {
-  if (IncrExecutor) {
-    if (llvm::Error Err = IncrExecutor->cleanUp())
-      llvm::report_fatal_error(
-          llvm::Twine("Failed to clean up IncrementalExecutor: ") +
-          toString(std::move(Err)));
-  }
-}
+Interpreter::~Interpreter() {}
 
 llvm::Expected<std::unique_ptr<Interpreter>>
 Interpreter::create(std::unique_ptr<CompilerInstance> CI) {
@@ -206,12 +193,6 @@ const CompilerInstance *Interpreter::getCompilerInstance() const {
   return IncrParser->getCI();
 }
 
-const llvm::orc::LLJIT *Interpreter::getExecutionEngine() const {
-  if (IncrExecutor)
-    return IncrExecutor->getExecutionEngine();
-  return nullptr;
-}
-
 llvm::Expected<PartialTranslationUnit &>
 Interpreter::Parse(llvm::StringRef Code) {
   return IncrParser->Parse(Code);
@@ -220,69 +201,20 @@ Interpreter::Parse(llvm::StringRef Code) {
 llvm::Error Interpreter::Execute(PartialTranslationUnit &T) {
   assert(T.TheModule);
   if (!IncrExecutor) {
-    const clang::TargetInfo &TI =
-        getCompilerInstance()->getASTContext().getTargetInfo();
+    const llvm::Triple &Triple =
+        getCompilerInstance()->getASTContext().getTargetInfo().getTriple();
     llvm::Error Err = llvm::Error::success();
-    IncrExecutor = std::make_unique<IncrementalExecutor>(*TSCtx, Err, TI);
+    IncrExecutor = std::make_unique<IncrementalExecutor>(*TSCtx, Err, Triple);
 
     if (Err)
       return Err;
   }
   // FIXME: Add a callback to retain the llvm::Module once the JIT is done.
-  if (auto Err = IncrExecutor->addModule(T))
+  if (auto Err = IncrExecutor->addModule(std::move(T.TheModule)))
     return Err;
 
   if (auto Err = IncrExecutor->runCtors())
     return Err;
 
-  return llvm::Error::success();
-}
-
-llvm::Expected<llvm::JITTargetAddress>
-Interpreter::getSymbolAddress(GlobalDecl GD) const {
-  if (!IncrExecutor)
-    return llvm::make_error<llvm::StringError>("Operation failed. "
-                                               "No execution engine",
-                                               std::error_code());
-  llvm::StringRef MangledName = IncrParser->GetMangledName(GD);
-  return getSymbolAddress(MangledName);
-}
-
-llvm::Expected<llvm::JITTargetAddress>
-Interpreter::getSymbolAddress(llvm::StringRef IRName) const {
-  if (!IncrExecutor)
-    return llvm::make_error<llvm::StringError>("Operation failed. "
-                                               "No execution engine",
-                                               std::error_code());
-
-  return IncrExecutor->getSymbolAddress(IRName, IncrementalExecutor::IRName);
-}
-
-llvm::Expected<llvm::JITTargetAddress>
-Interpreter::getSymbolAddressFromLinkerName(llvm::StringRef Name) const {
-  if (!IncrExecutor)
-    return llvm::make_error<llvm::StringError>("Operation failed. "
-                                               "No execution engine",
-                                               std::error_code());
-
-  return IncrExecutor->getSymbolAddress(Name, IncrementalExecutor::LinkerName);
-}
-
-llvm::Error Interpreter::Undo(unsigned N) {
-
-  std::list<PartialTranslationUnit> &PTUs = IncrParser->getPTUs();
-  if (N > PTUs.size())
-    return llvm::make_error<llvm::StringError>("Operation failed. "
-                                               "Too many undos",
-                                               std::error_code());
-  for (unsigned I = 0; I < N; I++) {
-    if (IncrExecutor) {
-      if (llvm::Error Err = IncrExecutor->removeModule(PTUs.back()))
-        return Err;
-    }
-
-    IncrParser->CleanUpPTU(PTUs.back());
-    PTUs.pop_back();
-  }
   return llvm::Error::success();
 }

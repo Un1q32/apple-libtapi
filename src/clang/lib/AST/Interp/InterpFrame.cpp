@@ -10,7 +10,6 @@
 #include "Function.h"
 #include "Interp.h"
 #include "InterpStack.h"
-#include "Pointer.h"
 #include "PrimType.h"
 #include "Program.h"
 #include "clang/AST/DeclCXX.h"

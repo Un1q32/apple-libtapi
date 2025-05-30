@@ -25,6 +25,7 @@
 #include "llvm/CodeGen/LexicalScopes.h"
 #include "llvm/IR/DebugInfoMetadata.h"
 #include "llvm/Support/Casting.h"
+#include <algorithm>
 #include <cassert>
 #include <cstdint>
 #include <memory>
@@ -84,9 +85,6 @@ class DwarfCompileUnit final : public DwarfUnit {
 
   /// DWO ID for correlating skeleton and split units.
   uint64_t DWOId = 0;
-
-  const DIFile *LastFile = nullptr;
-  unsigned LastFileID;
 
   /// Construct a DIE for the given DbgVariable without initializing the
   /// DbgVariable's DIE reference.
@@ -192,9 +190,9 @@ public:
   /// variables in this scope then create and insert DIEs for these
   /// variables.
   DIE &updateSubprogramScopeDIE(const DISubprogram *SP);
-  DIE &updateSubprogramScopeDIEImpl(const DISubprogram *SP, DIE *SPDie);
 
-  void constructScopeDIE(LexicalScope *Scope, DIE &ParentScopeDIE);
+  void constructScopeDIE(LexicalScope *Scope,
+                         SmallVectorImpl<DIE *> &FinalChildren);
 
   /// A helper function to construct a RangeSpanList for a given
   /// lexical scope.
@@ -205,9 +203,9 @@ public:
   void attachRangesOrLowHighPC(DIE &D,
                                const SmallVectorImpl<InsnRange> &Ranges);
 
-  /// This scope represents an inlined body of a function. Construct a
+  /// This scope represents inlined body of a function. Construct
   /// DIE to represent this concrete inlined copy of the function.
-  DIE *constructInlinedScopeDIE(LexicalScope *Scope, DIE &ParentScopeDIE);
+  DIE *constructInlinedScopeDIE(LexicalScope *Scope);
 
   /// Construct new DW_TAG_lexical_block for this scope and
   /// attach DW_AT_low_pc/DW_AT_high_pc labels.
@@ -221,6 +219,11 @@ public:
 
   /// Construct a DIE for the given DbgLabel.
   DIE *constructLabelDIE(DbgLabel &DL, const LexicalScope &Scope);
+
+  /// A helper function to create children of a Scope DIE.
+  DIE *createScopeChildrenDIE(LexicalScope *Scope,
+                              SmallVectorImpl<DIE *> &Children,
+                              bool *HasNonScopeChildren = nullptr);
 
   void createBaseTypeDIEs();
 
@@ -246,14 +249,16 @@ public:
   dwarf::LocationAtom getDwarf5OrGNULocationAtom(dwarf::LocationAtom Loc) const;
 
   /// Construct a call site entry DIE describing a call within \p Scope to a
-  /// callee described by \p CalleeSP.
+  /// callee described by \p CalleeDIE.
+  /// \p CalleeDIE is a declaration or definition subprogram DIE for the callee.
+  /// For indirect calls \p CalleeDIE is set to nullptr.
   /// \p IsTail specifies whether the call is a tail call.
   /// \p PCAddr points to the PC value after the call instruction.
   /// \p CallAddr points to the PC value at the call instruction (or is null).
   /// \p CallReg is a register location for an indirect call. For direct calls
   /// the \p CallReg is set to 0.
-  DIE &constructCallSiteEntryDIE(DIE &ScopeDIE, const DISubprogram *CalleeSP,
-                                 bool IsTail, const MCSymbol *PCAddr,
+  DIE &constructCallSiteEntryDIE(DIE &ScopeDIE, DIE *CalleeDIE, bool IsTail,
+                                 const MCSymbol *PCAddr,
                                  const MCSymbol *CallAddr, unsigned CallReg);
   /// Construct call site parameter DIEs for the \p CallSiteDIE. The \p Params
   /// were collected by the \ref collectCallSiteParameters.

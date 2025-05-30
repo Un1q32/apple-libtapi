@@ -19,13 +19,11 @@
 
 #include "llvm/CodeGen/LivePhysRegs.h"
 #include "llvm/CodeGen/MachineFunctionPass.h"
+#include "llvm/CodeGen/MachineRegisterInfo.h"
 #include "llvm/CodeGen/ReachingDefAnalysis.h"
 #include "llvm/CodeGen/RegisterClassInfo.h"
 #include "llvm/CodeGen/TargetInstrInfo.h"
 #include "llvm/InitializePasses.h"
-#include "llvm/MC/MCInstrDesc.h"
-#include "llvm/MC/MCRegister.h"
-#include "llvm/MC/MCRegisterInfo.h"
 #include "llvm/Support/Debug.h"
 
 using namespace llvm;
@@ -246,7 +244,7 @@ void BreakFalseDeps::processUndefReads(MachineBasicBlock *MBB) {
   MachineInstr *UndefMI = UndefReads.back().first;
   unsigned OpIdx = UndefReads.back().second;
 
-  for (MachineInstr &I : llvm::reverse(*MBB)) {
+  for (MachineInstr &I : make_range(MBB->rbegin(), MBB->rend())) {
     // Update liveness, including the current instruction's defs.
     LiveRegSet.stepBackward(I);
 

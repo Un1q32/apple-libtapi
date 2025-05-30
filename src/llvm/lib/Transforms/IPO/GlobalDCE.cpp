@@ -18,10 +18,10 @@
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/Statistic.h"
 #include "llvm/Analysis/TypeMetadataUtils.h"
-#include "llvm/IR/GlobalPtrAuthInfo.h"
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/IntrinsicInst.h"
 #include "llvm/IR/Module.h"
+#include "llvm/IR/Operator.h"
 #include "llvm/InitializePasses.h"
 #include "llvm/Pass.h"
 #include "llvm/Support/CommandLine.h"
@@ -35,7 +35,7 @@ using namespace llvm;
 #define DEBUG_TYPE "globaldce"
 
 static cl::opt<bool>
-    ClEnableVFE("enable-vfe", cl::Hidden, cl::init(true),
+    ClEnableVFE("enable-vfe", cl::Hidden, cl::init(true), cl::ZeroOrMore,
                 cl::desc("Enable virtual function elimination"));
 
 STATISTIC(NumAliases  , "Number of global aliases removed");
@@ -87,12 +87,9 @@ ModulePass *llvm::createGlobalDCEPass() {
 
 /// Returns true if F is effectively empty.
 static bool isEmptyFunction(Function *F) {
-  // Skip external functions.
-  if (F->isDeclaration())
-    return false;
   BasicBlock &Entry = F->getEntryBlock();
   for (auto &I : Entry) {
-    if (I.isDebugOrPseudoInst())
+    if (isa<DbgInfoIntrinsic>(I))
       continue;
     if (auto *RI = dyn_cast<ReturnInst>(&I))
       return !RI->getReturnValue();
@@ -135,7 +132,7 @@ void GlobalDCEPass::UpdateGVDependencies(GlobalValue &GV) {
     // range specified in !vcall_visibility, and we have complete information
     // about all virtual call sites which could call though this vtable, then
     // skip it, because the call site information will be more precise.
-    if (VFESafeVTablesAndFns.count(GVU) &&
+    if (isa<Function>(&GV) && VFESafeVTablesAndFns.count(GVU) &&
         VFESafeVTablesAndFns[GVU].contains(&GV)) {
       LLVM_DEBUG(dbgs() << "Ignoring dep " << GVU->getName() << " -> "
                         << GV.getName() << "\n");
@@ -181,13 +178,9 @@ static void FindVirtualFunctionsInVTable(Module &M, Constant *C,
                                          SmallPtrSet<GlobalValue *, 8> *VFuncs,
                                          uint64_t BaseOffset = 0) {
   if (auto *GV = dyn_cast<GlobalValue>(C)) {
-    if (RangeStart <= BaseOffset && BaseOffset < RangeEnd) {
-      if (auto *F = dyn_cast<Function>(GV))
+    if (auto *F = dyn_cast<Function>(GV))
+      if (RangeStart <= BaseOffset && BaseOffset < RangeEnd)
         VFuncs->insert(F);
-      else if (auto PAI = GlobalPtrAuthInfo::analyze(GV))
-        if (isa<Function>(PAI->getPointer()->stripPointerCasts()))
-          VFuncs->insert(GV);
-    }
 
     // Do not recurse outside of the current global.
     return;
@@ -273,7 +266,7 @@ void GlobalDCEPass::ScanVTables(Module &M) {
 
 void GlobalDCEPass::ScanVTableLoad(Function *Caller, Metadata *TypeId,
                                    uint64_t CallOffset) {
-  for (const auto &VTableInfo : TypeIdMap[TypeId]) {
+  for (auto &VTableInfo : TypeIdMap[TypeId]) {
     GlobalVariable *VTable = VTableInfo.first;
     uint64_t VTableOffset = VTableInfo.second;
 
@@ -283,21 +276,14 @@ void GlobalDCEPass::ScanVTableLoad(Function *Caller, Metadata *TypeId,
     if (!Ptr) {
       LLVM_DEBUG(dbgs() << "can't find pointer in vtable!\n");
       VFESafeVTablesAndFns.erase(VTable);
-      continue;
+      return;
     }
 
-    Ptr = Ptr->stripPointerCasts();
-
-    GlobalValue *Callee = dyn_cast<Function>(Ptr);
-    if (!Callee)
-      if (GlobalPtrAuthInfo::analyze(Ptr))
-        Callee = dyn_cast<GlobalValue>(Ptr);
-
+    auto Callee = dyn_cast<Function>(Ptr->stripPointerCasts());
     if (!Callee) {
-      LLVM_DEBUG(dbgs() << "vtable entry is not function pointer or a .ptrauth "
-                           "global variable!\n");
+      LLVM_DEBUG(dbgs() << "vtable entry is not function pointer!\n");
       VFESafeVTablesAndFns.erase(VTable);
-      continue;
+      return;
     }
 
     LLVM_DEBUG(dbgs() << "vfunc dep " << Caller->getName() << " -> "
@@ -310,36 +296,29 @@ void GlobalDCEPass::ScanTypeCheckedLoadIntrinsics(Module &M) {
   LLVM_DEBUG(dbgs() << "Scanning type.checked.load intrinsics\n");
   Function *TypeCheckedLoadFunc =
       M.getFunction(Intrinsic::getName(Intrinsic::type_checked_load));
-  Function *TypeCheckedLoadRelativeFunc =
-      M.getFunction(Intrinsic::getName(Intrinsic::type_checked_load_relative));
 
-  auto scan = [&](Function *CheckedLoadFunc) {
-    if (!CheckedLoadFunc)
-      return;
+  if (!TypeCheckedLoadFunc)
+    return;
 
-    for (auto U : CheckedLoadFunc->users()) {
-      auto CI = dyn_cast<CallInst>(U);
-      if (!CI)
-        continue;
+  for (auto U : TypeCheckedLoadFunc->users()) {
+    auto CI = dyn_cast<CallInst>(U);
+    if (!CI)
+      continue;
 
-      auto *Offset = dyn_cast<ConstantInt>(CI->getArgOperand(1));
-      Value *TypeIdValue = CI->getArgOperand(2);
-      auto *TypeId = cast<MetadataAsValue>(TypeIdValue)->getMetadata();
+    auto *Offset = dyn_cast<ConstantInt>(CI->getArgOperand(1));
+    Value *TypeIdValue = CI->getArgOperand(2);
+    auto *TypeId = cast<MetadataAsValue>(TypeIdValue)->getMetadata();
 
-      if (Offset) {
-        ScanVTableLoad(CI->getFunction(), TypeId, Offset->getZExtValue());
-      } else {
-        // type.checked.load with a non-constant offset, so assume every entry
-        // in every matching vtable is used.
-        for (auto &VTableInfo : TypeIdMap[TypeId]) {
-          VFESafeVTablesAndFns.erase(VTableInfo.first);
-        }
+    if (Offset) {
+      ScanVTableLoad(CI->getFunction(), TypeId, Offset->getZExtValue());
+    } else {
+      // type.checked.load with a non-constant offset, so assume every entry in
+      // every matching vtable is used.
+      for (auto &VTableInfo : TypeIdMap[TypeId]) {
+        VFESafeVTablesAndFns.erase(VTableInfo.first);
       }
     }
-  };
-
-  scan(TypeCheckedLoadFunc);
-  scan(TypeCheckedLoadRelativeFunc);
+  }
 }
 
 void GlobalDCEPass::AddVirtualFunctionDependencies(Module &M) {
@@ -509,8 +488,7 @@ PreservedAnalyses GlobalDCEPass::run(Module &M, ModuleAnalysisManager &MAM) {
   // marked as alive are discarded.
 
   // Remove empty functions from the global ctors list.
-  Changed |= optimizeGlobalCtorsList(
-      M, [](uint32_t, Function *F) { return isEmptyFunction(F); });
+  Changed |= optimizeGlobalCtorsList(M, isEmptyFunction);
 
   // Collect the set of members for each comdat.
   for (Function &F : M)
@@ -534,7 +512,7 @@ PreservedAnalyses GlobalDCEPass::run(Module &M, ModuleAnalysisManager &MAM) {
 
   // Loop over the module, adding globals which are obviously necessary.
   for (GlobalObject &GO : M.global_objects()) {
-    GO.removeDeadConstantUsers();
+    Changed |= RemoveUnusedGlobalValue(GO);
     // Functions with external linkage are needed if they have a body.
     // Externally visible & appending globals are needed, if they have an
     // initializer.
@@ -547,7 +525,7 @@ PreservedAnalyses GlobalDCEPass::run(Module &M, ModuleAnalysisManager &MAM) {
 
   // Compute direct dependencies of aliases.
   for (GlobalAlias &GA : M.aliases()) {
-    GA.removeDeadConstantUsers();
+    Changed |= RemoveUnusedGlobalValue(GA);
     // Externally visible aliases are needed.
     if (!GA.isDiscardableIfUnused())
       MarkLive(GA);
@@ -557,7 +535,7 @@ PreservedAnalyses GlobalDCEPass::run(Module &M, ModuleAnalysisManager &MAM) {
 
   // Compute direct dependencies of ifuncs.
   for (GlobalIFunc &GIF : M.ifuncs()) {
-    GIF.removeDeadConstantUsers();
+    Changed |= RemoveUnusedGlobalValue(GIF);
     // Externally visible ifuncs are needed.
     if (!GIF.isDiscardableIfUnused())
       MarkLive(GIF);
@@ -618,7 +596,7 @@ PreservedAnalyses GlobalDCEPass::run(Module &M, ModuleAnalysisManager &MAM) {
   // Now that all interferences have been dropped, delete the actual objects
   // themselves.
   auto EraseUnusedGlobalValue = [&](GlobalValue *GV) {
-    GV->removeDeadConstantUsers();
+    RemoveUnusedGlobalValue(*GV);
     GV->eraseFromParent();
     Changed = true;
   };
@@ -647,19 +625,8 @@ PreservedAnalyses GlobalDCEPass::run(Module &M, ModuleAnalysisManager &MAM) {
   }
 
   NumVariables += DeadGlobalVars.size();
-  for (GlobalVariable *GV : DeadGlobalVars) {
-    if (!GV->use_empty()) {
-      // Normally, a vtable only contain Function references that are eliminated
-      // by VFE, and their "leftover uses" are handled by the for loop above.
-      // But with ptrauth on, we can also get "leftover uses" of GlobalVariables
-      // because the vtable references the .ptrauth wrappers instead. So we need
-      // to apply the same use-erasing logic as above. The same reasoning as
-      // above applies: These are proven to be unused, so they're safe to
-      // replace with null.
-      GV->replaceNonMetadataUsesWith(ConstantPointerNull::get(GV->getType()));
-    }
+  for (GlobalVariable *GV : DeadGlobalVars)
     EraseUnusedGlobalValue(GV);
-  }
 
   NumAliases += DeadAliases.size();
   for (GlobalAlias *GA : DeadAliases)
@@ -680,4 +647,17 @@ PreservedAnalyses GlobalDCEPass::run(Module &M, ModuleAnalysisManager &MAM) {
   if (Changed)
     return PreservedAnalyses::none();
   return PreservedAnalyses::all();
+}
+
+// RemoveUnusedGlobalValue - Loop over all of the uses of the specified
+// GlobalValue, looking for the constant pointer ref that may be pointing to it.
+// If found, check to see if the constant pointer ref is safe to destroy, and if
+// so, nuke it.  This will reduce the reference count on the global value, which
+// might make it deader.
+//
+bool GlobalDCEPass::RemoveUnusedGlobalValue(GlobalValue &GV) {
+  if (GV.use_empty())
+    return false;
+  GV.removeDeadConstantUsers();
+  return GV.use_empty();
 }

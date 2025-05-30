@@ -15,10 +15,10 @@
 #define TAPI_CORE_CONFIGURATION_FILE_H
 
 #include "tapi/Core/LLVM.h"
+#include "tapi/Core/PackedVersion.h"
 #include "tapi/Core/Path.h"
 #include "tapi/Defines.h"
 #include "clang/Frontend/FrontendOptions.h"
-#include "llvm/TextAPI/PackedVersion.h"
 #include "llvm/TextAPI/Platform.h"
 #include <string>
 #include <utility>
@@ -51,7 +51,6 @@ struct FrameworkConfiguration {
   HeaderConfiguration publicHeaderConfiguration;
   HeaderConfiguration privateHeaderConfiguration;
   bool useOverlay = false;
-  std::vector<std::string> clangExtraArgs;
 };
 
 struct ProjectConfiguration {
@@ -62,7 +61,6 @@ struct ProjectConfiguration {
   PathSeq frameworkPaths;
   std::vector<Macro> macros;
   bool isiOSMac = false;
-  bool isZippered = false;
   bool useOverlay = false;
   bool useUmbrellaOnly = false;
   bool useSplitHeaderDir = false;
@@ -70,7 +68,6 @@ struct ProjectConfiguration {
   PathSeq sdkMaskPaths;
   HeaderConfiguration publicHeaderConfiguration;
   HeaderConfiguration privateHeaderConfiguration;
-  std::vector<std::string> clangExtraArgs;
 };
 
 }
@@ -78,7 +75,7 @@ struct ProjectConfiguration {
 
 class ConfigurationFile {
 public:
-  PlatformType platform;
+  PlatformKind platform;
   PackedVersion version;
   std::string isysroot;
   clang::Language language{defaultLanguage};

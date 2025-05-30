@@ -44,16 +44,6 @@ class I<bits<6> opcode, dag OOL, dag IOL, string asmstr, InstrItinClass itin>
   // Indicate that this instruction is prefixed.
   bits<1> Prefixed = 0;
   let TSFlags{7}  = Prefixed;
-  
-  // Indicate that this instruction produces a result that is sign extended from
-  // 32 bits to 64 bits.
-  bits<1> SExt32To64 = 0;
-  let TSFlags{8} = SExt32To64;
-
-  // Indicate that this instruction produces a result that is zero extended from
-  // 32 bits to 64 bits.
-  bits<1> ZExt32To64 = 0;
-  let TSFlags{9} = ZExt32To64;
 
   // Fields used for relation models.
   string BaseName = "";
@@ -80,8 +70,6 @@ class PPC970_Unit_VPERM    { bits<3> PPC970_Unit = 6;   }
 class PPC970_Unit_BRU      { bits<3> PPC970_Unit = 7;   }
 
 class XFormMemOp { bits<1> XFormMemOp = 1; }
-class SExt32To64 { bits<1> SExt32To64 = 1; }
-class ZExt32To64 { bits<1> ZExt32To64 = 1; }
 
 // Two joined instructions; used to emit two adjacent instructions as one.
 // The itinerary from the first instruction is used for scheduling and
@@ -901,7 +889,7 @@ class XForm_16b<bits<6> opcode, bits<10> xo, dag OOL, dag IOL, string asmstr,
 }
 
 class XForm_htm0<bits<6> opcode, bits<10> xo, dag OOL, dag IOL,
-                 string asmstr, InstrItinClass itin>
+                 string asmstr, InstrItinClass itin, list<dag> pattern>
   : I<opcode, OOL, IOL, asmstr, itin> {
   bit R;
 
@@ -915,7 +903,7 @@ class XForm_htm0<bits<6> opcode, bits<10> xo, dag OOL, dag IOL,
 }
 
 class XForm_htm1<bits<6> opcode, bits<10> xo, dag OOL, dag IOL,
-                 string asmstr, InstrItinClass itin>
+                 string asmstr, InstrItinClass itin, list<dag> pattern>
   : I<opcode, OOL, IOL, asmstr, itin> {
   bit A;
 
@@ -928,7 +916,7 @@ class XForm_htm1<bits<6> opcode, bits<10> xo, dag OOL, dag IOL,
 }
 
 class XForm_htm2<bits<6> opcode, bits<10> xo, dag OOL, dag IOL, string asmstr,
-              InstrItinClass itin>
+              InstrItinClass itin, list<dag> pattern>
   : I<opcode, OOL, IOL, asmstr, itin> {
   bit L;
 
@@ -942,7 +930,7 @@ class XForm_htm2<bits<6> opcode, bits<10> xo, dag OOL, dag IOL, string asmstr,
 }
 
 class XForm_htm3<bits<6> opcode, bits<10> xo, dag OOL, dag IOL, string asmstr,
-              InstrItinClass itin>
+              InstrItinClass itin, list<dag> pattern>
   : I<opcode, OOL, IOL, asmstr, itin> {
   bits<3> BF;
 

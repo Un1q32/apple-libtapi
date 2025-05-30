@@ -103,7 +103,7 @@ public:
       std::string Filename;
       TimestampTy Timestamp;
 
-      KeyTy() {}
+      KeyTy() : Filename(), Timestamp() {}
       KeyTy(StringRef Filename, TimestampTy Timestamp)
           : Filename(Filename.str()), Timestamp(Timestamp) {}
     };
@@ -118,7 +118,7 @@ public:
 
   private:
     std::vector<std::unique_ptr<object::Archive>> Archives;
-    DenseMap<KeyTy, std::unique_ptr<ObjectEntry>> MemberCache;
+    DenseMap<KeyTy, ObjectEntry> MemberCache;
     std::mutex MemberCacheMutex;
   };
 
@@ -130,11 +130,11 @@ public:
 private:
   /// Cache of static archives. Objects that are part of a static archive are
   /// stored under this object, rather than in the map below.
-  StringMap<std::unique_ptr<ArchiveEntry>> ArchiveCache;
+  StringMap<ArchiveEntry> ArchiveCache;
   std::mutex ArchiveCacheMutex;
 
   /// Object entries for objects that are not in a static archive.
-  StringMap<std::unique_ptr<ObjectEntry>> ObjectCache;
+  StringMap<ObjectEntry> ObjectCache;
   std::mutex ObjectCacheMutex;
 
   /// Virtual File System instance.

@@ -1,8 +1,9 @@
 //===--- IndexUnitWriter.h - Index unit serialization ---------------------===//
 //
-// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
-// See https://llvm.org/LICENSE.txt for license information.
-// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//                     The LLVM Compiler Infrastructure
+//
+// This file is distributed under the University of Illinois Open Source
+// License. See LICENSE.TXT for details.
 //
 //===----------------------------------------------------------------------===//
 
@@ -22,7 +23,6 @@ namespace llvm {
 namespace clang {
   class FileEntry;
   class FileManager;
-  class PathRemapper;
 
 namespace index {
 
@@ -58,7 +58,6 @@ class IndexUnitWriter {
   std::string TargetTriple;
   std::string WorkDir;
   std::string SysrootPath;
-  const PathRemapper &Remapper;
   std::function<writer::ModuleInfo(writer::OpaqueModule,
                             SmallVectorImpl<char> &Scratch)> GetInfoForModuleFn;
   struct FileInclude {
@@ -89,8 +88,6 @@ public:
   /// \param MainFile the main file for a compiled source file. This should be
   /// null for PCH and module units.
   /// \param IsSystem true for system module units, false otherwise.
-  /// \param Remapper Remapper to use to standardize file paths to make them
-  /// hermetic/reproducible. This applies to all paths emitted in the unit file.
   IndexUnitWriter(FileManager &FileMgr,
                   StringRef StorePath,
                   StringRef ProviderIdentifier, StringRef ProviderVersion,
@@ -102,7 +99,6 @@ public:
                   bool IsDebugCompilation,
                   StringRef TargetTriple,
                   StringRef SysrootPath,
-                  const PathRemapper &Remapper,
                   writer::ModuleInfoWriterCallback GetInfoForModule);
   ~IndexUnitWriter();
 
@@ -125,8 +121,7 @@ public:
   Optional<bool> isUnitUpToDateForOutputFile(StringRef FilePath,
                                              Optional<StringRef> TimeCompareFilePath,
                                              std::string &Error);
-  static void getUnitNameForAbsoluteOutputFile(StringRef FilePath, SmallVectorImpl<char> &Str,
-                                               const PathRemapper &Remapper);
+  static void getUnitNameForAbsoluteOutputFile(StringRef FilePath, SmallVectorImpl<char> &Str);
   static bool initIndexDirectory(StringRef StorePath, std::string &Error);
 
 private:

@@ -13,12 +13,7 @@
 #include "llvm/Support/Format.h"
 #include "llvm/Support/MathExtras.h"
 #include "llvm/Support/raw_ostream.h"
-
-#include <cmath>
-
-#if defined(_WIN32) && !defined(__MINGW32__)
-#include <float.h> // For _fpclass in llvm::write_double.
-#endif
+#include <float.h>
 
 using namespace llvm;
 
@@ -139,7 +134,7 @@ void llvm::write_hex(raw_ostream &S, uint64_t N, HexPrintStyle Style,
                      Optional<size_t> Width) {
   const size_t kMaxWidth = 128u;
 
-  size_t W = std::min(kMaxWidth, Width.value_or(0u));
+  size_t W = std::min(kMaxWidth, Width.getValueOr(0u));
 
   unsigned Nibbles = (64 - countLeadingZeros(N) + 3) / 4;
   bool Prefix = (Style == HexPrintStyle::PrefixLower ||
@@ -151,7 +146,7 @@ void llvm::write_hex(raw_ostream &S, uint64_t N, HexPrintStyle Style,
       std::max(static_cast<unsigned>(W), std::max(1u, Nibbles) + PrefixChars);
 
   char NumberBuffer[kMaxWidth];
-  ::memset(NumberBuffer, '0', std::size(NumberBuffer));
+  ::memset(NumberBuffer, '0', llvm::array_lengthof(NumberBuffer));
   if (Prefix)
     NumberBuffer[1] = 'x';
   char *EndPtr = NumberBuffer + NumChars;
@@ -167,13 +162,13 @@ void llvm::write_hex(raw_ostream &S, uint64_t N, HexPrintStyle Style,
 
 void llvm::write_double(raw_ostream &S, double N, FloatStyle Style,
                         Optional<size_t> Precision) {
-  size_t Prec = Precision.value_or(getDefaultPrecision(Style));
+  size_t Prec = Precision.getValueOr(getDefaultPrecision(Style));
 
   if (std::isnan(N)) {
     S << "nan";
     return;
   } else if (std::isinf(N)) {
-    S << (std::signbit(N) ? "-INF" : "INF");
+    S << "INF";
     return;
   }
 
@@ -264,5 +259,5 @@ size_t llvm::getDefaultPrecision(FloatStyle Style) {
   case FloatStyle::Percent:
     return 2; // Number of decimal places.
   }
-  llvm_unreachable("Unknown FloatStyle enum");
+  LLVM_BUILTIN_UNREACHABLE;
 }

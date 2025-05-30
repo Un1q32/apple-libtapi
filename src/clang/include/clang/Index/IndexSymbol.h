@@ -59,8 +59,6 @@ enum class SymbolKind : uint8_t {
   TemplateTypeParm,
   TemplateTemplateParm,
   NonTypeTemplateParm,
-
-  Concept, /// C++20 concept.
 };
 
 enum class SymbolLanguage : uint8_t {
@@ -102,7 +100,6 @@ enum class SymbolSubKind : uint8_t {
   SwiftSubscript,
   SwiftAssociatedType,
   SwiftGenericTypeParam,
-  SwiftAccessorInit,
 };
 
 typedef uint32_t SymbolPropertySet;

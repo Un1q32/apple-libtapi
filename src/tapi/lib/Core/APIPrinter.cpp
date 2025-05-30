@@ -91,8 +91,10 @@ static void printAPIRecord(raw_ostream &os, const APIRecord &var,
     os.resetColor();
   os << var.name << "\n";
 
+  printUSR(os, var.usr, hasColors);
   printLocation(os, var.loc, hasColors);
   printAvailability(os, var.availability, hasColors);
+  // TODO: Print out docComment.
 
   if (hasColors)
     os.changeColor(raw_ostream::BLUE);
@@ -114,6 +116,18 @@ static void printAPIRecord(raw_ostream &os, const APIRecord &var,
     break;
   }
   os << "\n";
+}
+
+void APIPrinter::visitMacroDefinition(const MacroDefinitionRecord &macro) {
+  if (!emittedHeaderMacro) {
+    if (hasColors)
+      os.changeColor(raw_ostream::GREEN);
+    os << "macros:\n";
+    if (hasColors)
+      os.resetColor();
+    emittedHeaderMacro = true;
+  }
+  printAPIRecord(os, macro, hasColors);
 }
 
 static void printGlobalRecord(raw_ostream &os, const GlobalRecord &var,
@@ -174,6 +188,7 @@ void APIPrinter::printEnumConstant(const EnumConstantRecord *constant) {
   if (hasColors)
     os.resetColor();
   os << constant->name << "\n";
+  printUSR(os, constant->usr, hasColors);
   printLocation(os, constant->loc, hasColors);
   printAvailability(os, constant->availability, hasColors);
 }
@@ -208,13 +223,56 @@ void APIPrinter::visitEnum(const EnumRecord &var) {
     printEnumConstant(constant);
 }
 
-void APIPrinter::printProtocol(StringRef protocol) {
+void APIPrinter::printStructField(const StructFieldRecord *field) {
   if (hasColors)
     os.changeColor(raw_ostream::BLUE);
   os << "  - name: ";
   if (hasColors)
     os.resetColor();
-  os << protocol << "\n";
+  os << field->name << "\n";
+  printUSR(os, field->usr, hasColors);
+  printLocation(os, field->loc, hasColors);
+  printAvailability(os, field->availability, hasColors);
+}
+
+void APIPrinter::visitStruct(const StructRecord &s) {
+  if (!emittedHeaderStruct) {
+    if (hasColors)
+      os.changeColor(raw_ostream::GREEN);
+    os << "structs:\n";
+    if (hasColors)
+      os.resetColor();
+    emittedHeaderStruct = true;
+  }
+
+  if (hasColors)
+    os.changeColor(raw_ostream::BLUE);
+  os << "- name: ";
+  if (hasColors)
+    os.resetColor();
+  os << s.name << "\n";
+
+  printUSR(os, s.usr, hasColors);
+  printLocation(os, s.loc, hasColors);
+  printAvailability(os, s.availability, hasColors);
+
+  if (hasColors)
+    os.changeColor(raw_ostream::BLUE);
+  os << "  fields:\n";
+  if (hasColors)
+    os.resetColor();
+  for (const auto *field : s.fields)
+    printStructField(field);
+}
+
+void APIPrinter::printProtocol(SymbolInfo protocol) {
+  if (hasColors)
+    os.changeColor(raw_ostream::BLUE);
+  os << "  - name: ";
+  if (hasColors)
+    os.resetColor();
+  os << protocol.name << "\n";
+  printUSR(os, protocol.usr, hasColors, /*indent=*/4);
 }
 
 void APIPrinter::printMethod(const ObjCMethodRecord *method) {
@@ -246,6 +304,7 @@ void APIPrinter::printMethod(const ObjCMethodRecord *method) {
     os.resetColor();
   os << (method->isDynamic ? "true" : "false") << "\n";
 
+  printUSR(os, method->usr, hasColors);
   printLocation(os, method->loc, hasColors);
   printAvailability(os, method->availability, hasColors);
 }
@@ -294,6 +353,7 @@ void APIPrinter::printProperty(const ObjCPropertyRecord *property) {
     os << property->setterName << "\n";
   }
 
+  printUSR(os, property->usr, hasColors);
   printLocation(os, property->loc, hasColors);
   printAvailability(os, property->availability, hasColors);
 }
@@ -306,6 +366,7 @@ void APIPrinter::printInstanceVariable(const ObjCInstanceVariableRecord *ivar) {
     os.resetColor();
   os << ivar->name << "\n";
 
+  printUSR(os, ivar->usr, hasColors);
   printLocation(os, ivar->loc, hasColors);
 
   if (hasColors)
@@ -326,11 +387,8 @@ void APIPrinter::printInstanceVariable(const ObjCInstanceVariableRecord *ivar) {
   case ObjCInstanceVariableRecord::AccessControl::Package:
     os << "package\n";
     break;
-    // Expected case for ivar's discovered from Binary input.
-    // TODO: Capture access control in MachOReader::readObjCMetadata.
   case ObjCInstanceVariableRecord::AccessControl::None:
-    os << "none\n";
-    break;
+    llvm_unreachable("cannonical acccess doesn't have None");
   }
   printLinkage(os, ivar->linkage, hasColors);
 }
@@ -357,7 +415,16 @@ void APIPrinter::visitObjCInterface(const ObjCInterfaceRecord &interface) {
   os << "  superClassName: ";
   if (hasColors)
     os.resetColor();
-  os << interface.superClass << "\n";
+  os << interface.superClass.name << "\n";
+
+  if (!interface.superClass.usr.empty()) {
+    if (hasColors)
+      os.changeColor(raw_ostream::BLUE);
+    os << "  superClassUSR: ";
+    if (hasColors)
+      os.resetColor();
+    os << interface.superClass.usr << "\n";
+  }
 
   if (hasColors)
     os.changeColor(raw_ostream::BLUE);
@@ -366,6 +433,7 @@ void APIPrinter::visitObjCInterface(const ObjCInterfaceRecord &interface) {
     os.resetColor();
   os << (interface.hasExceptionAttribute ? "true" : "false") << "\n";
 
+  printUSR(os, interface.usr, hasColors);
   printLocation(os, interface.loc, hasColors);
   printAvailability(os, interface.availability, hasColors);
 
@@ -436,8 +504,9 @@ void APIPrinter::visitObjCCategory(const ObjCCategoryRecord &category) {
   os << "  interfaceName: ";
   if (hasColors)
     os.resetColor();
-  os << category.interface << "\n";
+  os << category.interface.name << "\n";
 
+  printUSR(os, category.usr, hasColors);
   printLocation(os, category.loc, hasColors);
   printAvailability(os, category.availability, hasColors);
 
@@ -491,6 +560,7 @@ void APIPrinter::visitObjCProtocol(const ObjCProtocolRecord &protocol) {
     os.resetColor();
   os << protocol.name << "\n";
 
+  printUSR(os, protocol.usr, hasColors);
   printLocation(os, protocol.loc, hasColors);
   printAvailability(os, protocol.availability, hasColors);
 
@@ -529,38 +599,15 @@ void APIPrinter::visitTypeDef(const TypedefRecord &type) {
     emittedHeaderTypedef = true;
   }
   printAPIRecord(os, type, hasColors);
-}
 
-void SortedAPI::visit(APIVisitor &visitor) const {
-  auto sortedTypeDefs = api.typeDefs;
-  llvm::sort(sortedTypeDefs);
-  for (auto &it : sortedTypeDefs)
-    visitor.visitTypeDef(*it.second);
-
-  auto sortedGlobals = api.globals;
-  llvm::sort(sortedGlobals);
-  for (auto &it : sortedGlobals)
-    visitor.visitGlobal(*it.second);
-
-  auto sortedEnums = api.enums;
-  llvm::sort(sortedEnums);
-  for (auto &it : api.enums)
-    visitor.visitEnum(*it.second);
-
-  auto sortedProtocols = api.protocols;
-  llvm::sort(sortedProtocols);
-  for (auto &it : api.protocols)
-    visitor.visitObjCProtocol(*it.second);
-
-  auto sortedInterfaces = api.interfaces;
-  llvm::sort(sortedInterfaces);
-  for (auto &it : api.interfaces)
-    visitor.visitObjCInterface(*it.second);
-
-  auto sortedCategories = api.categories;
-  llvm::sort(sortedCategories);
-  for (auto &it : sortedCategories)
-    visitor.visitObjCCategory(*it.second);
+  if (!type.underlyingType.usr.empty()) {
+    if (hasColors)
+      os.changeColor(raw_ostream::BLUE);
+    os << "  type USR: ";
+    if (hasColors)
+      os.resetColor();
+    os << type.underlyingType.usr << "\n";
+  }
 }
 
 TAPI_NAMESPACE_INTERNAL_END

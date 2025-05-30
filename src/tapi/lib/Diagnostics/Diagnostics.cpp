@@ -18,8 +18,6 @@
 #include "clang/Basic/DiagnosticOptions.h"
 #include "clang/Frontend/ChainedDiagnosticConsumer.h"
 #include "clang/Frontend/LogDiagnosticPrinter.h"
-#include "clang/Frontend/SerializedDiagnosticPrinter.h"
-#include "clang/Frontend/SerializedDiagnostics.h"
 #include "clang/Frontend/TextDiagnosticPrinter.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/FileSystem.h"
@@ -58,13 +56,13 @@ TAPI_NAMESPACE_INTERNAL_BEGIN
 
 static constexpr DiagInfoRec diagInfo[] = {
 #define DIAG(ENUM, CLASS, DEFAULT_SEVERITY, DESC, GROUP, SFINAE, NOWERROR,     \
-             SHOWINSYSHEADER, SHOWINSYSMACRO, DEFERRABLE, CATEGORY)            \
+             SHOWINSYSHEADER, DEFERRABLE, CATEGORY)                                        \
   {DESC, diag::ENUM, sizeof(DESC) - 1, CLASS, DEFAULT_SEVERITY},
 #include "tapi/Diagnostics/DiagnosticTAPIKinds.inc"
 #undef DIAG
 };
 
-static constexpr unsigned diagInfoSize = std::size(diagInfo);
+static constexpr unsigned diagInfoSize = llvm::array_lengthof(diagInfo);
 
 static clang::DiagnosticOptions *createDiagnosticsEngineOpts() {
   static bool hasColors = llvm::sys::Process::StandardErrHasColors();
@@ -94,7 +92,6 @@ DiagnosticsEngine::DiagnosticsEngine(clang::DiagnosticConsumer *client) {
 }
 
 DiagnosticsEngine::~DiagnosticsEngine() {
-  diag->getClient()->finish();
   diag->getClient()->EndSourceFile();
 }
 
@@ -147,16 +144,6 @@ clang::DiagnosticBuilder DiagnosticsEngine::report(clang::SourceLocation loc,
   return diag->Report(loc, newID);
 }
 
-clang::DiagnosticBuilder DiagnosticsEngine::report(unsigned diagID,
-                                                   const APILoc &loc) {
-  if (loc.isInvalid())
-    return report(diagID);
-
-  llvm::errs() << loc.getFilename() << ":" << llvm::utostr(loc.getLine()) << ":"
-               << llvm::utostr(loc.getColumn()) << ": ";
-  return report(diagID);
-}
-
 // Wrapper for tapi LogDiagnosticsPrinter.
 // Since tapi diagnostic file is only produced from one instance of tapi
 // invocation, we can write a valid plist file instead of a partial plist file
@@ -193,18 +180,7 @@ void DiagnosticsEngine::setupLogDiagnostics(
                                                        std::move(logger)));
 }
 
-void DiagnosticsEngine::setupSerializedDiagnostics(
-    StringRef output, std::unique_ptr<raw_ostream> streamOwner) {
-  auto SerializedConsumer = clang::serialized_diags::create(
-      output, diagOpts.get(), /*MergeChildRecords=*/false,
-      std::move(streamOwner));
-  SerializedConsumer->BeginSourceFile(langOpts);
-  assert(diag->ownsClient());
-  diag->setClient(new clang::ChainedDiagnosticConsumer(
-      diag->takeClient(), std::move(SerializedConsumer)));
-}
-
-void DiagnosticsEngine::setupDiagnosticsFile(StringRef output, bool serialize) {
+void DiagnosticsEngine::setupDiagnosticsFile(StringRef output) {
   std::error_code ec;
   std::unique_ptr<raw_ostream> streamOwner;
   raw_ostream *os = &llvm::errs();
@@ -221,13 +197,8 @@ void DiagnosticsEngine::setupDiagnosticsFile(StringRef output, bool serialize) {
       streamOwner = std::move(fileOS);
     }
   }
-
-  if (serialize) {
-    setupSerializedDiagnostics(output, std::move(streamOwner));
-    return;
-  }
-
   diagOpts->DiagnosticLogFile = output.str();
+
   setupLogDiagnostics(*os, std::move(streamOwner));
 }
 

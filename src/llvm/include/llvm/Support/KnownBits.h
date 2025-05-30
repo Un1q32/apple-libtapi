@@ -31,7 +31,7 @@ private:
 
 public:
   // Default construct Zero and One.
-  KnownBits() = default;
+  KnownBits() {}
 
   /// Create a known bits object of BitWidth bits initialized to unknown.
   KnownBits(unsigned BitWidth) : Zero(BitWidth, 0), One(BitWidth, 0) {}
@@ -60,7 +60,7 @@ public:
   }
 
   /// Returns true if we don't know any bits.
-  bool isUnknown() const { return Zero.isZero() && One.isZero(); }
+  bool isUnknown() const { return Zero.isNullValue() && One.isNullValue(); }
 
   /// Resets the known state of all bits.
   void resetAll() {
@@ -71,13 +71,13 @@ public:
   /// Returns true if value is all zero.
   bool isZero() const {
     assert(!hasConflict() && "KnownBits conflict!");
-    return Zero.isAllOnes();
+    return Zero.isAllOnesValue();
   }
 
   /// Returns true if value is all one bits.
   bool isAllOnes() const {
     assert(!hasConflict() && "KnownBits conflict!");
-    return One.isAllOnes();
+    return One.isAllOnesValue();
   }
 
   /// Make all bits known to be zero and discard any previous information.
@@ -99,12 +99,10 @@ public:
   bool isNonNegative() const { return Zero.isSignBitSet(); }
 
   /// Returns true if this value is known to be non-zero.
-  bool isNonZero() const { return !One.isZero(); }
+  bool isNonZero() const { return !One.isNullValue(); }
 
   /// Returns true if this value is known to be positive.
-  bool isStrictlyPositive() const {
-    return Zero.isSignBitSet() && !One.isZero();
-  }
+  bool isStrictlyPositive() const { return Zero.isSignBitSet() && !One.isNullValue(); }
 
   /// Make this value negative.
   void makeNegative() {
@@ -218,13 +216,6 @@ public:
                      One.extractBits(NumBits, BitPosition));
   }
 
-  /// Concatenate the bits from \p Lo onto the bottom of *this.  This is
-  /// equivalent to:
-  ///   (this->zext(NewWidth) << Lo.getBitWidth()) | Lo.zext(NewWidth)
-  KnownBits concat(const KnownBits &Lo) const {
-    return KnownBits(Zero.concat(Lo.Zero), One.concat(Lo.One));
-  }
-
   /// Return KnownBits based on this, but updated given that the underlying
   /// value is known to be greater than or equal to Val.
   KnownBits makeGE(const APInt &Val) const;
@@ -256,17 +247,7 @@ public:
       return countMinLeadingZeros();
     if (isNegative())
       return countMinLeadingOnes();
-    // Every value has at least 1 sign bit.
-    return 1;
-  }
-
-  /// Returns the maximum number of bits needed to represent all possible
-  /// signed values with these known bits. This is the inverse of the minimum
-  /// number of known sign bits. Examples for bitwidth 5:
-  /// 110?? --> 4
-  /// 0000? --> 2
-  unsigned countMaxSignificantBits() const {
-    return getBitWidth() - countMinSignBits() + 1;
+    return 0;
   }
 
   /// Returns the maximum number of trailing zero bits possible.
@@ -299,13 +280,6 @@ public:
     return getBitWidth() - Zero.countPopulation();
   }
 
-  /// Returns the maximum number of bits needed to represent all possible
-  /// unsigned values with these known bits. This is the inverse of the
-  /// minimum number of leading zeros.
-  unsigned countMaxActiveBits() const {
-    return getBitWidth() - countMinLeadingZeros();
-  }
-
   /// Create known bits from a known constant.
   static KnownBits makeConstant(const APInt &C) {
     return KnownBits(~C, C);
@@ -318,7 +292,7 @@ public:
 
   /// Return true if LHS and RHS have no common bits set.
   static bool haveNoCommonBitsSet(const KnownBits &LHS, const KnownBits &RHS) {
-    return (LHS.Zero | RHS.Zero).isAllOnes();
+    return (LHS.Zero | RHS.Zero).isAllOnesValue();
   }
 
   /// Compute known bits resulting from adding LHS, RHS and a 1-bit Carry.
@@ -330,8 +304,7 @@ public:
                                     KnownBits RHS);
 
   /// Compute known bits resulting from multiplying LHS and RHS.
-  static KnownBits mul(const KnownBits &LHS, const KnownBits &RHS,
-                       bool NoUndefSelfMultiply = false);
+  static KnownBits mul(const KnownBits &LHS, const KnownBits &RHS);
 
   /// Compute known bits from sign-extended multiply-hi.
   static KnownBits mulhs(const KnownBits &LHS, const KnownBits &RHS);
@@ -421,12 +394,6 @@ public:
   KnownBits reverseBits() {
     return KnownBits(Zero.reverseBits(), One.reverseBits());
   }
-
-  bool operator==(const KnownBits &Other) const {
-    return Zero == Other.Zero && One == Other.One;
-  }
-
-  bool operator!=(const KnownBits &Other) const { return !(*this == Other); }
 
   void print(raw_ostream &OS) const;
   void dump() const;

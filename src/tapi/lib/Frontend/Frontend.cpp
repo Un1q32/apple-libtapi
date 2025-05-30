@@ -13,6 +13,7 @@
 
 #include "tapi/Frontend/Frontend.h"
 #include "APIVisitor.h"
+#include "tapi/Core/TapiError.h"
 #include "tapi/Defines.h"
 #include "tapi/Frontend/FrontendContext.h"
 #include "clang/AST/ASTContext.h"
@@ -30,7 +31,6 @@
 #include "llvm/Option/Option.h"
 #include "llvm/Support/Host.h"
 #include "llvm/Support/Path.h"
-#include "llvm/TextAPI/TextAPIError.h"
 
 using namespace llvm;
 using namespace clang;
@@ -97,14 +97,14 @@ static void addHeaderInclude(HeaderFile header, const FrontendJob &job,
 }
 
 static const opt::ArgStringList *
-getCC1Arguments(clang::DiagnosticsEngine *diagnostics,
+getCC1Arguments(DiagnosticsEngine *diagnostics,
                 driver::Compilation *compilation) {
   const auto &jobs = compilation->getJobs();
   if (jobs.size() != 1 || !isa<driver::Command>(*jobs.begin())) {
     SmallString<256> error_msg;
     raw_svector_ostream error_stream(error_msg);
     jobs.Print(error_stream, "; ", true);
-    diagnostics->Report(clang::diag::err_fe_expected_compiler_job)
+    diagnostics->Report(diag::err_fe_expected_compiler_job)
         << error_stream.str();
     return nullptr;
   }
@@ -112,14 +112,14 @@ getCC1Arguments(clang::DiagnosticsEngine *diagnostics,
   // The one job we find should be to invoke clang again.
   const auto &cmd = cast<driver::Command>(*jobs.begin());
   if (StringRef(cmd.getCreator().getName()) != "clang") {
-    diagnostics->Report(clang::diag::err_fe_expected_clang_command);
+    diagnostics->Report(diag::err_fe_expected_clang_command);
     return nullptr;
   }
 
   return &cmd.getArguments();
 }
 
-CompilerInvocation *newInvocation(clang::DiagnosticsEngine *diagnostics,
+CompilerInvocation *newInvocation(DiagnosticsEngine *diagnostics,
                                   const opt::ArgStringList &cc1Args) {
   assert(!cc1Args.empty() && "Must at least contain the program name!");
   CompilerInvocation *invocation = new CompilerInvocation;
@@ -145,8 +145,8 @@ static bool runClang(FrontendContext &context, ArrayRef<std::string> options,
       ArrayRef<const char *>(argv).slice(1), MissingArgIndex, MissingArgCount);
   ParseDiagnosticArgs(*diagOpts, parsedArgs);
   TextDiagnosticPrinter diagnosticPrinter(llvm::errs(), &*diagOpts);
-  clang::DiagnosticsEngine diagnosticsEngine(diagID, &*diagOpts,
-                                             &diagnosticPrinter, false);
+  DiagnosticsEngine diagnosticsEngine(diagID, &*diagOpts, &diagnosticPrinter,
+                                      false);
 
   const std::unique_ptr<clang::driver::Driver> driver(new clang::driver::Driver(
       binaryName, llvm::sys::getDefaultTargetTriple(), diagnosticsEngine,
@@ -187,7 +187,6 @@ static bool runClang(FrontendContext &context, ArrayRef<std::string> options,
     return false;
 
   context.compiler->createSourceManager(*(context.fileManager));
-  context.verifier->setSourceManager(context.compiler->getSourceManager());
 
   return context.compiler->ExecuteAction(*action);
 }
@@ -226,20 +225,7 @@ static void populateFilelists(const FrontendJob &job, FrontendContext &context) 
       continue; // File do not exist.
 
     context.knownFiles.emplace(*file, header.type);
-
-    if (!header.useIncludeName())
-      continue;
-
     context.knownIncludes.emplace(header.includeName, header.type);
-
-    // Construct additional includeName to Workaround for rdar://92350575.
-    // When resolved all references of productName can be removed.
-    if (job.productName.empty())
-      continue;
-    auto additionalName =
-        (job.productName + "/" + llvm::sys::path::filename(header.fullPath))
-            .str();
-    context.knownIncludes.emplace(additionalName, header.type);
   }
 }
 
@@ -307,7 +293,8 @@ static void createClangReproducer(const FrontendJob &job,
 
 extern Expected<FrontendContext> runFrontend(const FrontendJob &job,
                                              StringRef inputFilename) {
-  FrontendContext context(job.target, job.verifier.get(), job.vfs, job.type);
+  FrontendContext context(job.target, job.workingDirectory, job.cacheFactory,
+                          job.vfs);
   std::unique_ptr<MemoryBuffer> input;
   std::string inputFilePath;
   if (inputFilename.empty()) {
@@ -324,14 +311,14 @@ extern Expected<FrontendContext> runFrontend(const FrontendJob &job,
 
   // No more work to do if there are no files to parse.
   if (context.knownFiles.empty())
-    return make_error<TextAPIError>(TextAPIErrorCode::EmptyResults);
+    return make_error<TapiError>(TapiErrorCode::EmptyResults);
 
   if (job.verbose && input)
     outs() << getName(job.type) << " Headers:\n" << input->getBuffer() << "\n";
 
   std::string clangExecutablePath;
   if (job.clangExecutablePath)
-    clangExecutablePath = job.clangExecutablePath.value();
+    clangExecutablePath = job.clangExecutablePath.getValue();
   else
     clangExecutablePath = getClangExecutablePath();
 
@@ -458,7 +445,7 @@ extern Expected<FrontendContext> runFrontend(const FrontendJob &job,
   if (inputFilename.empty() && job.createClangReproducer)
     createClangReproducer(job, args, context);
 
-  return make_error<TextAPIError>(TextAPIErrorCode::GenericFrontendError);
+  return make_error<TapiError>(TapiErrorCode::GenericFrontendError);
 }
 
 bool canIgnoreFrontendError(llvm::Error &error) {
@@ -466,8 +453,8 @@ bool canIgnoreFrontendError(llvm::Error &error) {
   // input to parse.
   bool canIgnore = false;
   handleAllErrors(std::move(error),
-                  [&canIgnore](std::unique_ptr<TextAPIError> tapiError) {
-                    canIgnore = tapiError->EC == TextAPIErrorCode::EmptyResults;
+                  [&canIgnore](std::unique_ptr<TapiError> tapiError) {
+                    canIgnore = tapiError->ec == TapiErrorCode::EmptyResults;
                   });
   return canIgnore;
 }

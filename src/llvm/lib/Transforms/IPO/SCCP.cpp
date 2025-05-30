@@ -18,7 +18,6 @@
 #include "llvm/InitializePasses.h"
 #include "llvm/Transforms/IPO.h"
 #include "llvm/Transforms/Scalar/SCCP.h"
-#include "llvm/Transforms/Utils/SCCPSolver.h"
 
 using namespace llvm;
 
@@ -136,7 +135,6 @@ PreservedAnalyses FunctionSpecializationPass::run(Module &M,
   return PA;
 }
 
-namespace {
 struct FunctionSpecializationLegacyPass : public ModulePass {
   static char ID; // Pass identification, replacement for typeid
   FunctionSpecializationLegacyPass() : ModulePass(ID) {}
@@ -148,7 +146,7 @@ struct FunctionSpecializationLegacyPass : public ModulePass {
     AU.addRequired<TargetTransformInfoWrapperPass>();
   }
 
-  bool runOnModule(Module &M) override {
+  virtual bool runOnModule(Module &M) override {
     if (skipModule(M))
       return false;
 
@@ -177,7 +175,6 @@ struct FunctionSpecializationLegacyPass : public ModulePass {
     return runFunctionSpecialization(M, DL, GetTLI, GetTTI, GetAC, GetAnalysis);
   }
 };
-} // namespace
 
 char FunctionSpecializationLegacyPass::ID = 0;
 

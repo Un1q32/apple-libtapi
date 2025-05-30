@@ -24,7 +24,6 @@
 #include "llvm/MC/MCExpr.h"
 #include "llvm/MC/MCInst.h"
 #include "llvm/MC/MCInstrInfo.h"
-#include "llvm/MC/MCParser/MCAsmLexer.h"
 #include "llvm/MC/MCParser/MCParsedAsmOperand.h"
 #include "llvm/MC/MCParser/MCTargetAsmParser.h"
 #include "llvm/MC/MCSectionWasm.h"
@@ -32,9 +31,9 @@
 #include "llvm/MC/MCSubtargetInfo.h"
 #include "llvm/MC/MCSymbol.h"
 #include "llvm/MC/MCSymbolWasm.h"
-#include "llvm/MC/TargetRegistry.h"
 #include "llvm/Support/Endian.h"
 #include "llvm/Support/SourceMgr.h"
+#include "llvm/Support/TargetRegistry.h"
 
 using namespace llvm;
 
@@ -375,7 +374,7 @@ public:
       auto Type = WebAssembly::parseType(Lexer.getTok().getString());
       if (!Type)
         return error("unknown type: ", Lexer.getTok());
-      Types.push_back(*Type);
+      Types.push_back(Type.getValue());
       Parser.Lex();
       if (!isNext(AsmToken::Comma))
         break;
@@ -432,10 +431,10 @@ public:
 
   bool checkForP2AlignIfLoadStore(OperandVector &Operands, StringRef InstName) {
     // FIXME: there is probably a cleaner way to do this.
-    auto IsLoadStore = InstName.contains(".load") ||
-                       InstName.contains(".store") ||
-                       InstName.contains("prefetch");
-    auto IsAtomic = InstName.contains("atomic.");
+    auto IsLoadStore = InstName.find(".load") != StringRef::npos ||
+                       InstName.find(".store") != StringRef::npos ||
+                       InstName.find("prefetch") != StringRef::npos;
+    auto IsAtomic = InstName.find("atomic.") != StringRef::npos;
     if (IsLoadStore || IsAtomic) {
       // Parse load/store operands of the form: offset:p2align=align
       if (IsLoadStore && isNext(AsmToken::Colon)) {
@@ -451,7 +450,7 @@ public:
         // v128.{load,store}{8,16,32,64}_lane has both a memarg and a lane
         // index. We need to avoid parsing an extra alignment operand for the
         // lane index.
-        auto IsLoadStoreLane = InstName.contains("_lane");
+        auto IsLoadStoreLane = InstName.find("_lane") != StringRef::npos;
         if (IsLoadStoreLane && Operands.size() == 4)
           return false;
         // Alignment not specified (or atomics, must use default alignment).
@@ -572,6 +571,7 @@ public:
     // proper nesting.
     bool ExpectBlockType = false;
     bool ExpectFuncType = false;
+    bool ExpectHeapType = false;
     std::unique_ptr<WebAssemblyOperand> FunctionTable;
     if (Name == "block") {
       push(Block);
@@ -624,6 +624,8 @@ public:
       if (parseFunctionTableOperand(&FunctionTable))
         return true;
       ExpectFuncType = true;
+    } else if (Name == "ref.null") {
+      ExpectHeapType = true;
     }
 
     if (ExpectFuncType || (ExpectBlockType && Lexer.is(AsmToken::LParen))) {
@@ -668,15 +670,23 @@ public:
             return error("Unknown block type: ", Id);
           addBlockTypeOperand(Operands, NameLoc, BT);
           Parser.Lex();
+        } else if (ExpectHeapType) {
+          auto HeapType = WebAssembly::parseHeapType(Id.getString());
+          if (HeapType == WebAssembly::HeapType::Invalid) {
+            return error("Expected a heap type: ", Id);
+          }
+          Operands.push_back(std::make_unique<WebAssemblyOperand>(
+              WebAssemblyOperand::Integer, Id.getLoc(), Id.getEndLoc(),
+              WebAssemblyOperand::IntOp{static_cast<int64_t>(HeapType)}));
+          Parser.Lex();
         } else {
           // Assume this identifier is a label.
           const MCExpr *Val;
-          SMLoc Start = Id.getLoc();
           SMLoc End;
           if (Parser.parseExpression(Val, End))
             return error("Cannot parse symbol: ", Lexer.getTok());
           Operands.push_back(std::make_unique<WebAssemblyOperand>(
-              WebAssemblyOperand::Symbol, Start, End,
+              WebAssemblyOperand::Symbol, Id.getLoc(), Id.getEndLoc(),
               WebAssemblyOperand::SymOp{Val}));
           if (checkForP2AlignIfLoadStore(Operands, Name))
             return true;
@@ -817,7 +827,8 @@ public:
       // Now set this symbol with the correct type.
       auto WasmSym = cast<MCSymbolWasm>(Ctx.getOrCreateSymbol(SymName));
       WasmSym->setType(wasm::WASM_SYMBOL_TYPE_GLOBAL);
-      WasmSym->setGlobalType(wasm::WasmGlobalType{uint8_t(*Type), Mutable});
+      WasmSym->setGlobalType(
+          wasm::WasmGlobalType{uint8_t(Type.getValue()), Mutable});
       // And emit the directive again.
       TOut.emitGlobalType(WasmSym);
       return expect(AsmToken::EndOfStatement, "EOL");
@@ -847,7 +858,7 @@ public:
       // symbol
       auto WasmSym = cast<MCSymbolWasm>(Ctx.getOrCreateSymbol(SymName));
       WasmSym->setType(wasm::WASM_SYMBOL_TYPE_TABLE);
-      wasm::WasmTableType Type = {uint8_t(*ElemType), Limits};
+      wasm::WasmTableType Type = {uint8_t(ElemType.getValue()), Limits};
       WasmSym->setTableType(Type);
       TOut.emitTableType(WasmSym);
       return expect(AsmToken::EndOfStatement, "EOL");
@@ -1017,7 +1028,7 @@ public:
           Inst.setOpcode(Opc64);
         }
       }
-      if (!SkipTypeCheck && TC.typeCheck(IDLoc, Inst, Operands))
+      if (!SkipTypeCheck && TC.typeCheck(IDLoc, Inst))
         return true;
       Out.emitInstruction(Inst, getSTI());
       if (CurrentState == EndFunction) {
@@ -1057,7 +1068,7 @@ public:
     llvm_unreachable("Implement any new match types added!");
   }
 
-  void doBeforeLabelEmit(MCSymbol *Symbol, SMLoc IDLoc) override {
+  void doBeforeLabelEmit(MCSymbol *Symbol) override {
     // Code below only applies to labels in text sections.
     auto CWS = cast<MCSectionWasm>(getStreamer().getCurrentSection().first);
     if (!CWS || !CWS->getKind().isText())
@@ -1067,7 +1078,7 @@ public:
     // Unlike other targets, we don't allow data in text sections (labels
     // declared with .type @object).
     if (WasmSym->getType() == wasm::WASM_SYMBOL_TYPE_DATA) {
-      Parser.Error(IDLoc,
+      Parser.Error(Parser.getTok().getLoc(),
                    "Wasm doesn\'t support data symbols in text sections");
       return;
     }
@@ -1095,17 +1106,25 @@ public:
     auto *WS =
         getContext().getWasmSection(SecName, SectionKind::getText(), 0, Group,
                                     MCContext::GenericSectionID, nullptr);
-    getStreamer().switchSection(WS);
+    getStreamer().SwitchSection(WS);
     // Also generate DWARF for this section if requested.
     if (getContext().getGenDwarfForAssembly())
       getContext().addGenDwarfSection(WS);
   }
 
   void onEndOfFunction(SMLoc ErrorLoc) {
-    if (!SkipTypeCheck)
-      TC.endOfFunction(ErrorLoc);
-    // Reset the type checker state.
-    TC.Clear();
+    TC.endOfFunction(ErrorLoc);
+
+    // Automatically output a .size directive, so it becomes optional for the
+    // user.
+    if (!LastFunctionLabel) return;
+    auto TempSym = getContext().createLinkerPrivateTempSymbol();
+    getStreamer().emitLabel(TempSym);
+    auto Start = MCSymbolRefExpr::create(LastFunctionLabel, getContext());
+    auto End = MCSymbolRefExpr::create(TempSym, getContext());
+    auto Expr =
+        MCBinaryExpr::create(MCBinaryExpr::Sub, End, Start, getContext());
+    getStreamer().emitELFSize(LastFunctionLabel, Expr);
   }
 
   void onEndOfFile() override { ensureEmptyNestingStack(); }

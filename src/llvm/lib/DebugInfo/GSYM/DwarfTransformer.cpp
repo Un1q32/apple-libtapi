@@ -10,7 +10,6 @@
 #include <unordered_set>
 
 #include "llvm/DebugInfo/DIContext.h"
-#include "llvm/DebugInfo/DWARF/DWARFCompileUnit.h"
 #include "llvm/DebugInfo/DWARF/DWARFContext.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/ThreadPool.h"
@@ -261,15 +260,17 @@ static void convertFunctionLineTable(raw_ostream &Log, CUInfo &CUI,
   if (!CUI.LineTable->lookupAddressRange(SecAddress, RangeSize, RowVector)) {
     // If we have a DW_TAG_subprogram but no line entries, fall back to using
     // the DW_AT_decl_file an d DW_AT_decl_line if we have both attributes.
-    std::string FilePath = Die.getDeclFile(
-        DILineInfoSpecifier::FileLineInfoKind::AbsoluteFilePath);
-    if (FilePath.empty())
-      return;
-    if (auto Line =
-            dwarf::toUnsigned(Die.findRecursively({dwarf::DW_AT_decl_line}))) {
-      LineEntry LE(StartAddress, Gsym.insertFile(FilePath), *Line);
-      FI.OptLineTable = LineTable();
-      FI.OptLineTable->push(LE);
+    if (auto FileIdx =
+            dwarf::toUnsigned(Die.findRecursively({dwarf::DW_AT_decl_file}))) {
+      if (auto Line =
+              dwarf::toUnsigned(Die.findRecursively({dwarf::DW_AT_decl_line}))) {
+        LineEntry LE(StartAddress, CUI.DWARFToGSYMFileIndex(Gsym, *FileIdx),
+                     *Line);
+        FI.OptLineTable = LineTable();
+        FI.OptLineTable->push(LE);
+        // LE.Addr = EndAddress;
+        // FI.OptLineTable->push(LE);
+      }
     }
     return;
   }
@@ -288,12 +289,12 @@ static void convertFunctionLineTable(raw_ostream &Log, CUInfo &CUI,
     // linker problems or LTO or other DWARF re-linking so it is worth emitting
     // an error, but not worth stopping the creation of the GSYM.
     if (!FI.Range.contains(RowAddress)) {
-      if (RowAddress < FI.Range.start()) {
+      if (RowAddress < FI.Range.Start) {
         Log << "error: DIE has a start address whose LowPC is between the "
           "line table Row[" << RowIndex << "] with address "
           << HEX64(RowAddress) << " and the next one.\n";
         Die.dump(Log, 0, DIDumpOptions::getForSingleDIE());
-        RowAddress = FI.Range.start();
+        RowAddress = FI.Range.Start;
       } else {
         continue;
       }
@@ -393,18 +394,19 @@ void DwarfTransformer::handleDie(raw_ostream &OS, CUInfo &CUI, DWARFDie Die) {
         if (Range.LowPC != 0) {
           if (!Gsym.isQuiet()) {
             // Unexpected invalid address, emit a warning
-            OS << "warning: DIE has an address range whose start address is "
-                  "not in any executable sections ("
-               << *Gsym.GetValidTextRanges()
-               << ") and will not be processed:\n";
-            Die.dump(OS, 0, DIDumpOptions::getForSingleDIE());
+            Log << "warning: DIE has an address range whose start address is "
+                   "not in any executable sections ("
+                << *Gsym.GetValidTextRanges()
+                << ") and will not be processed:\n";
+            Die.dump(Log, 0, DIDumpOptions::getForSingleDIE());
           }
         }
         break;
       }
 
       FunctionInfo FI;
-      FI.Range = {Range.LowPC, Range.HighPC};
+      FI.setStartAddress(Range.LowPC);
+      FI.setEndAddress(Range.HighPC);
       FI.Name = *NameIndex;
       if (CUI.LineTable) {
         convertFunctionLineTable(OS, CUI, Die, Gsym, FI);
@@ -427,28 +429,11 @@ void DwarfTransformer::handleDie(raw_ostream &OS, CUInfo &CUI, DWARFDie Die) {
 
 Error DwarfTransformer::convert(uint32_t NumThreads) {
   size_t NumBefore = Gsym.getNumFunctionInfos();
-  auto getDie = [&](DWARFUnit &DwarfUnit) -> DWARFDie {
-    DWARFDie ReturnDie = DwarfUnit.getUnitDIE(false);
-    if (llvm::Optional<uint64_t> DWOId = DwarfUnit.getDWOId()) {
-      DWARFUnit *DWOCU = DwarfUnit.getNonSkeletonUnitDIE(false).getDwarfUnit();
-      if (!DWOCU->isDWOUnit()) {
-        std::string DWOName = dwarf::toString(
-            DwarfUnit.getUnitDIE().find(
-                {dwarf::DW_AT_dwo_name, dwarf::DW_AT_GNU_dwo_name}),
-            "");
-        Log << "warning: Unable to retrieve DWO .debug_info section for "
-            << DWOName << "\n";
-      } else {
-        ReturnDie = DWOCU->getUnitDIE(false);
-      }
-    }
-    return ReturnDie;
-  };
   if (NumThreads == 1) {
     // Parse all DWARF data from this thread, use the same string/file table
     // for everything
     for (const auto &CU : DICtx.compile_units()) {
-      DWARFDie Die = getDie(*CU);
+      DWARFDie Die = CU->getUnitDIE(false);
       CUInfo CUI(DICtx, dyn_cast<DWARFCompileUnit>(CU.get()));
       handleDie(Log, CUI, Die);
     }
@@ -473,7 +458,7 @@ Error DwarfTransformer::convert(uint32_t NumThreads) {
     // Now convert all DWARF to GSYM in a thread pool.
     std::mutex LogMutex;
     for (const auto &CU : DICtx.compile_units()) {
-      DWARFDie Die = getDie(*CU);
+      DWARFDie Die = CU->getUnitDIE(false /*CUDieOnly*/);
       if (Die) {
         CUInfo CUI(DICtx, dyn_cast<DWARFCompileUnit>(CU.get()));
         pool.async([this, CUI, &LogMutex, Die]() mutable {
@@ -548,7 +533,7 @@ llvm::Error DwarfTransformer::verify(StringRef GsymPath) {
             << LR->Locations.size() << "\n";
         Log << "    " << NumDwarfInlineInfos << " DWARF frames:\n";
         for (size_t Idx = 0; Idx < NumDwarfInlineInfos; ++Idx) {
-          const auto &dii = DwarfInlineInfos.getFrame(Idx);
+          const auto dii = DwarfInlineInfos.getFrame(Idx);
           Log << "    [" << Idx << "]: " << dii.FunctionName << " @ "
               << dii.FileName << ':' << dii.Line << '\n';
         }
@@ -568,7 +553,7 @@ llvm::Error DwarfTransformer::verify(StringRef GsymPath) {
             ++Idx) {
         const auto &gii = LR->Locations[Idx];
         if (Idx < NumDwarfInlineInfos) {
-          const auto &dii = DwarfInlineInfos.getFrame(Idx);
+          const auto dii = DwarfInlineInfos.getFrame(Idx);
           gsymFilename = LR->getSourceFile(Idx);
           // Verify function name
           if (dii.FunctionName.find(gii.Name.str()) != 0)

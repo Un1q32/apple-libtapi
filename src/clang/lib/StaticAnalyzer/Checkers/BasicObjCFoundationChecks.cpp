@@ -12,6 +12,7 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "clang/StaticAnalyzer/Checkers/BuiltinCheckerRegistration.h"
 #include "clang/AST/ASTContext.h"
 #include "clang/AST/DeclObjC.h"
 #include "clang/AST/Expr.h"
@@ -19,11 +20,9 @@
 #include "clang/AST/StmtObjC.h"
 #include "clang/Analysis/DomainSpecific/CocoaConventions.h"
 #include "clang/Analysis/SelectorExtras.h"
-#include "clang/StaticAnalyzer/Checkers/BuiltinCheckerRegistration.h"
 #include "clang/StaticAnalyzer/Core/BugReporter/BugType.h"
 #include "clang/StaticAnalyzer/Core/Checker.h"
 #include "clang/StaticAnalyzer/Core/CheckerManager.h"
-#include "clang/StaticAnalyzer/Core/PathSensitive/CallDescription.h"
 #include "clang/StaticAnalyzer/Core/PathSensitive/CallEvent.h"
 #include "clang/StaticAnalyzer/Core/PathSensitive/CheckerContext.h"
 #include "clang/StaticAnalyzer/Core/PathSensitive/ExplodedGraph.h"
@@ -33,7 +32,6 @@
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/StringMap.h"
 #include "llvm/Support/raw_ostream.h"
-#include <optional>
 
 using namespace clang;
 using namespace ento;
@@ -348,6 +346,10 @@ public:
   CFNumberChecker() : ICreate(nullptr), IGetValue(nullptr) {}
 
   void checkPreStmt(const CallExpr *CE, CheckerContext &C) const;
+
+private:
+  void EmitError(const TypedRegion* R, const Expr *Ex,
+                uint64_t SourceSize, uint64_t TargetSize, uint64_t NumberKind);
 };
 } // end anonymous namespace
 
@@ -391,7 +393,7 @@ static Optional<uint64_t> GetCFNumberSize(ASTContext &Ctx, uint64_t i) {
     case kCFNumberCGFloatType:
       // FIXME: We need a way to map from names to Type*.
     default:
-      return std::nullopt;
+      return None;
   }
 
   return Ctx.getTypeSize(T);
@@ -443,7 +445,7 @@ void CFNumberChecker::checkPreStmt(const CallExpr *CE,
 
   // FIXME: We really should allow ranges of valid theType values, and
   //   bifurcate the state appropriately.
-  Optional<nonloc::ConcreteInt> V = dyn_cast<nonloc::ConcreteInt>(TheTypeVal);
+  Optional<nonloc::ConcreteInt> V = TheTypeVal.getAs<nonloc::ConcreteInt>();
   if (!V)
     return;
 
@@ -531,12 +533,10 @@ void CFNumberChecker::checkPreStmt(const CallExpr *CE,
 namespace {
 class CFRetainReleaseChecker : public Checker<check::PreCall> {
   mutable APIMisuse BT{this, "null passed to CF memory management function"};
-  const CallDescriptionSet ModelledCalls = {
-      {"CFRetain", 1},
-      {"CFRelease", 1},
-      {"CFMakeCollectable", 1},
-      {"CFAutorelease", 1},
-  };
+  CallDescription CFRetain{"CFRetain", 1},
+                  CFRelease{"CFRelease", 1},
+                  CFMakeCollectable{"CFMakeCollectable", 1},
+                  CFAutorelease{"CFAutorelease", 1};
 
 public:
   void checkPreCall(const CallEvent &Call, CheckerContext &C) const;
@@ -550,7 +550,8 @@ void CFRetainReleaseChecker::checkPreCall(const CallEvent &Call,
     return;
 
   // Check if we called CFRetain/CFRelease/CFMakeCollectable/CFAutorelease.
-  if (!ModelledCalls.contains(Call))
+  if (!(Call.isCalled(CFRetain) || Call.isCalled(CFRelease) ||
+        Call.isCalled(CFMakeCollectable) || Call.isCalled(CFAutorelease)))
     return;
 
   // Get the argument's value.
@@ -743,7 +744,7 @@ void VariadicMethodTypeChecker::checkPreObjCMessage(const ObjCMethodCall &msg,
     return;
 
   // Verify that all arguments have Objective-C types.
-  std::optional<ExplodedNode *> errorNode;
+  Optional<ExplodedNode*> errorNode;
 
   for (unsigned I = variadicArgsBegin; I != variadicArgsEnd; ++I) {
     QualType ArgTy = msg.getArgExpr(I)->getType();
@@ -755,7 +756,7 @@ void VariadicMethodTypeChecker::checkPreObjCMessage(const ObjCMethodCall &msg,
       continue;
 
     // Ignore pointer constants.
-    if (isa<loc::ConcreteInt>(msg.getArgSVal(I)))
+    if (msg.getArgSVal(I).getAs<loc::ConcreteInt>())
       continue;
 
     // Ignore pointer types annotated with 'NSObject' attribute.
@@ -767,10 +768,10 @@ void VariadicMethodTypeChecker::checkPreObjCMessage(const ObjCMethodCall &msg,
       continue;
 
     // Generate only one error node to use for all bug reports.
-    if (!errorNode)
+    if (!errorNode.hasValue())
       errorNode = C.generateNonFatalErrorNode();
 
-    if (!errorNode.value())
+    if (!errorNode.getValue())
       continue;
 
     SmallString<128> sbuf;
@@ -788,7 +789,7 @@ void VariadicMethodTypeChecker::checkPreObjCMessage(const ObjCMethodCall &msg,
     os << "'";
 
     auto R = std::make_unique<PathSensitiveBugReport>(*BT, os.str(),
-                                                      errorNode.value());
+                                                      errorNode.getValue());
     R->addRange(msg.getArgSourceRange(I));
     C.emitReport(std::move(R));
   }
@@ -904,7 +905,7 @@ static ProgramStateRef checkElementNonNil(CheckerContext &C,
 
   // Go ahead and assume the value is non-nil.
   SVal Val = State->getSVal(*ElementLoc);
-  return State->assume(cast<DefinedOrUnknownSVal>(Val), true);
+  return State->assume(Val.castAs<DefinedOrUnknownSVal>(), true);
 }
 
 /// Returns NULL state if the collection is known to contain elements

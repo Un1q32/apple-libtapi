@@ -17,15 +17,10 @@
 #include "MCTargetDesc/AMDGPUMCTargetDesc.h"
 #include "SIDefines.h"
 #include "Utils/AMDGPUBaseInfo.h"
-#include "llvm/ADT/APInt.h"
-#include "llvm/MC/MCCodeEmitter.h"
 #include "llvm/MC/MCContext.h"
 #include "llvm/MC/MCExpr.h"
 #include "llvm/MC/MCInstrInfo.h"
 #include "llvm/MC/MCRegisterInfo.h"
-#include "llvm/MC/MCSubtargetInfo.h"
-#include "llvm/MC/SubtargetFeature.h"
-#include "llvm/Support/Casting.h"
 
 using namespace llvm;
 
@@ -39,8 +34,9 @@ class SIMCCodeEmitter : public  AMDGPUMCCodeEmitter {
                           const MCSubtargetInfo &STI) const;
 
 public:
-  SIMCCodeEmitter(const MCInstrInfo &mcii, MCContext &ctx)
-      : AMDGPUMCCodeEmitter(mcii), MRI(*ctx.getRegisterInfo()) {}
+  SIMCCodeEmitter(const MCInstrInfo &mcii, const MCRegisterInfo &mri,
+                  MCContext &ctx)
+      : AMDGPUMCCodeEmitter(mcii), MRI(mri) {}
   SIMCCodeEmitter(const SIMCCodeEmitter &) = delete;
   SIMCCodeEmitter &operator=(const SIMCCodeEmitter &) = delete;
 
@@ -49,45 +45,43 @@ public:
                          SmallVectorImpl<MCFixup> &Fixups,
                          const MCSubtargetInfo &STI) const override;
 
-  void getMachineOpValue(const MCInst &MI, const MCOperand &MO, APInt &Op,
-                         SmallVectorImpl<MCFixup> &Fixups,
-                         const MCSubtargetInfo &STI) const override;
-
-  /// Use a fixup to encode the simm16 field for SOPP branch
-  ///        instructions.
-  void getSOPPBrEncoding(const MCInst &MI, unsigned OpNo, APInt &Op,
-                         SmallVectorImpl<MCFixup> &Fixups,
-                         const MCSubtargetInfo &STI) const override;
-
-  void getSMEMOffsetEncoding(const MCInst &MI, unsigned OpNo, APInt &Op,
+  /// \returns the encoding for an MCOperand.
+  uint64_t getMachineOpValue(const MCInst &MI, const MCOperand &MO,
                              SmallVectorImpl<MCFixup> &Fixups,
                              const MCSubtargetInfo &STI) const override;
 
-  void getSDWASrcEncoding(const MCInst &MI, unsigned OpNo, APInt &Op,
-                          SmallVectorImpl<MCFixup> &Fixups,
-                          const MCSubtargetInfo &STI) const override;
+  /// Use a fixup to encode the simm16 field for SOPP branch
+  ///        instructions.
+  unsigned getSOPPBrEncoding(const MCInst &MI, unsigned OpNo,
+                             SmallVectorImpl<MCFixup> &Fixups,
+                             const MCSubtargetInfo &STI) const override;
 
-  void getSDWAVopcDstEncoding(const MCInst &MI, unsigned OpNo, APInt &Op,
+  unsigned getSMEMOffsetEncoding(const MCInst &MI, unsigned OpNo,
+                                 SmallVectorImpl<MCFixup> &Fixups,
+                                 const MCSubtargetInfo &STI) const override;
+
+  unsigned getSDWASrcEncoding(const MCInst &MI, unsigned OpNo,
                               SmallVectorImpl<MCFixup> &Fixups,
                               const MCSubtargetInfo &STI) const override;
 
-  void getAVOperandEncoding(const MCInst &MI, unsigned OpNo, APInt &Op,
-                            SmallVectorImpl<MCFixup> &Fixups,
-                            const MCSubtargetInfo &STI) const override;
+  unsigned getSDWAVopcDstEncoding(const MCInst &MI, unsigned OpNo,
+                                  SmallVectorImpl<MCFixup> &Fixups,
+                                  const MCSubtargetInfo &STI) const override;
+
+  unsigned getAVOperandEncoding(const MCInst &MI, unsigned OpNo,
+                                SmallVectorImpl<MCFixup> &Fixups,
+                                const MCSubtargetInfo &STI) const override;
 
 private:
   uint64_t getImplicitOpSelHiEncoding(int Opcode) const;
-  void getMachineOpValueCommon(const MCInst &MI, const MCOperand &MO,
-                               unsigned OpNo, APInt &Op,
-                               SmallVectorImpl<MCFixup> &Fixups,
-                               const MCSubtargetInfo &STI) const;
 };
 
 } // end anonymous namespace
 
 MCCodeEmitter *llvm::createSIMCCodeEmitter(const MCInstrInfo &MCII,
+                                           const MCRegisterInfo &MRI,
                                            MCContext &Ctx) {
-  return new SIMCCodeEmitter(MCII, Ctx);
+  return new SIMCCodeEmitter(MCII, MRI, Ctx);
 }
 
 // Returns the encoding value to use if the given integer is an integer inline
@@ -239,7 +233,6 @@ uint32_t SIMCCodeEmitter::getLitEncoding(const MCOperand &MO,
   switch (OpInfo.OperandType) {
   case AMDGPU::OPERAND_REG_IMM_INT32:
   case AMDGPU::OPERAND_REG_IMM_FP32:
-  case AMDGPU::OPERAND_REG_IMM_FP32_DEFERRED:
   case AMDGPU::OPERAND_REG_INLINE_C_INT32:
   case AMDGPU::OPERAND_REG_INLINE_C_FP32:
   case AMDGPU::OPERAND_REG_INLINE_AC_INT32:
@@ -262,7 +255,6 @@ uint32_t SIMCCodeEmitter::getLitEncoding(const MCOperand &MO,
   case AMDGPU::OPERAND_REG_INLINE_AC_INT16:
     return getLit16IntEncoding(static_cast<uint16_t>(Imm), STI);
   case AMDGPU::OPERAND_REG_IMM_FP16:
-  case AMDGPU::OPERAND_REG_IMM_FP16_DEFERRED:
   case AMDGPU::OPERAND_REG_INLINE_C_FP16:
   case AMDGPU::OPERAND_REG_INLINE_AC_FP16:
     // FIXME Is this correct? What do inline immediates do on SI for f16 src
@@ -274,7 +266,7 @@ uint32_t SIMCCodeEmitter::getLitEncoding(const MCOperand &MO,
       return getLit32Encoding(static_cast<uint32_t>(Imm), STI);
     if (OpInfo.OperandType == AMDGPU::OPERAND_REG_IMM_V2FP16)
       return getLit16Encoding(static_cast<uint16_t>(Imm), STI);
-    [[fallthrough]];
+    LLVM_FALLTHROUGH;
   }
   case AMDGPU::OPERAND_REG_INLINE_C_V2INT16:
   case AMDGPU::OPERAND_REG_INLINE_AC_V2INT16:
@@ -285,9 +277,6 @@ uint32_t SIMCCodeEmitter::getLitEncoding(const MCOperand &MO,
     uint32_t Encoding = getLit16Encoding(Lo16, STI);
     return Encoding;
   }
-  case AMDGPU::OPERAND_KIMM32:
-  case AMDGPU::OPERAND_KIMM16:
-    return MO.getImm();
   default:
     llvm_unreachable("invalid operand size");
   }
@@ -308,18 +297,15 @@ uint64_t SIMCCodeEmitter::getImplicitOpSelHiEncoding(int Opcode) const {
   return OP_SEL_HI_0 | OP_SEL_HI_1 | OP_SEL_HI_2;
 }
 
-static bool isVCMPX64(const MCInstrDesc &Desc) {
-  return (Desc.TSFlags & SIInstrFlags::VOP3) &&
-         Desc.hasImplicitDefOfPhysReg(AMDGPU::EXEC);
-}
-
 void SIMCCodeEmitter::encodeInstruction(const MCInst &MI, raw_ostream &OS,
-                                        SmallVectorImpl<MCFixup> &Fixups,
-                                        const MCSubtargetInfo &STI) const {
+                                       SmallVectorImpl<MCFixup> &Fixups,
+                                       const MCSubtargetInfo &STI) const {
+  verifyInstructionPredicates(MI,
+                              computeAvailableFeatures(STI.getFeatureBits()));
+
   int Opcode = MI.getOpcode();
-  APInt Encoding, Scratch;
-  getBinaryCodeForInstr(MI, Fixups, Encoding, Scratch,  STI);
-  const MCInstrDesc &Desc = MCII.get(MI.getOpcode());
+  uint64_t Encoding = getBinaryCodeForInstr(MI, Fixups, STI);
+  const MCInstrDesc &Desc = MCII.get(Opcode);
   unsigned bytes = Desc.getSize();
 
   // Set unused op_sel_hi bits to 1 for VOP3P and MAI instructions.
@@ -330,19 +316,8 @@ void SIMCCodeEmitter::encodeInstruction(const MCInst &MI, raw_ostream &OS,
     Encoding |= getImplicitOpSelHiEncoding(Opcode);
   }
 
-  // GFX10+ v_cmpx opcodes promoted to VOP3 have implied dst=EXEC.
-  // Documentation requires dst to be encoded as EXEC (0x7E),
-  // but it looks like the actual value encoded for dst operand
-  // is ignored by HW. It was decided to define dst as "do not care"
-  // in td files to allow disassembler accept any dst value.
-  // However, dst is encoded as EXEC for compatibility with SP3.
-  if (AMDGPU::isGFX10Plus(STI) && isVCMPX64(Desc)) {
-    assert((Encoding & 0xFF) == 0);
-    Encoding |= MRI.getEncodingValue(AMDGPU::EXEC_LO);
-  }
-
   for (unsigned i = 0; i < bytes; i++) {
-    OS.write((uint8_t)Encoding.extractBitsAsZExtValue(8, 8 * i));
+    OS.write((uint8_t) ((Encoding >> (8 * i)) & 0xff));
   }
 
   // NSA encoding.
@@ -355,11 +330,9 @@ void SIMCCodeEmitter::encodeInstruction(const MCInst &MI, raw_ostream &OS,
     unsigned NumExtraAddrs = srsrc - vaddr0 - 1;
     unsigned NumPadding = (-NumExtraAddrs) & 3;
 
-    for (unsigned i = 0; i < NumExtraAddrs; ++i) {
-      getMachineOpValue(MI, MI.getOperand(vaddr0 + 1 + i), Encoding, Fixups,
-                        STI);
-      OS.write((uint8_t)Encoding.getLimitedValue());
-    }
+    for (unsigned i = 0; i < NumExtraAddrs; ++i)
+      OS.write((uint8_t)getMachineOpValue(MI, MI.getOperand(vaddr0 + 1 + i),
+                                          Fixups, STI));
     for (unsigned i = 0; i < NumPadding; ++i)
       OS.write(0);
   }
@@ -368,13 +341,7 @@ void SIMCCodeEmitter::encodeInstruction(const MCInst &MI, raw_ostream &OS,
       (bytes > 4 && !STI.getFeatureBits()[AMDGPU::FeatureVOP3Literal]))
     return;
 
-  // Do not print literals from SISrc Operands for insts with mandatory literals
-  int ImmLitIdx =
-      AMDGPU::getNamedOperandIdx(MI.getOpcode(), AMDGPU::OpName::imm);
-  if (ImmLitIdx != -1)
-    return;
-
-  // Check for additional literals
+  // Check for additional literals in SRC0/1/2 (Op 1/2/3)
   for (unsigned i = 0, e = Desc.getNumOperands(); i < e; ++i) {
 
     // Check if this operand should be encoded as [SV]Src
@@ -407,36 +374,34 @@ void SIMCCodeEmitter::encodeInstruction(const MCInst &MI, raw_ostream &OS,
   }
 }
 
-void SIMCCodeEmitter::getSOPPBrEncoding(const MCInst &MI, unsigned OpNo,
-                                        APInt &Op,
-                                        SmallVectorImpl<MCFixup> &Fixups,
-                                        const MCSubtargetInfo &STI) const {
+unsigned SIMCCodeEmitter::getSOPPBrEncoding(const MCInst &MI, unsigned OpNo,
+                                            SmallVectorImpl<MCFixup> &Fixups,
+                                            const MCSubtargetInfo &STI) const {
   const MCOperand &MO = MI.getOperand(OpNo);
 
   if (MO.isExpr()) {
     const MCExpr *Expr = MO.getExpr();
     MCFixupKind Kind = (MCFixupKind)AMDGPU::fixup_si_sopp_br;
     Fixups.push_back(MCFixup::create(0, Expr, Kind, MI.getLoc()));
-    Op = APInt::getNullValue(96);
-  } else {
-    getMachineOpValue(MI, MO, Op, Fixups, STI);
+    return 0;
   }
+
+  return getMachineOpValue(MI, MO, Fixups, STI);
 }
 
-void SIMCCodeEmitter::getSMEMOffsetEncoding(const MCInst &MI, unsigned OpNo,
-                                            APInt &Op,
-                                            SmallVectorImpl<MCFixup> &Fixups,
-                                            const MCSubtargetInfo &STI) const {
+unsigned SIMCCodeEmitter::getSMEMOffsetEncoding(const MCInst &MI, unsigned OpNo,
+                                                SmallVectorImpl<MCFixup> &Fixups,
+                                                const MCSubtargetInfo &STI) const {
   auto Offset = MI.getOperand(OpNo).getImm();
   // VI only supports 20-bit unsigned offsets.
   assert(!AMDGPU::isVI(STI) || isUInt<20>(Offset));
-  Op = Offset;
+  return Offset;
 }
 
-void SIMCCodeEmitter::getSDWASrcEncoding(const MCInst &MI, unsigned OpNo,
-                                         APInt &Op,
-                                         SmallVectorImpl<MCFixup> &Fixups,
-                                         const MCSubtargetInfo &STI) const {
+unsigned
+SIMCCodeEmitter::getSDWASrcEncoding(const MCInst &MI, unsigned OpNo,
+                                    SmallVectorImpl<MCFixup> &Fixups,
+                                    const MCSubtargetInfo &STI) const {
   using namespace AMDGPU::SDWA;
 
   uint64_t RegEnc = 0;
@@ -450,24 +415,23 @@ void SIMCCodeEmitter::getSDWASrcEncoding(const MCInst &MI, unsigned OpNo,
     if (AMDGPU::isSGPR(AMDGPU::mc2PseudoReg(Reg), &MRI)) {
       RegEnc |= SDWA9EncValues::SRC_SGPR_MASK;
     }
-    Op = RegEnc;
-    return;
+    return RegEnc;
   } else {
     const MCInstrDesc &Desc = MCII.get(MI.getOpcode());
     uint32_t Enc = getLitEncoding(MO, Desc.OpInfo[OpNo], STI);
     if (Enc != ~0U && Enc != 255) {
-      Op = Enc | SDWA9EncValues::SRC_SGPR_MASK;
-      return;
+      return Enc | SDWA9EncValues::SRC_SGPR_MASK;
     }
   }
 
   llvm_unreachable("Unsupported operand kind");
+  return 0;
 }
 
-void SIMCCodeEmitter::getSDWAVopcDstEncoding(const MCInst &MI, unsigned OpNo,
-                                             APInt &Op,
-                                             SmallVectorImpl<MCFixup> &Fixups,
-                                             const MCSubtargetInfo &STI) const {
+unsigned
+SIMCCodeEmitter::getSDWAVopcDstEncoding(const MCInst &MI, unsigned OpNo,
+                                        SmallVectorImpl<MCFixup> &Fixups,
+                                        const MCSubtargetInfo &STI) const {
   using namespace AMDGPU::SDWA;
 
   uint64_t RegEnc = 0;
@@ -480,13 +444,13 @@ void SIMCCodeEmitter::getSDWAVopcDstEncoding(const MCInst &MI, unsigned OpNo,
     RegEnc &= SDWA9EncValues::VOPC_DST_SGPR_MASK;
     RegEnc |= SDWA9EncValues::VOPC_DST_VCC_MASK;
   }
-  Op = RegEnc;
+  return RegEnc;
 }
 
-void SIMCCodeEmitter::getAVOperandEncoding(const MCInst &MI, unsigned OpNo,
-                                           APInt &Op,
-                                           SmallVectorImpl<MCFixup> &Fixups,
-                                           const MCSubtargetInfo &STI) const {
+unsigned
+SIMCCodeEmitter::getAVOperandEncoding(const MCInst &MI, unsigned OpNo,
+                                      SmallVectorImpl<MCFixup> &Fixups,
+                                      const MCSubtargetInfo &STI) const {
   unsigned Reg = MI.getOperand(OpNo).getReg();
   uint64_t Enc = MRI.getEncodingValue(Reg);
 
@@ -501,11 +465,10 @@ void SIMCCodeEmitter::getAVOperandEncoding(const MCInst &MI, unsigned OpNo,
       MRI.getRegClass(AMDGPU::AReg_192RegClassID).contains(Reg) ||
       MRI.getRegClass(AMDGPU::AReg_224RegClassID).contains(Reg) ||
       MRI.getRegClass(AMDGPU::AReg_256RegClassID).contains(Reg) ||
-      MRI.getRegClass(AMDGPU::AReg_512RegClassID).contains(Reg) ||
       MRI.getRegClass(AMDGPU::AGPR_LO16RegClassID).contains(Reg))
     Enc |= 512;
 
-  Op = Enc;
+  return Enc;
 }
 
 static bool needsPCRel(const MCExpr *Expr) {
@@ -531,21 +494,12 @@ static bool needsPCRel(const MCExpr *Expr) {
   llvm_unreachable("invalid kind");
 }
 
-void SIMCCodeEmitter::getMachineOpValue(const MCInst &MI,
-                                        const MCOperand &MO, APInt &Op,
-                                        SmallVectorImpl<MCFixup> &Fixups,
-                                        const MCSubtargetInfo &STI) const {
-  if (MO.isReg()){
-    Op = MRI.getEncodingValue(MO.getReg());
-    return;
-  }
-  unsigned OpNo = &MO - MI.begin();
-  getMachineOpValueCommon(MI, MO, OpNo, Op, Fixups, STI);
-}
-
-void SIMCCodeEmitter::getMachineOpValueCommon(
-    const MCInst &MI, const MCOperand &MO, unsigned OpNo, APInt &Op,
-    SmallVectorImpl<MCFixup> &Fixups, const MCSubtargetInfo &STI) const {
+uint64_t SIMCCodeEmitter::getMachineOpValue(const MCInst &MI,
+                                            const MCOperand &MO,
+                                       SmallVectorImpl<MCFixup> &Fixups,
+                                       const MCSubtargetInfo &STI) const {
+  if (MO.isReg())
+    return MRI.getEncodingValue(MO.getReg());
 
   if (MO.isExpr() && MO.getExpr()->getKind() != MCExpr::Constant) {
     // FIXME: If this is expression is PCRel or not should not depend on what
@@ -568,22 +522,30 @@ void SIMCCodeEmitter::getMachineOpValueCommon(
     uint32_t Offset = Desc.getSize();
     assert(Offset == 4 || Offset == 8);
 
-    Fixups.push_back(MCFixup::create(Offset, MO.getExpr(), Kind, MI.getLoc()));
+    Fixups.push_back(
+      MCFixup::create(Offset, MO.getExpr(), Kind, MI.getLoc()));
+  }
+
+  // Figure out the operand number, needed for isSrcOperand check
+  unsigned OpNo = 0;
+  for (unsigned e = MI.getNumOperands(); OpNo < e; ++OpNo) {
+    if (&MO == &MI.getOperand(OpNo))
+      break;
   }
 
   const MCInstrDesc &Desc = MCII.get(MI.getOpcode());
   if (AMDGPU::isSISrcOperand(Desc, OpNo)) {
     uint32_t Enc = getLitEncoding(MO, Desc.OpInfo[OpNo], STI);
-    if (Enc != ~0U) {
-      Op = Enc;
-      return;
-    }
-  } else if (MO.isImm()) {
-    Op = MO.getImm();
-    return;
-  }
+    if (Enc != ~0U &&
+        (Enc != 255 || Desc.getSize() == 4 || Desc.getSize() == 8))
+      return Enc;
+
+  } else if (MO.isImm())
+    return MO.getImm();
 
   llvm_unreachable("Encoding of this operand type is not supported yet.");
+  return 0;
 }
 
+#define ENABLE_INSTR_PREDICATE_VERIFIER
 #include "AMDGPUGenMCCodeEmitter.inc"

@@ -12,14 +12,13 @@
 //===----------------------------------------------------------------------===//
 
 #include "llvm/Remarks/BitstreamRemarkSerializer.h"
-#include "llvm/Remarks/Remark.h"
 
 using namespace llvm;
 using namespace llvm::remarks;
 
 BitstreamRemarkSerializerHelper::BitstreamRemarkSerializerHelper(
     BitstreamRemarkContainerType ContainerType)
-    : Bitstream(Encoded), ContainerType(ContainerType) {}
+    : Encoded(), R(), Bitstream(Encoded), ContainerType(ContainerType) {}
 
 static void push(SmallVectorImpl<uint64_t> &R, StringRef Str) {
   append_range(R, Str);

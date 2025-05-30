@@ -152,38 +152,33 @@ using namespace llvm;
 static cl::opt<bool> DisableDeallocRet("disable-hexagon-dealloc-ret",
     cl::Hidden, cl::desc("Disable Dealloc Return for Hexagon target"));
 
-static cl::opt<unsigned>
-    NumberScavengerSlots("number-scavenger-slots", cl::Hidden,
-                         cl::desc("Set the number of scavenger slots"),
-                         cl::init(2));
+static cl::opt<unsigned> NumberScavengerSlots("number-scavenger-slots",
+    cl::Hidden, cl::desc("Set the number of scavenger slots"), cl::init(2),
+    cl::ZeroOrMore);
 
-static cl::opt<int>
-    SpillFuncThreshold("spill-func-threshold", cl::Hidden,
-                       cl::desc("Specify O2(not Os) spill func threshold"),
-                       cl::init(6));
+static cl::opt<int> SpillFuncThreshold("spill-func-threshold",
+    cl::Hidden, cl::desc("Specify O2(not Os) spill func threshold"),
+    cl::init(6), cl::ZeroOrMore);
 
-static cl::opt<int>
-    SpillFuncThresholdOs("spill-func-threshold-Os", cl::Hidden,
-                         cl::desc("Specify Os spill func threshold"),
-                         cl::init(1));
+static cl::opt<int> SpillFuncThresholdOs("spill-func-threshold-Os",
+    cl::Hidden, cl::desc("Specify Os spill func threshold"),
+    cl::init(1), cl::ZeroOrMore);
 
-static cl::opt<bool> EnableStackOVFSanitizer(
-    "enable-stackovf-sanitizer", cl::Hidden,
-    cl::desc("Enable runtime checks for stack overflow."), cl::init(false));
+static cl::opt<bool> EnableStackOVFSanitizer("enable-stackovf-sanitizer",
+    cl::Hidden, cl::desc("Enable runtime checks for stack overflow."),
+    cl::init(false), cl::ZeroOrMore);
 
-static cl::opt<bool>
-    EnableShrinkWrapping("hexagon-shrink-frame", cl::init(true), cl::Hidden,
-                         cl::desc("Enable stack frame shrink wrapping"));
+static cl::opt<bool> EnableShrinkWrapping("hexagon-shrink-frame",
+    cl::init(true), cl::Hidden, cl::ZeroOrMore,
+    cl::desc("Enable stack frame shrink wrapping"));
 
-static cl::opt<unsigned>
-    ShrinkLimit("shrink-frame-limit",
-                cl::init(std::numeric_limits<unsigned>::max()), cl::Hidden,
-                cl::desc("Max count of stack frame shrink-wraps"));
+static cl::opt<unsigned> ShrinkLimit("shrink-frame-limit",
+    cl::init(std::numeric_limits<unsigned>::max()), cl::Hidden, cl::ZeroOrMore,
+    cl::desc("Max count of stack frame shrink-wraps"));
 
-static cl::opt<bool>
-    EnableSaveRestoreLong("enable-save-restore-long", cl::Hidden,
-                          cl::desc("Enable long calls for save-restore stubs."),
-                          cl::init(false));
+static cl::opt<bool> EnableSaveRestoreLong("enable-save-restore-long",
+    cl::Hidden, cl::desc("Enable long calls for save-restore stubs."),
+    cl::init(false), cl::ZeroOrMore);
 
 static cl::opt<bool> EliminateFramePointer("hexagon-fp-elim", cl::init(true),
     cl::Hidden, cl::desc("Refrain from using FP whenever possible"));
@@ -286,10 +281,11 @@ static unsigned getMaxCalleeSavedReg(ArrayRef<CalleeSavedInfo> CSI,
 /// frame to be already in place.
 static bool needsStackFrame(const MachineBasicBlock &MBB, const BitVector &CSR,
                             const HexagonRegisterInfo &HRI) {
-    for (const MachineInstr &MI : MBB) {
-      if (MI.isCall())
+    for (auto &I : MBB) {
+      const MachineInstr *MI = &I;
+      if (MI->isCall())
         return true;
-      unsigned Opc = MI.getOpcode();
+      unsigned Opc = MI->getOpcode();
       switch (Opc) {
         case Hexagon::PS_alloca:
         case Hexagon::PS_aligna:
@@ -298,7 +294,7 @@ static bool needsStackFrame(const MachineBasicBlock &MBB, const BitVector &CSR,
           break;
       }
       // Check individual operands.
-      for (const MachineOperand &MO : MI.operands()) {
+      for (const MachineOperand &MO : MI->operands()) {
         // While the presence of a frame index does not prove that a stack
         // frame will be required, all frame indexes should be within alloc-
         // frame/deallocframe. Otherwise, the code that translates a frame
@@ -347,8 +343,8 @@ static bool hasTailCall(const MachineBasicBlock &MBB) {
 
 /// Returns true if MBB contains an instruction that returns.
 static bool hasReturn(const MachineBasicBlock &MBB) {
-    for (const MachineInstr &MI : MBB.terminators())
-      if (MI.isReturn())
+    for (auto I = MBB.getFirstTerminator(), E = MBB.end(); I != E; ++I)
+      if (I->isReturn())
         return true;
     return false;
 }
@@ -421,18 +417,19 @@ void HexagonFrameLowering::findShrunkPrologEpilog(MachineFunction &MF,
   UnsignedMap RPO;
   RPOTType RPOT(&MF);
   unsigned RPON = 0;
-  for (auto &I : RPOT)
-    RPO[I->getNumber()] = RPON++;
+  for (RPOTType::rpo_iterator I = RPOT.begin(), E = RPOT.end(); I != E; ++I)
+    RPO[(*I)->getNumber()] = RPON++;
 
   // Don't process functions that have loops, at least for now. Placement
   // of prolog and epilog must take loop structure into account. For simpli-
   // city don't do it right now.
   for (auto &I : MF) {
     unsigned BN = RPO[I.getNumber()];
-    for (MachineBasicBlock *Succ : I.successors())
+    for (auto SI = I.succ_begin(), SE = I.succ_end(); SI != SE; ++SI) {
       // If found a back-edge, return.
-      if (RPO[Succ->getNumber()] <= BN)
+      if (RPO[(*SI)->getNumber()] <= BN)
         return;
+    }
   }
 
   // Collect the set of blocks that need a stack frame to execute. Scan
@@ -620,7 +617,7 @@ void HexagonFrameLowering::insertPrologueInBlock(MachineBasicBlock &MBB,
       if (MI.getOpcode() == Hexagon::PS_alloca)
         AdjustRegs.push_back(&MI);
 
-  for (auto *MI : AdjustRegs) {
+  for (auto MI : AdjustRegs) {
     assert((MI->getOpcode() == Hexagon::PS_alloca) && "Expected alloca");
     expandAlloca(MI, HII, SP, MaxCF);
     MI->eraseFromParent();
@@ -1023,8 +1020,8 @@ findCFILocation(MachineBasicBlock &B) {
 void HexagonFrameLowering::insertCFIInstructions(MachineFunction &MF) const {
   for (auto &B : MF) {
     auto At = findCFILocation(B);
-    if (At)
-      insertCFIInstructionsAt(B, At.value());
+    if (At.hasValue())
+      insertCFIInstructionsAt(B, At.getValue());
   }
 }
 
@@ -1409,18 +1406,18 @@ bool HexagonFrameLowering::insertCSRSpillsInBlock(MachineBasicBlock &MBB,
     // Add callee-saved registers as use.
     addCalleeSaveRegistersAsImpOperand(SaveRegsCall, CSI, false, true);
     // Add live in registers.
-    for (const CalleeSavedInfo &I : CSI)
-      MBB.addLiveIn(I.getReg());
+    for (unsigned I = 0; I < CSI.size(); ++I)
+      MBB.addLiveIn(CSI[I].getReg());
     return true;
   }
 
-  for (const CalleeSavedInfo &I : CSI) {
-    Register Reg = I.getReg();
+  for (unsigned i = 0, n = CSI.size(); i < n; ++i) {
+    unsigned Reg = CSI[i].getReg();
     // Add live in registers. We treat eh_return callee saved register r0 - r3
     // specially. They are not really callee saved registers as they are not
     // supposed to be killed.
     bool IsKill = !HRI.isEHReturnCalleeSaveReg(Reg);
-    int FI = I.getFrameIdx();
+    int FI = CSI[i].getFrameIdx();
     const TargetRegisterClass *RC = HRI.getMinimalPhysRegClass(Reg);
     HII.storeRegToStackSlot(MBB, MI, Reg, IsKill, FI, RC, &HRI);
     if (IsKill)
@@ -1483,10 +1480,10 @@ bool HexagonFrameLowering::insertCSRRestoresInBlock(MachineBasicBlock &MBB,
     return true;
   }
 
-  for (const CalleeSavedInfo &I : CSI) {
-    Register Reg = I.getReg();
+  for (unsigned i = 0; i < CSI.size(); ++i) {
+    unsigned Reg = CSI[i].getReg();
     const TargetRegisterClass *RC = HRI.getMinimalPhysRegClass(Reg);
-    int FI = I.getFrameIdx();
+    int FI = CSI[i].getFrameIdx();
     HII.loadRegFromStackSlot(MBB, MI, Reg, FI, RC, &HRI);
   }
 
@@ -1624,8 +1621,8 @@ bool HexagonFrameLowering::assignCalleeSavedSpillSlots(MachineFunction &MF,
   // (1) For each callee-saved register, add that register and all of its
   // sub-registers to SRegs.
   LLVM_DEBUG(dbgs() << "Initial CS registers: {");
-  for (const CalleeSavedInfo &I : CSI) {
-    Register R = I.getReg();
+  for (unsigned i = 0, n = CSI.size(); i < n; ++i) {
+    unsigned R = CSI[i].getReg();
     LLVM_DEBUG(dbgs() << ' ' << printReg(R, TRI));
     for (MCSubRegIterator SR(R, TRI, true); SR.isValid(); ++SR)
       SRegs[*SR] = true;
@@ -1725,10 +1722,10 @@ bool HexagonFrameLowering::assignCalleeSavedSpillSlots(MachineFunction &MF,
 
   LLVM_DEBUG({
     dbgs() << "CS information: {";
-    for (const CalleeSavedInfo &I : CSI) {
-      int FI = I.getFrameIdx();
+    for (unsigned i = 0, n = CSI.size(); i < n; ++i) {
+      int FI = CSI[i].getFrameIdx();
       int Off = MFI.getObjectOffset(FI);
-      dbgs() << ' ' << printReg(I.getReg(), TRI) << ":fi#" << FI << ":sp";
+      dbgs() << ' ' << printReg(CSI[i].getReg(), TRI) << ":fi#" << FI << ":sp";
       if (Off >= 0)
         dbgs() << '+';
       dbgs() << Off;
@@ -2156,7 +2153,7 @@ void HexagonFrameLowering::determineCalleeSaves(MachineFunction &MF,
     for (unsigned VR : NewRegs)
       SpillRCs.insert(MRI.getRegClass(VR));
 
-    for (const auto *RC : SpillRCs) {
+    for (auto *RC : SpillRCs) {
       if (!needToReserveScavengingSpillSlots(MF, HRI, RC))
         continue;
       unsigned Num = 1;
@@ -2639,8 +2636,8 @@ bool HexagonFrameLowering::shouldInlineCSR(const MachineFunction &MF,
   // Check if CSI only has double registers, and if the registers form
   // a contiguous block starting from D8.
   BitVector Regs(Hexagon::NUM_TARGET_REGS);
-  for (const CalleeSavedInfo &I : CSI) {
-    Register R = I.getReg();
+  for (unsigned i = 0, n = CSI.size(); i < n; ++i) {
+    unsigned R = CSI[i].getReg();
     if (!Hexagon::DoubleRegsRegClass.contains(R))
       return true;
     Regs[R] = true;
@@ -2715,12 +2712,12 @@ bool HexagonFrameLowering::mayOverflowFrameOffset(MachineFunction &MF) const {
         case Hexagon::S4_storeirif_io:
         case Hexagon::S4_storeiri_io:
           ++LS;
-          [[fallthrough]];
+          LLVM_FALLTHROUGH;
         case Hexagon::S4_storeirht_io:
         case Hexagon::S4_storeirhf_io:
         case Hexagon::S4_storeirh_io:
           ++LS;
-          [[fallthrough]];
+          LLVM_FALLTHROUGH;
         case Hexagon::S4_storeirbt_io:
         case Hexagon::S4_storeirbf_io:
         case Hexagon::S4_storeirb_io:

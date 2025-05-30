@@ -232,18 +232,6 @@ ObjCPropertyDecl::getDefaultSynthIvarName(ASTContext &Ctx) const {
   return &Ctx.Idents.get(ivarName.str());
 }
 
-ObjCPropertyDecl *ObjCContainerDecl::getProperty(const IdentifierInfo *Id,
-                                                 bool IsInstance) const {
-  for (auto *LookupResult : lookup(Id)) {
-    if (auto *Prop = dyn_cast<ObjCPropertyDecl>(LookupResult)) {
-      if (Prop->isInstanceProperty() == IsInstance) {
-        return Prop;
-      }
-    }
-  }
-  return nullptr;
-}
-
 /// FindPropertyDeclaration - Finds declaration of the property given its name
 /// in 'PropertyId' and returns it. It returns 0, if not found.
 ObjCPropertyDecl *ObjCContainerDecl::FindPropertyDeclaration(
@@ -403,18 +391,21 @@ ObjCInterfaceDecl::FindPropertyVisibleInPrimaryClass(
   return nullptr;
 }
 
-void ObjCInterfaceDecl::collectPropertiesToImplement(PropertyMap &PM) const {
+void ObjCInterfaceDecl::collectPropertiesToImplement(PropertyMap &PM,
+                                                     PropertyDeclOrder &PO) const {
   for (auto *Prop : properties()) {
     PM[std::make_pair(Prop->getIdentifier(), Prop->isClassProperty())] = Prop;
+    PO.push_back(Prop);
   }
   for (const auto *Ext : known_extensions()) {
     const ObjCCategoryDecl *ClassExt = Ext;
     for (auto *Prop : ClassExt->properties()) {
       PM[std::make_pair(Prop->getIdentifier(), Prop->isClassProperty())] = Prop;
+      PO.push_back(Prop);
     }
   }
   for (const auto *PI : all_referenced_protocols())
-    PI->collectPropertiesToImplement(PM);
+    PI->collectPropertiesToImplement(PM, PO);
   // Note, the properties declared only in class extensions are still copied
   // into the main @interface's property list, and therefore we don't
   // explicitly, have to search class extension properties.
@@ -612,6 +603,10 @@ void ObjCInterfaceDecl::allocateDefinitionData() {
   assert(!hasDefinition() && "ObjC class already has a definition");
   Data.setPointer(new (getASTContext()) DefinitionData());
   Data.getPointer()->Definition = this;
+
+  // Make the type point at the definition, now that we have one.
+  if (TypeForDecl)
+    cast<ObjCInterfaceType>(TypeForDecl)->Decl = this;
 }
 
 void ObjCInterfaceDecl::startDefinition() {
@@ -857,14 +852,6 @@ bool ObjCMethodDecl::isDesignatedInitializerForTheInterface(
     return false;
   if (const ObjCInterfaceDecl *ID = getClassInterface())
     return ID->isDesignatedInitializer(getSelector(), InitMethod);
-  return false;
-}
-
-bool ObjCMethodDecl::hasParamDestroyedInCallee() const {
-  for (auto *param : parameters()) {
-    if (param->isDestroyedInCallee())
-      return true;
-  }
   return false;
 }
 
@@ -1489,7 +1476,7 @@ ObjCTypeParamList *ObjCTypeParamList::create(
 void ObjCTypeParamList::gatherDefaultTypeArgs(
        SmallVectorImpl<QualType> &typeArgs) const {
   typeArgs.reserve(size());
-  for (auto *typeParam : *this)
+  for (auto typeParam : *this)
     typeArgs.push_back(typeParam->getUnderlyingType());
 }
 
@@ -1640,11 +1627,6 @@ ObjCIvarDecl *ObjCInterfaceDecl::all_declared_ivar_begin() {
 
   ObjCIvarDecl *curIvar = nullptr;
   if (!data().IvarList) {
-    // Force ivar deserialization upfront, before building IvarList.
-    (void)ivar_empty();
-    for (const auto *Ext : known_extensions()) {
-      (void)Ext->ivar_empty();
-    }
     if (!ivar_empty()) {
       ObjCInterfaceDecl::ivar_iterator I = ivar_begin(), E = ivar_end();
       data().IvarList = *I; ++I;
@@ -1836,8 +1818,8 @@ ObjCIvarDecl *ObjCIvarDecl::CreateDeserialized(ASTContext &C, unsigned ID) {
                                   ObjCIvarDecl::None, nullptr, false);
 }
 
-ObjCInterfaceDecl *ObjCIvarDecl::getContainingInterface() {
-  auto *DC = cast<ObjCContainerDecl>(getDeclContext());
+const ObjCInterfaceDecl *ObjCIvarDecl::getContainingInterface() const {
+  const auto *DC = cast<ObjCContainerDecl>(getDeclContext());
 
   switch (DC->getKind()) {
   default:
@@ -1847,7 +1829,7 @@ ObjCInterfaceDecl *ObjCIvarDecl::getContainingInterface() {
 
     // Ivars can only appear in class extension categories.
   case ObjCCategory: {
-    auto *CD = cast<ObjCCategoryDecl>(DC);
+    const auto *CD = cast<ObjCCategoryDecl>(DC);
     assert(CD->IsClassExtension() && "invalid container for ivar!");
     return CD->getClassInterface();
   }
@@ -1991,17 +1973,19 @@ void ObjCProtocolDecl::startDefinition() {
     RD->Data = this->Data;
 }
 
-void ObjCProtocolDecl::collectPropertiesToImplement(PropertyMap &PM) const {
+void ObjCProtocolDecl::collectPropertiesToImplement(PropertyMap &PM,
+                                                    PropertyDeclOrder &PO) const {
   if (const ObjCProtocolDecl *PDecl = getDefinition()) {
     for (auto *Prop : PDecl->properties()) {
       // Insert into PM if not there already.
       PM.insert(std::make_pair(
           std::make_pair(Prop->getIdentifier(), Prop->isClassProperty()),
           Prop));
+      PO.push_back(Prop);
     }
     // Scan through protocol's protocols.
     for (const auto *PI : PDecl->protocols())
-      PI->collectPropertiesToImplement(PM);
+      PI->collectPropertiesToImplement(PM, PO);
   }
 }
 

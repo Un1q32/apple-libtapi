@@ -57,7 +57,7 @@ static const AvailabilityAttr *getAttrForPlatform(ASTContext &Context,
 /// \param D The declaration to check.
 /// \param Message If non-null, this will be populated with the message from
 /// the availability attribute that is selected.
-/// \param ClassReceiver If we're checking the method of a class message
+/// \param ClassReceiver If we're checking the the method of a class message
 /// send, the class. Otherwise nullptr.
 static std::pair<AvailabilityResult, const NamedDecl *>
 ShouldDiagnoseAvailabilityOfDecl(Sema &S, const NamedDecl *D,
@@ -121,18 +121,6 @@ ShouldDiagnoseAvailabilityInContext(Sema &S, AvailabilityResult K,
                                     VersionTuple DeclVersion, Decl *Ctx,
                                     const NamedDecl *OffendingDecl) {
   assert(K != AR_Available && "Expected an unavailable declaration here!");
-
-  // If this was defined using CF_OPTIONS, etc. then ignore the diagnostic.
-  auto DeclLoc = Ctx->getBeginLoc();
-  // This is only a problem in Foundation's C++ implementation for CF_OPTIONS.
-  if (DeclLoc.isMacroID() && S.getLangOpts().CPlusPlus &&
-      isa<TypedefDecl>(OffendingDecl)) {
-    StringRef MacroName = S.getPreprocessor().getImmediateMacroName(DeclLoc);
-    if (MacroName == "CF_OPTIONS" || MacroName == "OBJC_OPTIONS" ||
-        MacroName == "SWIFT_OPTIONS" || MacroName == "NS_OPTIONS") {
-      return false;
-    }
-  }
 
   // Checks if we should emit the availability diagnostic in the context of C.
   auto CheckContext = [&](const Decl *C) {
@@ -204,9 +192,6 @@ shouldDiagnoseAvailabilityByDefault(const ASTContext &Context,
   case llvm::Triple::MacOSX:
     ForceAvailabilityFromVersion = VersionTuple(/*Major=*/10, /*Minor=*/13);
     break;
-  case llvm::Triple::ShaderModel:
-    // Always enable availability diagnostics for shader models.
-    return true;
   default:
     // New targets should always warn about availability.
     return Triple.getVendor() == llvm::Triple::Apple;
@@ -283,7 +268,7 @@ tryParseObjCMethodName(StringRef Name, SmallVectorImpl<StringRef> &SlotNames,
   for (StringRef S : SlotNames) {
     if (S.empty())
       continue;
-    if (!isValidAsciiIdentifier(S, AllowDollar))
+    if (!isValidIdentifier(S, AllowDollar))
       return None;
   }
   return NumParams;
@@ -516,7 +501,7 @@ static void DoEmitAvailabilityWarning(Sema &S, AvailabilityResult K,
         SmallVector<StringRef, 12> SelectorSlotNames;
         Optional<unsigned> NumParams = tryParseObjCMethodName(
             Replacement, SelectorSlotNames, S.getLangOpts());
-        if (NumParams && *NumParams == Sel.getNumArgs()) {
+        if (NumParams && NumParams.getValue() == Sel.getNumArgs()) {
           assert(SelectorSlotNames.size() == Locs.size());
           for (unsigned I = 0; I < Locs.size(); ++I) {
             if (!Sel.getNameForSlot(I).empty()) {
@@ -645,7 +630,8 @@ public:
                                               const CompoundStmt *Scope) {
     LastDeclUSEFinder Visitor;
     Visitor.D = D;
-    for (const Stmt *S : llvm::reverse(Scope->body())) {
+    for (auto I = Scope->body_rbegin(), E = Scope->body_rend(); I != E; ++I) {
+      const Stmt *S = *I;
       if (!Visitor.TraverseStmt(const_cast<Stmt *>(S)))
         return S;
     }
@@ -910,11 +896,6 @@ void Sema::DiagnoseUnguardedAvailabilityViolations(Decl *D) {
       return;
 
     Body = FD->getBody();
-
-    if (auto *CD = dyn_cast<CXXConstructorDecl>(FD))
-      for (const CXXCtorInitializer *CI : CD->inits())
-        DiagnoseUnguardedAvailability(*this, D).IssueDiagnostics(CI->getInit());
-
   } else if (auto *MD = dyn_cast<ObjCMethodDecl>(D))
     Body = MD->getBody();
   else if (auto *BD = dyn_cast<BlockDecl>(D))

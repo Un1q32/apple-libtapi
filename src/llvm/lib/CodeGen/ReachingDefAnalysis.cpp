@@ -30,22 +30,16 @@ static bool isValidRegUse(const MachineOperand &MO) {
   return isValidReg(MO) && MO.isUse();
 }
 
-static bool isValidRegUseOf(const MachineOperand &MO, MCRegister PhysReg,
-                            const TargetRegisterInfo *TRI) {
-  if (!isValidRegUse(MO))
-    return false;
-  return TRI->regsOverlap(MO.getReg(), PhysReg);
+static bool isValidRegUseOf(const MachineOperand &MO, MCRegister PhysReg) {
+  return isValidRegUse(MO) && MO.getReg() == PhysReg;
 }
 
 static bool isValidRegDef(const MachineOperand &MO) {
   return isValidReg(MO) && MO.isDef();
 }
 
-static bool isValidRegDefOf(const MachineOperand &MO, MCRegister PhysReg,
-                            const TargetRegisterInfo *TRI) {
-  if (!isValidRegDef(MO))
-    return false;
-  return TRI->regsOverlap(MO.getReg(), PhysReg);
+static bool isValidRegDefOf(const MachineOperand &MO, MCRegister PhysReg) {
+  return isValidRegDef(MO) && MO.getReg() == PhysReg;
 }
 
 void ReachingDefAnalysis::enterBasicBlock(MachineBasicBlock *MBB) {
@@ -343,7 +337,7 @@ void ReachingDefAnalysis::getReachingLocalUses(MachineInstr *Def,
       return;
 
     for (auto &MO : MI->operands()) {
-      if (!isValidRegUseOf(MO, PhysReg, TRI))
+      if (!isValidRegUseOf(MO, PhysReg))
         continue;
 
       Uses.insert(&*MI);
@@ -359,7 +353,7 @@ bool ReachingDefAnalysis::getLiveInUses(MachineBasicBlock *MBB,
   for (MachineInstr &MI :
        instructionsWithoutDebug(MBB->instr_begin(), MBB->instr_end())) {
     for (auto &MO : MI.operands()) {
-      if (!isValidRegUseOf(MO, PhysReg, TRI))
+      if (!isValidRegUseOf(MO, PhysReg))
         continue;
       if (getReachingDef(&MI, PhysReg) >= 0)
         return false;
@@ -387,7 +381,8 @@ void ReachingDefAnalysis::getGlobalUses(MachineInstr *MI, MCRegister PhysReg,
     SmallVector<MachineBasicBlock *, 4> ToVisit(MBB->successors());
     SmallPtrSet<MachineBasicBlock*, 4>Visited;
     while (!ToVisit.empty()) {
-      MachineBasicBlock *MBB = ToVisit.pop_back_val();
+      MachineBasicBlock *MBB = ToVisit.back();
+      ToVisit.pop_back();
       if (Visited.count(MBB) || !MBB->isLiveIn(PhysReg))
         continue;
       if (getLiveInUses(MBB, PhysReg, Uses))
@@ -424,7 +419,7 @@ void ReachingDefAnalysis::getLiveOuts(MachineBasicBlock *MBB,
   VisitedBBs.insert(MBB);
   LivePhysRegs LiveRegs(*TRI);
   LiveRegs.addLiveOuts(*MBB);
-  if (LiveRegs.available(MBB->getParent()->getRegInfo(), PhysReg))
+  if (!LiveRegs.contains(PhysReg))
     return;
 
   if (auto *Def = getLocalLiveOutMIDef(MBB, PhysReg))
@@ -474,7 +469,7 @@ bool ReachingDefAnalysis::isRegUsedAfter(MachineInstr *MI,
   LiveRegs.addLiveOuts(*MBB);
 
   // Yes if the register is live out of the basic block.
-  if (!LiveRegs.available(MBB->getParent()->getRegInfo(), PhysReg))
+  if (LiveRegs.contains(PhysReg))
     return true;
 
   // Walk backwards through the block to see if the register is live at some
@@ -482,7 +477,7 @@ bool ReachingDefAnalysis::isRegUsedAfter(MachineInstr *MI,
   for (MachineInstr &Last :
        instructionsWithoutDebug(MBB->instr_rbegin(), MBB->instr_rend())) {
     LiveRegs.stepBackward(Last);
-    if (!LiveRegs.available(MBB->getParent()->getRegInfo(), PhysReg))
+    if (LiveRegs.contains(PhysReg))
       return InstIds.lookup(&Last) > InstIds.lookup(MI);
   }
   return false;
@@ -507,7 +502,7 @@ bool ReachingDefAnalysis::isReachingDefLiveOut(MachineInstr *MI,
   MachineBasicBlock *MBB = MI->getParent();
   LivePhysRegs LiveRegs(*TRI);
   LiveRegs.addLiveOuts(*MBB);
-  if (LiveRegs.available(MBB->getParent()->getRegInfo(), PhysReg))
+  if (!LiveRegs.contains(PhysReg))
     return false;
 
   auto Last = MBB->getLastNonDebugInstr();
@@ -517,7 +512,7 @@ bool ReachingDefAnalysis::isReachingDefLiveOut(MachineInstr *MI,
 
   // Finally check that the last instruction doesn't redefine the register.
   for (auto &MO : Last->operands())
-    if (isValidRegDefOf(MO, PhysReg, TRI))
+    if (isValidRegDefOf(MO, PhysReg))
       return false;
 
   return true;
@@ -528,7 +523,7 @@ ReachingDefAnalysis::getLocalLiveOutMIDef(MachineBasicBlock *MBB,
                                           MCRegister PhysReg) const {
   LivePhysRegs LiveRegs(*TRI);
   LiveRegs.addLiveOuts(*MBB);
-  if (LiveRegs.available(MBB->getParent()->getRegInfo(), PhysReg))
+  if (!LiveRegs.contains(PhysReg))
     return nullptr;
 
   auto Last = MBB->getLastNonDebugInstr();
@@ -537,7 +532,7 @@ ReachingDefAnalysis::getLocalLiveOutMIDef(MachineBasicBlock *MBB,
 
   int Def = getReachingDef(&*Last, PhysReg);
   for (auto &MO : Last->operands())
-    if (isValidRegDefOf(MO, PhysReg, TRI))
+    if (isValidRegDefOf(MO, PhysReg))
       return &*Last;
 
   return Def < 0 ? nullptr : getInstFromId(MBB, Def);
@@ -635,7 +630,7 @@ ReachingDefAnalysis::isSafeToRemove(MachineInstr *MI, InstSet &Visited,
     SmallPtrSet<MachineInstr*, 4> Uses;
     getGlobalUses(MI, MO.getReg(), Uses);
 
-    for (auto *I : Uses) {
+    for (auto I : Uses) {
       if (Ignore.count(I) || ToRemove.count(I))
         continue;
       if (!isSafeToRemove(I, Visited, ToRemove, Ignore))
@@ -705,7 +700,7 @@ bool ReachingDefAnalysis::isSafeToDefRegAt(MachineInstr *MI, MCRegister PhysReg,
       if (Ignore.count(&*I))
         continue;
       for (auto &MO : I->operands())
-        if (isValidRegDefOf(MO, PhysReg, TRI))
+        if (isValidRegDefOf(MO, PhysReg))
           return false;
     }
   }

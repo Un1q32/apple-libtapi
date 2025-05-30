@@ -329,7 +329,8 @@ bool DirectoryScanner::scanHeaders(Framework &framework, StringRef path,
 
     auto includeName = createIncludeHeaderName(headerPath);
     framework.addHeaderFile(headerPath, type, relativePath,
-                            includeName.has_value() ? includeName.value() : "");
+                            includeName.hasValue() ? includeName.getValue()
+                                                   : "");
   }
 
   // Go through the subdirectores.
@@ -495,11 +496,6 @@ Expected<bool> DirectoryScanner::isDynamicLibrary(StringRef path) const {
     return errorCodeToError(ec);
   }
 
-  // Metal Libraries pretend to be MachOs, but they do not contain any
-  // framework code that developers can use, so we will just skip them.
-  if (path.endswith(".metallib"))
-    return false;
-
   auto fileType = _registry.getFileType(*bufferOrErr.get());
   if (!fileType)
     return fileType;
@@ -568,21 +564,15 @@ bool DirectoryScanner::scanSDKContent(StringRef directory) {
     return false;
 
   // Adding iOSSupport locations.
-  if (!scanHeaderAndLibrary(MACCATALYST_PREFIX_PATH))
+  if (!scanHeaderAndLibrary("System/iOSSupport"))
     return false;
 
   // Adding DriverKit locations.
-  if (!scanHeaderAndLibrary(DRIVERKIT_PREFIX_PATH))
+  if (!scanHeaderAndLibrary("System/DriverKit"))
     return false;
 
   // On macOS, there is a special path for frameworks excluded from ROSP.
   if (!scanHeaderAndLibrary("Library/Apple"))
-    return false;
-
-  // On macOS and iOS, there is now a special path for SPLAT.
-  if (!scanHeaderAndLibrary(CRYPTEXES_PREFIX_PATH))
-    return false;
-  if (!scanHeaderAndLibrary(CRYPTEXES_PREFIX_PATH MACCATALYST_PREFIX_PATH))
     return false;
 
   // Scan the bundles and extensions in /System/Library.
@@ -644,21 +634,16 @@ static std::string removeVersionsFromPath(StringRef path) {
 }
 
 void DirectoryScanner::addVFSForFramework(FileMap &output, StringRef sysroot,
-                                          ArrayRef<StringRef> rootPaths,
                                           const Framework &framework) const {
   auto computeAndAddPath = [&](StringRef path) {
     StringRef relativePath = path;
-    for (StringRef rootPath : rootPaths) {
-      if (!relativePath.consume_front(rootPath))
-        continue;
-      SmallString<PATH_MAX> mappedPath(sysroot);
-      sys::path::append(mappedPath, relativePath);
-      output.emplace_back(mappedPath, path);
-      auto altPath = removeVersionsFromPath(mappedPath);
-      if (altPath != mappedPath)
-        output.emplace_back(altPath, path);
-      break;
-    }
+    relativePath.consume_front(rootPath);
+    SmallString<PATH_MAX> mappedPath(sysroot);
+    sys::path::append(mappedPath, relativePath);
+    output.emplace_back(mappedPath, path);
+    auto altPath = removeVersionsFromPath(mappedPath);
+    if (altPath != mappedPath)
+      output.emplace_back(altPath, path);
   };
 
   for (auto &header : framework._headerFiles)
@@ -671,17 +656,16 @@ void DirectoryScanner::addVFSForFramework(FileMap &output, StringRef sysroot,
   }
 
   for (auto &ver : framework._versions)
-    addVFSForFramework(output, sysroot, rootPaths, ver);
+    addVFSForFramework(output, sysroot, ver);
   for (auto &sub : framework._subFrameworks)
-    addVFSForFramework(output, sysroot, rootPaths, sub);
+    addVFSForFramework(output, sysroot, sub);
 }
 
 DirectoryScanner::FileMap
-DirectoryScanner::getVFSFileMap(StringRef sysroot,
-                                ArrayRef<StringRef> rootPaths) const {
+DirectoryScanner::getVFSFileMap(StringRef sysroot) const {
   DirectoryScanner::FileMap output;
   for (auto &framework : frameworks)
-    addVFSForFramework(output, sysroot, rootPaths, framework);
+    addVFSForFramework(output, sysroot, framework);
 
   return output;
 }

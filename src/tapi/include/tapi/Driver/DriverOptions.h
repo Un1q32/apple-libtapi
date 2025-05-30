@@ -29,7 +29,9 @@ enum TapiFlags {
   InstallAPIOption       = 1U <<  7,
   ReexportOption         = 1U <<  8,
   SDKDBOption            = 1U <<  9,
-  APIVerifyOption        = 1U << 10,
+  GenerateAPITestsOption = 1U << 10,
+  APIVerifyOption        = 1U << 11,
+  ExtractAPIOption       = 1U << 12,
 };
 // clang-format on
 

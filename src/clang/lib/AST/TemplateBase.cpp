@@ -59,17 +59,15 @@ static void printIntegral(const TemplateArgument &TemplArg, raw_ostream &Out,
   const Type *T = TemplArg.getIntegralType().getTypePtr();
   const llvm::APSInt &Val = TemplArg.getAsIntegral();
 
-  if (Policy.UseEnumerators) {
-    if (const EnumType *ET = T->getAs<EnumType>()) {
-      for (const EnumConstantDecl *ECD : ET->getDecl()->enumerators()) {
-        // In Sema::CheckTemplateArugment, enum template arguments value are
-        // extended to the size of the integer underlying the enum type.  This
-        // may create a size difference between the enum value and template
-        // argument value, requiring isSameValue here instead of operator==.
-        if (llvm::APSInt::isSameValue(ECD->getInitVal(), Val)) {
-          ECD->printQualifiedName(Out, Policy);
-          return;
-        }
+  if (const EnumType *ET = T->getAs<EnumType>()) {
+    for (const EnumConstantDecl* ECD : ET->getDecl()->enumerators()) {
+      // In Sema::CheckTemplateArugment, enum template arguments value are
+      // extended to the size of the integer underlying the enum type.  This
+      // may create a size difference between the enum value and template
+      // argument value, requiring isSameValue here instead of operator==.
+      if (llvm::APSInt::isSameValue(ECD->getInitVal(), Val)) {
+        ECD->printQualifiedName(Out, Policy);
+        return;
       }
     }
   }
@@ -161,9 +159,8 @@ static bool needsAmpersandOnTemplateArg(QualType paramType, QualType argType) {
 //===----------------------------------------------------------------------===//
 
 TemplateArgument::TemplateArgument(ASTContext &Ctx, const llvm::APSInt &Value,
-                                   QualType Type, bool IsDefaulted) {
+                                   QualType Type) {
   Integer.Kind = Integral;
-  Integer.IsDefaulted = IsDefaulted;
   // Copy the APSInt value into our decomposed form.
   Integer.BitWidth = Value.getBitWidth();
   Integer.IsUnsigned = Value.isUnsigned();
@@ -322,15 +319,26 @@ void TemplateArgument::Profile(llvm::FoldingSetNodeID &ID,
 
   case Declaration:
     getParamTypeForDecl().Profile(ID);
-    ID.AddPointer(getAsDecl());
+    ID.AddPointer(getAsDecl()? getAsDecl()->getCanonicalDecl() : nullptr);
     break;
 
-  case TemplateExpansion:
-    ID.AddInteger(TemplateArg.NumExpansions);
-    LLVM_FALLTHROUGH;
   case Template:
-    getAsTemplateOrTemplatePattern().Profile(ID);
+  case TemplateExpansion: {
+    TemplateName Template = getAsTemplateOrTemplatePattern();
+    if (TemplateTemplateParmDecl *TTP
+          = dyn_cast_or_null<TemplateTemplateParmDecl>(
+                                                Template.getAsTemplateDecl())) {
+      ID.AddBoolean(true);
+      ID.AddInteger(TTP->getDepth());
+      ID.AddInteger(TTP->getPosition());
+      ID.AddBoolean(TTP->isParameterPack());
+    } else {
+      ID.AddBoolean(false);
+      ID.AddPointer(Context.getCanonicalTemplateName(Template)
+                                                          .getAsVoidPointer());
+    }
     break;
+  }
 
   case Integral:
     getAsIntegral().Profile(ID);
@@ -426,7 +434,7 @@ void TemplateArgument::print(const PrintingPolicy &Policy, raw_ostream &Out,
     NamedDecl *ND = getAsDecl();
     if (getParamTypeForDecl()->isRecordType()) {
       if (auto *TPO = dyn_cast<TemplateParamObjectDecl>(ND)) {
-        TPO->printAsInit(Out, Policy);
+        TPO->printAsInit(Out);
         break;
       }
     }
@@ -444,7 +452,7 @@ void TemplateArgument::print(const PrintingPolicy &Policy, raw_ostream &Out,
     break;
 
   case Template:
-    getAsTemplate().print(Out, Policy, TemplateName::Qualified::Fully);
+    getAsTemplate().print(Out, Policy);
     break;
 
   case TemplateExpansion:
@@ -607,17 +615,6 @@ ASTTemplateArgumentListInfo::Create(const ASTContext &C,
   return new (Mem) ASTTemplateArgumentListInfo(List);
 }
 
-const ASTTemplateArgumentListInfo *
-ASTTemplateArgumentListInfo::Create(const ASTContext &C,
-                                    const ASTTemplateArgumentListInfo *List) {
-  if (!List)
-    return nullptr;
-  std::size_t size =
-      totalSizeToAlloc<TemplateArgumentLoc>(List->getNumTemplateArgs());
-  void *Mem = C.Allocate(size, alignof(ASTTemplateArgumentListInfo));
-  return new (Mem) ASTTemplateArgumentListInfo(List);
-}
-
 ASTTemplateArgumentListInfo::ASTTemplateArgumentListInfo(
     const TemplateArgumentListInfo &Info) {
   LAngleLoc = Info.getLAngleLoc();
@@ -627,17 +624,6 @@ ASTTemplateArgumentListInfo::ASTTemplateArgumentListInfo(
   TemplateArgumentLoc *ArgBuffer = getTrailingObjects<TemplateArgumentLoc>();
   for (unsigned i = 0; i != NumTemplateArgs; ++i)
     new (&ArgBuffer[i]) TemplateArgumentLoc(Info[i]);
-}
-
-ASTTemplateArgumentListInfo::ASTTemplateArgumentListInfo(
-    const ASTTemplateArgumentListInfo *Info) {
-  LAngleLoc = Info->getLAngleLoc();
-  RAngleLoc = Info->getRAngleLoc();
-  NumTemplateArgs = Info->getNumTemplateArgs();
-
-  TemplateArgumentLoc *ArgBuffer = getTrailingObjects<TemplateArgumentLoc>();
-  for (unsigned i = 0; i != NumTemplateArgs; ++i)
-    new (&ArgBuffer[i]) TemplateArgumentLoc((*Info)[i]);
 }
 
 void ASTTemplateKWAndArgsInfo::initializeFrom(

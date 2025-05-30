@@ -26,6 +26,8 @@
 #include "llvm/Analysis/ObjCARCAnalysisUtils.h"
 #include "llvm/Analysis/Passes.h"
 #include "llvm/IR/Function.h"
+#include "llvm/IR/Instruction.h"
+#include "llvm/IR/Value.h"
 #include "llvm/InitializePasses.h"
 #include "llvm/Pass.h"
 
@@ -98,7 +100,7 @@ FunctionModRefBehavior ObjCARCAAResult::getModRefBehavior(const Function *F) {
 
   switch (GetFunctionClass(F)) {
   case ARCInstKind::NoopCast:
-    return FunctionModRefBehavior::none();
+    return FMRB_DoesNotAccessMemory;
   default:
     break;
   }

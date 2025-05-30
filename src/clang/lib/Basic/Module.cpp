@@ -127,7 +127,9 @@ static bool hasFeature(StringRef Feature, const LangOptions &LangOpts,
                         .Default(Target.hasFeature(Feature) ||
                                  isPlatformEnvironment(Target, Feature));
   if (!HasFeature)
-    HasFeature = llvm::is_contained(LangOpts.ModuleFeatures, Feature);
+    HasFeature = std::find(LangOpts.ModuleFeatures.begin(),
+                           LangOpts.ModuleFeatures.end(),
+                           Feature) != LangOpts.ModuleFeatures.end();
   return HasFeature;
 }
 
@@ -207,7 +209,7 @@ static void printModuleId(raw_ostream &OS, InputIter Begin, InputIter End,
       OS << ".";
 
     StringRef Name = getModuleNameFromComponent(*It);
-    if (!AllowStringLiterals || isValidAsciiIdentifier(Name))
+    if (!AllowStringLiterals || isValidIdentifier(Name))
       OS << Name;
     else {
       OS << '"';
@@ -273,7 +275,7 @@ ArrayRef<const FileEntry *> Module::getTopHeaders(FileManager &FileMgr) {
   return llvm::makeArrayRef(TopHeaders.begin(), TopHeaders.end());
 }
 
-bool Module::directlyUses(const Module *Requested) {
+bool Module::directlyUses(const Module *Requested) const {
   auto *Top = getTopLevelModule();
 
   // A top-level module implicitly uses itself.
@@ -287,9 +289,6 @@ bool Module::directlyUses(const Module *Requested) {
   // Anyone is allowed to use our builtin stddef.h and its accompanying module.
   if (!Requested->Parent && Requested->Name == "_Builtin_stddef_max_align_t")
     return true;
-
-  if (NoUndeclaredIncludes)
-    UndeclaredUses.insert(Requested);
 
   return false;
 }

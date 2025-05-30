@@ -16,7 +16,7 @@
 #include "llvm/CodeGen/TargetPassConfig.h"
 #include "llvm/IR/LegacyPassManager.h"
 #include "llvm/IR/Module.h"
-#include "llvm/MC/TargetRegistry.h"
+#include "llvm/Support/TargetRegistry.h"
 
 #include "AVR.h"
 #include "AVRTargetObjectFile.h"
@@ -25,8 +25,7 @@
 
 namespace llvm {
 
-static const char *AVRDataLayout =
-    "e-P1-p:16:8-i8:8-i16:8-i32:8-i64:8-f32:8-f64:8-n8-a:8";
+static const char *AVRDataLayout = "e-P1-p:16:8-i8:8-i16:8-i32:8-i64:8-f32:8-f64:8-n8-a:8";
 
 /// Processes a CPU name.
 static StringRef getCPU(StringRef CPU) {
@@ -38,7 +37,7 @@ static StringRef getCPU(StringRef CPU) {
 }
 
 static Reloc::Model getEffectiveRelocModel(Optional<Reloc::Model> RM) {
-  return RM.value_or(Reloc::Static);
+  return RM.getValueOr(Reloc::Static);
 }
 
 AVRTargetMachine::AVRTargetMachine(const Target &T, const Triple &TT,
@@ -70,6 +69,7 @@ public:
   bool addInstSelector() override;
   void addPreSched2() override;
   void addPreEmitPass() override;
+  void addPreRegAlloc() override;
 };
 } // namespace
 
@@ -92,6 +92,7 @@ extern "C" LLVM_EXTERNAL_VISIBILITY void LLVMInitializeAVRTarget() {
 
   auto &PR = *PassRegistry::getPassRegistry();
   initializeAVRExpandPseudoPass(PR);
+  initializeAVRRelaxMemPass(PR);
   initializeAVRShiftExpandPass(PR);
 }
 
@@ -116,7 +117,13 @@ bool AVRPassConfig::addInstSelector() {
   return false;
 }
 
+void AVRPassConfig::addPreRegAlloc() {
+  // Create the dynalloc SP save/restore pass to handle variable sized allocas.
+  addPass(createAVRDynAllocaSRPass());
+}
+
 void AVRPassConfig::addPreSched2() {
+  addPass(createAVRRelaxMemPass());
   addPass(createAVRExpandPseudoPass());
 }
 

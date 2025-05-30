@@ -24,12 +24,12 @@
 // divergent can help the compiler to selectively run these optimizations.
 //
 // This implementation is derived from the Vectorization Analysis of the
-// Region Vectorizer (RV). The analysis is based on the approach described in
+// Region Vectorizer (RV). That implementation in turn is based on the approach
+// described in
 //
-//   An abstract interpretation for SPMD divergence
-//       on reducible control flow graphs.
-//   Julian Rosemann, Simon Moll and Sebastian Hack
-//   POPL '21
+//   Improving Performance of OpenCL on CPUs
+//   Ralf Karrenberg and Sebastian Hack
+//   CC '12
 //
 // This implementation is generic in the sense that it does
 // not itself identify original sources of divergence.
@@ -73,14 +73,15 @@
 //===----------------------------------------------------------------------===//
 
 #include "llvm/Analysis/DivergenceAnalysis.h"
-#include "llvm/ADT/PostOrderIterator.h"
 #include "llvm/Analysis/CFG.h"
 #include "llvm/Analysis/LoopInfo.h"
+#include "llvm/Analysis/Passes.h"
 #include "llvm/Analysis/PostDominators.h"
 #include "llvm/Analysis/TargetTransformInfo.h"
 #include "llvm/IR/Dominators.h"
 #include "llvm/IR/InstIterator.h"
 #include "llvm/IR/Instructions.h"
+#include "llvm/IR/IntrinsicInst.h"
 #include "llvm/IR/Value.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/raw_ostream.h"
@@ -129,7 +130,7 @@ bool DivergenceAnalysisImpl::inRegion(const Instruction &I) const {
 }
 
 bool DivergenceAnalysisImpl::inRegion(const BasicBlock &BB) const {
-  return RegionLoop ? RegionLoop->contains(&BB) : (BB.getParent() == &F);
+  return (!RegionLoop && BB.getParent() == &F) || RegionLoop->contains(&BB);
 }
 
 void DivergenceAnalysisImpl::pushUsers(const Value &V) {
@@ -220,19 +221,19 @@ void DivergenceAnalysisImpl::analyzeLoopExitDivergence(
     // phi nodes at the fringes of the dominance region
     if (!DT.dominates(&LoopHeader, UserBlock)) {
       // all PHI nodes of UserBlock become divergent
-      for (const auto &Phi : UserBlock->phis()) {
+      for (auto &Phi : UserBlock->phis()) {
         analyzeTemporalDivergence(Phi, OuterDivLoop);
       }
       continue;
     }
 
     // Taint outside users of values carried by OuterDivLoop.
-    for (const auto &I : *UserBlock) {
+    for (auto &I : *UserBlock) {
       analyzeTemporalDivergence(I, OuterDivLoop);
     }
 
     // visit all blocks in the dominance region
-    for (const auto *SuccBlock : successors(UserBlock)) {
+    for (auto *SuccBlock : successors(UserBlock)) {
       if (!Visited.insert(SuccBlock).second) {
         continue;
       }
@@ -347,7 +348,7 @@ DivergenceInfo::DivergenceInfo(Function &F, const DominatorTree &DT,
                                const PostDominatorTree &PDT, const LoopInfo &LI,
                                const TargetTransformInfo &TTI,
                                bool KnownReducible)
-    : F(F) {
+    : F(F), ContainsIrreducible(false) {
   if (!KnownReducible) {
     using RPOTraversal = ReversePostOrderTraversal<const Function *>;
     RPOTraversal FuncRPOT(&F);
@@ -399,7 +400,7 @@ DivergenceAnalysisPrinterPass::run(Function &F, FunctionAnalysisManager &FAM) {
     }
     for (const BasicBlock &BB : F) {
       OS << "\n           " << BB.getName() << ":\n";
-      for (const auto &I : BB.instructionsWithoutDebug()) {
+      for (auto &I : BB.instructionsWithoutDebug()) {
         OS << (DI.isDivergent(I) ? "DIVERGENT:     " : "               ");
         OS << I << "\n";
       }

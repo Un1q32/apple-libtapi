@@ -58,6 +58,7 @@ class Scope;
 class Stmt;
 class SwitchStmt;
 class TemplateParameterList;
+class TemplateTypeParmDecl;
 class VarDecl;
 
 namespace sema {
@@ -74,12 +75,7 @@ public:
   /// expression.
   bool IsStmtExpr;
 
-  /// FP options at the beginning of the compound statement, prior to
-  /// any pragma.
-  FPOptions InitialFPFeatures;
-
-  CompoundScopeInfo(bool IsStmtExpr, FPOptions FPO)
-      : IsStmtExpr(IsStmtExpr), InitialFPFeatures(FPO) {}
+  CompoundScopeInfo(bool IsStmtExpr) : IsStmtExpr(IsStmtExpr) {}
 
   void setHasEmptyLoopBodies() {
     HasEmptyLoopBodies = true;
@@ -179,9 +175,8 @@ public:
   /// First 'return' statement in the current function.
   SourceLocation FirstReturnLoc;
 
-  /// First C++ 'try' or ObjC @try statement in the current function.
-  SourceLocation FirstCXXOrObjCTryLoc;
-  enum { TryLocIsCXX, TryLocIsObjC, Unknown } FirstTryType = Unknown;
+  /// First C++ 'try' statement in the current function.
+  SourceLocation FirstCXXTryLoc;
 
   /// First SEH '__try' statement in the current function.
   SourceLocation FirstSEHTryLoc;
@@ -451,14 +446,7 @@ public:
 
   void setHasCXXTry(SourceLocation TryLoc) {
     setHasBranchProtectedScope();
-    FirstCXXOrObjCTryLoc = TryLoc;
-    FirstTryType = TryLocIsCXX;
-  }
-
-  void setHasObjCTry(SourceLocation TryLoc) {
-    setHasBranchProtectedScope();
-    FirstCXXOrObjCTryLoc = TryLoc;
-    FirstTryType = TryLocIsObjC;
+    FirstCXXTryLoc = TryLoc;
   }
 
   void setHasSEHTry(SourceLocation TryLoc) {
@@ -553,7 +541,7 @@ class Capture {
     const VariableArrayType *CapturedVLA;
 
     /// Otherwise, the captured variable (if any).
-    ValueDecl *CapturedVar;
+    VarDecl *CapturedVar;
   };
 
   /// The source location at which the first capture occurred.
@@ -589,13 +577,12 @@ class Capture {
   unsigned Invalid : 1;
 
 public:
-  Capture(ValueDecl *Var, bool Block, bool ByRef, bool IsNested,
+  Capture(VarDecl *Var, bool Block, bool ByRef, bool IsNested,
           SourceLocation Loc, SourceLocation EllipsisLoc, QualType CaptureType,
           bool Invalid)
       : CapturedVar(Var), Loc(Loc), EllipsisLoc(EllipsisLoc),
-        CaptureType(CaptureType), Kind(Block   ? Cap_Block
-                                       : ByRef ? Cap_ByRef
-                                               : Cap_ByCopy),
+        CaptureType(CaptureType),
+        Kind(Block ? Cap_Block : ByRef ? Cap_ByRef : Cap_ByCopy),
         Nested(IsNested), CapturesThis(false), ODRUsed(false),
         NonODRUsed(false), Invalid(Invalid) {}
 
@@ -640,7 +627,7 @@ public:
       NonODRUsed = true;
   }
 
-  ValueDecl *getVariable() const {
+  VarDecl *getVariable() const {
     assert(isVariableCapture());
     return CapturedVar;
   }
@@ -679,7 +666,7 @@ public:
       : FunctionScopeInfo(Diag), ImpCaptureStyle(Style) {}
 
   /// CaptureMap - A map of captured variables to (index+1) into Captures.
-  llvm::DenseMap<ValueDecl *, unsigned> CaptureMap;
+  llvm::DenseMap<VarDecl*, unsigned> CaptureMap;
 
   /// CXXThisCaptureIndex - The (index+1) of the capture of 'this';
   /// zero if 'this' is not captured.
@@ -696,7 +683,7 @@ public:
   /// or null if unknown.
   QualType ReturnType;
 
-  void addCapture(ValueDecl *Var, bool isBlock, bool isByref, bool isNested,
+  void addCapture(VarDecl *Var, bool isBlock, bool isByref, bool isNested,
                   SourceLocation Loc, SourceLocation EllipsisLoc,
                   QualType CaptureType, bool Invalid) {
     Captures.push_back(Capture(Var, isBlock, isByref, isNested, Loc,
@@ -723,21 +710,23 @@ public:
   }
 
   /// Determine whether the given variable has been captured.
-  bool isCaptured(ValueDecl *Var) const { return CaptureMap.count(Var); }
+  bool isCaptured(VarDecl *Var) const {
+    return CaptureMap.count(Var);
+  }
 
   /// Determine whether the given variable-array type has been captured.
   bool isVLATypeCaptured(const VariableArrayType *VAT) const;
 
   /// Retrieve the capture of the given variable, if it has been
   /// captured already.
-  Capture &getCapture(ValueDecl *Var) {
+  Capture &getCapture(VarDecl *Var) {
     assert(isCaptured(Var) && "Variable has not been captured");
     return Captures[CaptureMap[Var] - 1];
   }
 
-  const Capture &getCapture(ValueDecl *Var) const {
-    llvm::DenseMap<ValueDecl *, unsigned>::const_iterator Known =
-        CaptureMap.find(Var);
+  const Capture &getCapture(VarDecl *Var) const {
+    llvm::DenseMap<VarDecl*, unsigned>::const_iterator Known
+      = CaptureMap.find(Var);
     assert(Known != CaptureMap.end() && "Variable has not been captured");
     return Captures[Known->second - 1];
   }
@@ -1012,7 +1001,10 @@ public:
     return NonODRUsedCapturingExprs.count(CapturingVarExpr);
   }
   void removePotentialCapture(Expr *E) {
-    llvm::erase_value(PotentiallyCapturingExprs, E);
+    PotentiallyCapturingExprs.erase(
+        std::remove(PotentiallyCapturingExprs.begin(),
+            PotentiallyCapturingExprs.end(), E),
+        PotentiallyCapturingExprs.end());
   }
   void clearPotentialCaptures() {
     PotentiallyCapturingExprs.clear();

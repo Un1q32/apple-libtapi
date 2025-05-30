@@ -59,19 +59,6 @@ enum ModuleKind {
   MK_PrebuiltModule
 };
 
-/// The input file info that has been loaded from an AST file.
-struct InputFileInfo {
-  std::string FilenameAsRequested;
-  std::string Filename;
-  uint64_t ContentHash;
-  off_t StoredSize;
-  time_t StoredTime;
-  bool Overridden;
-  bool Transient;
-  bool TopLevel;
-  bool ModuleMap;
-};
-
 /// The input file that has been loaded from this AST file, along with
 /// bools indicating whether this was an overridden buffer or if it was
 /// out-of-date or not-found.
@@ -138,17 +125,6 @@ public:
   /// The file name of the module file.
   std::string FileName;
 
-  /// The \c ActionCache key for this module, or empty.
-  std::string ModuleCacheKey;
-
-  /// The CAS filesystem root ID for implicit modules built with the dependency
-  /// scanner, or empty.
-  std::string CASFileSystemRootID;
-
-  /// The include-tree root ID for implicit modules built with the dependency
-  /// scanner, or empty.
-  std::string IncludeTreeID;
-
   /// The name of the module.
   std::string ModuleName;
 
@@ -171,6 +147,10 @@ public:
   /// The file ID for the original source file that was used to
   /// build this AST file.
   FileID OriginalSourceFileID;
+
+  /// The directory that the PCH was originally created in. Used to
+  /// allow resolving headers even after headers+PCH was moved to a new path.
+  std::string OriginalDir;
 
   std::string ModuleMapPath;
 
@@ -258,9 +238,6 @@ public:
 
   /// The input files that have been loaded from this AST file.
   std::vector<InputFile> InputFilesLoaded;
-
-  /// The input file infos that have been loaded from this AST file.
-  std::vector<InputFileInfo> InputFileInfosLoaded;
 
   // All user input files reside at the index range [0, NumUserInputFiles), and
   // system input files reside at [NumUserInputFiles, InputFilesLoaded.size()).

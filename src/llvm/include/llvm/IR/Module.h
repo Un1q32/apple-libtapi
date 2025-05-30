@@ -47,7 +47,9 @@ class GVMaterializer;
 class LLVMContext;
 class MemoryBuffer;
 class ModuleSummaryIndex;
+class Pass;
 class RandomNumberGenerator;
+template <class PtrType> class SmallPtrSetImpl;
 class StructType;
 class VersionTuple;
 
@@ -58,13 +60,13 @@ class VersionTuple;
 /// other modules) this module depends on, a symbol table, and various data
 /// about the target's characteristics.
 ///
-/// A module maintains a GlobalList object that is used to hold all
+/// A module maintains a GlobalValRefMap object that is used to hold all
 /// constant references to global variables in the module.  When a global
-/// variable is destroyed, it should have no entries in the GlobalList.
+/// variable is destroyed, it should have no entries in the GlobalValueRefMap.
 /// The main container class for the LLVM Intermediate Representation.
-class LLVM_EXTERNAL_VISIBILITY Module {
-  /// @name Types And Enumerations
-  /// @{
+class Module {
+/// @name Types And Enumerations
+/// @{
 public:
   /// The type for the list of global variables.
   using GlobalListType = SymbolTableList<GlobalVariable>;
@@ -146,12 +148,9 @@ public:
     /// Takes the max of the two values, which are required to be integers.
     Max = 7,
 
-    /// Takes the min of the two values, which are required to be integers.
-    Min = 8,
-
     // Markers:
     ModFlagBehaviorFirstVal = Error,
-    ModFlagBehaviorLastVal = Min
+    ModFlagBehaviorLastVal = Max
   };
 
   /// Checks if Metadata represents a valid ModFlagBehavior, and stores the
@@ -325,9 +324,6 @@ public:
   /// name is not found.
   GlobalValue *getNamedValue(StringRef Name) const;
 
-  /// Return the number of global values in the module.
-  unsigned getNumNamedValues() const;
-
   /// Return a unique non-zero ID for the specified metadata kind. This ID is
   /// uniqued across modules in the current LLVMContext.
   unsigned getMDKindID(StringRef Name) const;
@@ -363,8 +359,6 @@ public:
   /// In all cases, the returned value is a FunctionCallee wrapper around the
   /// 'FunctionType *T' passed in, as well as a 'Value*' either of the Function or
   /// the bitcast to the function.
-  ///
-  /// Note: For library calls getOrInsertLibFunc() should be used instead.
   FunctionCallee getOrInsertFunction(StringRef Name, FunctionType *T,
                                      AttributeList AttributeList);
 
@@ -893,8 +887,8 @@ public:
   void setRtLibUseGOT();
 
   /// Get/set whether synthesized functions should get the uwtable attribute.
-  UWTableKind getUwtable() const;
-  void setUwtable(UWTableKind Kind);
+  bool getUwtable() const;
+  void setUwtable();
 
   /// Get/set whether synthesized functions should get the "frame-pointer"
   /// attribute.
@@ -910,10 +904,6 @@ public:
   /// "sysreg".
   StringRef getStackProtectorGuardReg() const;
   void setStackProtectorGuardReg(StringRef Reg);
-
-  /// Get/set a symbol to use as the stack protector guard.
-  StringRef getStackProtectorGuardSymbol() const;
-  void setStackProtectorGuardSymbol(StringRef Symbol);
 
   /// Get/set what offset from the stack protector to use.
   int getStackProtectorGuardOffset() const;
@@ -935,44 +925,12 @@ public:
   VersionTuple getSDKVersion() const;
   /// @}
 
-  /// With ptrauth enabled, the module has a version that is used to represent
-  /// ABI changes.
-  struct PtrAuthABIVersion {
-    int Version = 0;
-    bool Kernel = false;
-  };
-  /// Return all the ptrauth abi versions that the module has.
-  SmallVector<PtrAuthABIVersion, 2> getPtrAuthABIVersions() const;
-  /// Return the "final" ptrauth abi version for the module. This handles errors
-  /// and does not report them to the caller.
-  std::optional<PtrAuthABIVersion> getPtrAuthABIVersion() const;
-  /// Set the ptrauth abi version in the module.
-  void setPtrAuthABIVersion(PtrAuthABIVersion ABIVersion);
-
   /// Take ownership of the given memory buffer.
   void setOwnedMemoryBuffer(std::unique_ptr<MemoryBuffer> MB);
 
   /// Set the partial sample profile ratio in the profile summary module flag,
   /// if applicable.
   void setPartialSampleProfileRatio(const ModuleSummaryIndex &Index);
-
-  /// Get the target variant triple which is a string describing a variant of
-  /// the target host platform. For example, Mac Catalyst can be a variant
-  /// target triple for a macOS target.
-  /// @returns a string containing the target variant triple.
-  StringRef getDarwinTargetVariantTriple() const;
-
-  /// Set the target variant triple which is a string describing a variant of
-  /// the target host platform.
-  void setDarwinTargetVariantTriple(StringRef T);
-
-  /// Get the target variant version build SDK version metadata.
-  ///
-  /// An empty version is returned if no such metadata is attached.
-  VersionTuple getDarwinTargetVariantSDKVersion() const;
-
-  /// Set the target variant version build SDK version metadata.
-  void setDarwinTargetVariantSDKVersion(VersionTuple Version);
 };
 
 /// Given "llvm.used" or "llvm.compiler.used" as a global name, collect the

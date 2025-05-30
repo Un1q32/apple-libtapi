@@ -16,10 +16,9 @@
 #include "tapi/Core/APIPrinter.h"
 #include "tapi/Core/MachOReader.h"
 #include "tapi/Diagnostics/Diagnostics.h"
+#include "tapi/SDKDB/SDKDB.h"
 #include "tapi/SDKDB/BitcodeReader.h"
 #include "tapi/SDKDB/BitcodeWriter.h"
-#include "tapi/SDKDB/CompareConfigFileReader.h"
-#include "tapi/SDKDB/SDKDB.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Format.h"
 #include "llvm/Support/ManagedStatic.h"
@@ -84,24 +83,9 @@ static cl::opt<bool> newAPIAsError("error-new-api",
                                    cl::desc("Treat new APIs in SDKDB as error"),
                                    cl::cat(compareCategory));
 
-static cl::opt<bool> noNewAPI("no-new-api", cl::desc("Do not report new APIs"),
-                              cl::cat(compareCategory));
-
 static cl::opt<std::string> diagOut("diagnostic-file",
                                     cl::desc("Output file for diagnostics"),
                                     cl::cat(compareCategory));
-
-// TODO: generalize the option to control whether to include frontend APIs for
-// all kinds of actions.
-static cl::opt<bool>
-    compareFrontendAPI("compare-frontend-api",
-                       cl::desc("Compare frontend APIs (enums and typedefs)"),
-                       cl::Hidden, cl::cat(compareCategory));
-
-static cl::opt<std::string>
-    compareConfigFile("config-file",
-                      cl::desc("Configuration file for comparing SDKDB"),
-                      cl::cat(compareCategory));
 
 static cl::opt<std::string> sdkdbFile(cl::Positional, cl::desc("<SDKDB>"),
                                       cl::Required, cl::cat(tapiCategory));
@@ -297,28 +281,7 @@ int main(int argc, const char *argv[]) {
              << "\n";
       return 1;
     }
-
-    // Read config file if provided
-    if (!compareConfigFile.empty()) {
-      auto configFile =
-          MemoryBuffer::getFile(compareConfigFile, /*IsText=*/true);
-      if (!configFile) {
-        errs() << "cannot open configuration file '" << compareConfigFile
-               << "': " << configFile.getError().message() << "\n";
-        return 1;
-      }
-      auto reader = CompareConfigFileReader::get(std::move(configFile.get()));
-      if (!reader) {
-        errs() << "cannot read configuration file: "
-               << toString(reader.takeError()) << "\n";
-        return 1;
-      }
-      builder.setCompareConfigFileReader(std::move(reader.get()));
-    }
-
-    builder.setNoNewAPI(noNewAPI);
     builder.setReportNewAPIasError(newAPIAsError);
-    builder.setDiagnoseFrontendAPI(compareFrontendAPI);
     if (!builder.diagnoseDifferences(baseline))
       return 1;
 

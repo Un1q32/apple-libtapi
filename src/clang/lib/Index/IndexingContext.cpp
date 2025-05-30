@@ -87,6 +87,7 @@ bool IndexingContext::handleReference(const NamedDecl *D, SourceLocation Loc,
        isa<TemplateTemplateParmDecl>(D))) {
     return true;
   }
+
   return handleDeclOccurrence(D, Loc, /*IsRef=*/true, Parent, Roles, Relations,
                               RefE, RefD, DC);
 }
@@ -219,7 +220,7 @@ bool IndexingContext::isSystemFile(FileID FID) {
   if (FI.getFileCharacteristic() != SrcMgr::C_User)
     return result(true);
 
-  const FileEntry *FE = FI.getContentCache().OrigEntry;
+  auto *FE = FI.getContentCache().OrigEntry;
   if (!FE)
     return result(false);
 
@@ -301,9 +302,12 @@ static bool isDeclADefinition(const Decl *D, const DeclContext *ContainerDC, AST
   if (auto MD = dyn_cast<ObjCMethodDecl>(D))
     return MD->isThisDeclarationADefinition() || isa<ObjCImplDecl>(ContainerDC);
 
-  if (isa<TypedefNameDecl>(D) || isa<EnumConstantDecl>(D) ||
-      isa<FieldDecl>(D) || isa<MSPropertyDecl>(D) || isa<ObjCImplDecl>(D) ||
-      isa<ObjCPropertyImplDecl>(D) || isa<ConceptDecl>(D))
+  if (isa<TypedefNameDecl>(D) ||
+      isa<EnumConstantDecl>(D) ||
+      isa<FieldDecl>(D) ||
+      isa<MSPropertyDecl>(D) ||
+      isa<ObjCImplDecl>(D) ||
+      isa<ObjCPropertyImplDecl>(D))
     return true;
 
   return false;

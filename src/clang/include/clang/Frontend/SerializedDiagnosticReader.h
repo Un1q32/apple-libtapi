@@ -65,9 +65,6 @@ public:
   /// Read the diagnostics in \c File
   std::error_code readDiagnostics(StringRef File);
 
-  /// Read the diagnostics in \c Buffer.
-  std::error_code readDiagnostics(llvm::MemoryBufferRef Buffer);
-
 private:
   enum class Cursor;
 
@@ -109,16 +106,6 @@ protected:
   virtual std::error_code visitFilenameRecord(unsigned ID, unsigned Size,
                                               unsigned Timestamp,
                                               StringRef Name) {
-    return {};
-  }
-
-  /// Visit file contents. This associates the file's \c ID with the
-  /// contents of
-  virtual std::error_code visitSourceFileContentsRecord(
-      unsigned ID,
-      const Location &OriginalStartLoc,
-      const Location &OriginalEndLoc,
-      StringRef Contents) {
     return {};
   }
 

@@ -46,20 +46,20 @@ enum class DiagnosticLevelMask : unsigned {
 };
 
 inline DiagnosticLevelMask operator~(DiagnosticLevelMask M) {
-  using UT = std::underlying_type_t<DiagnosticLevelMask>;
+  using UT = std::underlying_type<DiagnosticLevelMask>::type;
   return static_cast<DiagnosticLevelMask>(~static_cast<UT>(M));
 }
 
 inline DiagnosticLevelMask operator|(DiagnosticLevelMask LHS,
                                      DiagnosticLevelMask RHS) {
-  using UT = std::underlying_type_t<DiagnosticLevelMask>;
+  using UT = std::underlying_type<DiagnosticLevelMask>::type;
   return static_cast<DiagnosticLevelMask>(
     static_cast<UT>(LHS) | static_cast<UT>(RHS));
 }
 
 inline DiagnosticLevelMask operator&(DiagnosticLevelMask LHS,
                                      DiagnosticLevelMask RHS) {
-  using UT = std::underlying_type_t<DiagnosticLevelMask>;
+  using UT = std::underlying_type<DiagnosticLevelMask>::type;
   return static_cast<DiagnosticLevelMask>(
     static_cast<UT>(LHS) & static_cast<UT>(RHS));
 }
@@ -74,7 +74,7 @@ class DiagnosticOptions : public RefCountedBase<DiagnosticOptions>{
   friend class CompilerInvocation;
 
 public:
-  enum TextDiagnosticFormat { Clang, MSVC, Vi, SARIF };
+  enum TextDiagnosticFormat { Clang, MSVC, Vi };
 
   // Default values.
   enum {
@@ -121,10 +121,6 @@ public:
   /// The prefixes for comment directives sought by -verify ("expected" by
   /// default).
   std::vector<std::string> VerifyPrefixes;
-
-  /// The list of -Wsystem-header-in-module=... options used to override
-  /// whether -Wsystem-headers is enabled on a per-module basis.
-  std::vector<std::string> SystemHeaderWarningsModules;
 
 public:
   // Define accessors/mutators for diagnostic options of enumeration type.

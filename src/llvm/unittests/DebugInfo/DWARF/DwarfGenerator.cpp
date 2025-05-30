@@ -26,10 +26,10 @@
 #include "llvm/MC/MCStreamer.h"
 #include "llvm/MC/MCSubtargetInfo.h"
 #include "llvm/MC/MCTargetOptionsCommandFlags.h"
-#include "llvm/MC/TargetRegistry.h"
 #include "llvm/Pass.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/LEB128.h"
+#include "llvm/Support/TargetRegistry.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Target/TargetLoweringObjectFile.h"
 #include "llvm/Target/TargetMachine.h"
@@ -47,8 +47,8 @@ namespace {} // end anonymous namespace
 //===----------------------------------------------------------------------===//
 unsigned dwarfgen::DIE::computeSizeAndOffsets(unsigned Offset) {
   auto &DG = CU->getGenerator();
-  return Die->computeOffsetsAndAbbrevs(DG.getAsmPrinter()->getDwarfFormParams(),
-                                       DG.getAbbrevSet(), Offset);
+  return Die->computeOffsetsAndAbbrevs(DG.getAsmPrinter(), DG.getAbbrevSet(),
+                                       Offset);
 }
 
 void dwarfgen::DIE::addAttribute(uint16_t A, dwarf::Form Form, uint64_t U) {
@@ -112,7 +112,7 @@ void dwarfgen::DIE::addAttribute(uint16_t A, dwarf::Form Form, const void *P,
         DIEInteger(
             (const_cast<uint8_t *>(static_cast<const uint8_t *>(P)))[I]));
 
-  Block->computeSize(DG.getAsmPrinter()->getDwarfFormParams());
+  Block->ComputeSize(DG.getAsmPrinter());
   Die->addValue(DG.getAllocator(), static_cast<dwarf::Attribute>(A), Form,
                 Block);
 }
@@ -336,13 +336,15 @@ static void writeCString(StringRef Str, AsmPrinter &Asm) {
 
 static void writeV2IncludeAndFileTable(const DWARFDebugLine::Prologue &Prologue,
                                        AsmPrinter &Asm) {
-  for (auto Include : Prologue.IncludeDirectories)
-    writeCString(*toString(Include), Asm);
-
+  for (auto Include : Prologue.IncludeDirectories) {
+    assert(Include.getAsCString() && "expected a string form for include dir");
+    writeCString(*Include.getAsCString(), Asm);
+  }
   Asm.emitInt8(0);
 
   for (auto File : Prologue.FileNames) {
-    writeCString(*toString(File.Name), Asm);
+    assert(File.Name.getAsCString() && "expected a string form for file name");
+    writeCString(*File.Name.getAsCString(), Asm);
     Asm.emitULEB128(File.DirIdx);
     Asm.emitULEB128(File.ModTime);
     Asm.emitULEB128(File.Length);
@@ -358,8 +360,10 @@ static void writeV5IncludeAndFileTable(const DWARFDebugLine::Prologue &Prologue,
   Asm.emitULEB128(DW_LNCT_path);
   Asm.emitULEB128(DW_FORM_string);
   Asm.emitULEB128(Prologue.IncludeDirectories.size());
-  for (auto Include : Prologue.IncludeDirectories)
-    writeCString(*toString(Include), Asm);
+  for (auto Include : Prologue.IncludeDirectories) {
+    assert(Include.getAsCString() && "expected a string form for include dir");
+    writeCString(*Include.getAsCString(), Asm);
+  }
 
   Asm.emitInt8(2); // file_name_entry_format_count.
   Asm.emitULEB128(DW_LNCT_path);
@@ -368,7 +372,8 @@ static void writeV5IncludeAndFileTable(const DWARFDebugLine::Prologue &Prologue,
   Asm.emitULEB128(DW_FORM_data1);
   Asm.emitULEB128(Prologue.FileNames.size());
   for (auto File : Prologue.FileNames) {
-    writeCString(*toString(File.Name), Asm);
+    assert(File.Name.getAsCString() && "expected a string form for file name");
+    writeCString(*File.Name.getAsCString(), Asm);
     Asm.emitInt8(File.DirIdx);
   }
 }
@@ -464,7 +469,7 @@ llvm::Error dwarfgen::Generator::init(Triple TheTriple, uint16_t V) {
   TLOF->Initialize(*MC, *TM);
   MC->setObjectFileInfo(TLOF);
 
-  MCE = TheTarget->createMCCodeEmitter(*MII, *MC);
+  MCE = TheTarget->createMCCodeEmitter(*MII, *MRI, *MC);
   if (!MCE)
     return make_error<StringError>("no code emitter for target " + TripleName,
                                    inconvertibleErrorCode());
@@ -521,7 +526,7 @@ StringRef dwarfgen::Generator::generate() {
   StringPool->emit(*Asm, TLOF->getDwarfStrSection(),
                    TLOF->getDwarfStrOffSection());
 
-  MS->switchSection(TLOF->getDwarfInfoSection());
+  MS->SwitchSection(TLOF->getDwarfInfoSection());
   for (auto &CU : CompileUnits) {
     uint16_t Version = CU->getVersion();
     auto Length = CU->getLength();
@@ -540,11 +545,11 @@ StringRef dwarfgen::Generator::generate() {
     Asm->emitDwarfDIE(*CU->getUnitDIE().Die);
   }
 
-  MS->switchSection(TLOF->getDwarfLineSection());
+  MS->SwitchSection(TLOF->getDwarfLineSection());
   for (auto &LT : LineTables)
     LT->generate(*MC, *Asm);
 
-  MS->finish();
+  MS->Finish();
   if (FileBytes.empty())
     return StringRef();
   return StringRef(FileBytes.data(), FileBytes.size());

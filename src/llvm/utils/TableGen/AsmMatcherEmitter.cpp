@@ -95,7 +95,6 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "CodeGenInstruction.h"
 #include "CodeGenTarget.h"
 #include "SubtargetFeatureInfo.h"
 #include "Types.h"
@@ -595,9 +594,8 @@ struct MatchableInfo {
   /// findAsmOperandNamed - Find the first AsmOperand with the specified name.
   /// This does not check the suboperand index.
   int findAsmOperandNamed(StringRef N, int LastIdx = -1) const {
-    auto I =
-        llvm::find_if(llvm::drop_begin(AsmOperands, LastIdx + 1),
-                      [&](const AsmOperand &Op) { return Op.SrcOpName == N; });
+    auto I = std::find_if(AsmOperands.begin() + LastIdx + 1, AsmOperands.end(),
+                     [&](const AsmOperand &Op) { return Op.SrcOpName == N; });
     return (I != AsmOperands.end()) ? I - AsmOperands.begin() : -1;
   }
 
@@ -637,15 +635,6 @@ struct MatchableInfo {
     // requires V6 while MOV does not.
     if (RequiredFeatures.size() != RHS.RequiredFeatures.size())
       return RequiredFeatures.size() > RHS.RequiredFeatures.size();
-
-    // For X86 AVX/AVX512 instructions, we prefer vex encoding because the
-    // vex encoding size is smaller. Since X86InstrSSE.td is included ahead
-    // of X86InstrAVX512.td, the AVX instruction ID is less than AVX512 ID.
-    // We use the ID to sort AVX instruction before AVX512 instruction in
-    // matching table.
-    if (TheDef->isSubClassOf("Instruction") &&
-        TheDef->getValueAsBit("HasPositionOrder"))
-      return TheDef->getID() < RHS.TheDef->getID();
 
     return false;
   }
@@ -1073,7 +1062,7 @@ bool MatchableInfo::validate(StringRef CommentDelimiter, bool IsAlias) const {
   // Remove comments from the asm string.  We know that the asmstring only
   // has one line.
   if (!CommentDelimiter.empty() &&
-      StringRef(AsmString).contains(CommentDelimiter))
+      StringRef(AsmString).find(CommentDelimiter) != StringRef::npos)
     PrintFatalError(TheDef->getLoc(),
                   "asmstring for instruction has comment character in it, "
                   "mark it isCodeGenOnly");
@@ -1088,7 +1077,7 @@ bool MatchableInfo::validate(StringRef CommentDelimiter, bool IsAlias) const {
   std::set<std::string> OperandNames;
   for (const AsmOperand &Op : AsmOperands) {
     StringRef Tok = Op.Token;
-    if (Tok[0] == '$' && Tok.contains(':'))
+    if (Tok[0] == '$' && Tok.find(':') != StringRef::npos)
       PrintFatalError(TheDef->getLoc(),
                       "matchable with operand modifier '" + Tok +
                       "' not supported by asm matcher.  Mark isCodeGenOnly!");
@@ -3396,7 +3385,7 @@ void AsmMatcherEmitter::run(raw_ostream &OS) {
                         StringTable.GetOrAddStringOffset(LenMnemonic, false));
   }
 
-  OS << "static const char MnemonicTable[] =\n";
+  OS << "static const char *const MnemonicTable =\n";
   StringTable.EmitString(OS);
   OS << ";\n\n";
 
@@ -3926,7 +3915,8 @@ void AsmMatcherEmitter::run(raw_ostream &OS) {
 
   if (HasDeprecation) {
     OS << "    std::string Info;\n";
-    OS << "    if (!getParser().getTargetParser().getTargetOptions().MCNoDeprecatedWarn &&\n";
+    OS << "    if (!getParser().getTargetParser().\n";
+    OS << "        getTargetOptions().MCNoDeprecatedWarn &&\n";
     OS << "        MII.getDeprecatedInfo(Inst, getSTI(), Info)) {\n";
     OS << "      SMLoc Loc = ((" << Target.getName()
        << "Operand &)*Operands[0]).getStartLoc();\n";

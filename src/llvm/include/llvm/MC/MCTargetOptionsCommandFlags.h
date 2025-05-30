@@ -20,7 +20,6 @@
 namespace llvm {
 
 class MCTargetOptions;
-enum class EmitDwarfUnwindType;
 
 namespace mc {
 
@@ -33,8 +32,6 @@ int getDwarfVersion();
 
 bool getDwarf64();
 
-EmitDwarfUnwindType getEmitDwarfUnwind();
-
 bool getShowMCInst();
 
 bool getFatalWarnings();
@@ -46,8 +43,6 @@ bool getNoDeprecatedWarn();
 bool getNoTypeCheck();
 
 std::string getABIName();
-
-std::string getAsSecureLogFile();
 
 /// Create this object with static storage to register mc-related command
 /// line options.

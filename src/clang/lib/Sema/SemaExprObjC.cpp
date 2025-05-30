@@ -50,7 +50,7 @@ ExprResult Sema::ParseObjCStringLiteral(SourceLocation *AtLocs,
       S = cast<StringLiteral>(E);
 
       // ObjC strings can't be wide or UTF.
-      if (!S->isOrdinary()) {
+      if (!S->isAscii()) {
         Diag(S->getBeginLoc(), diag::err_cfstring_literal_not_string_constant)
             << S->getSourceRange();
         return true;
@@ -70,7 +70,7 @@ ExprResult Sema::ParseObjCStringLiteral(SourceLocation *AtLocs,
     QualType StrTy = Context.getConstantArrayType(
         CAT->getElementType(), llvm::APInt(32, StrBuf.size() + 1), nullptr,
         CAT->getSizeModifier(), CAT->getIndexTypeCVRQualifiers());
-    S = StringLiteral::Create(Context, StrBuf, StringLiteral::Ordinary,
+    S = StringLiteral::Create(Context, StrBuf, StringLiteral::Ascii,
                               /*Pascal=*/false, StrTy, &StrLocs[0],
                               StrLocs.size());
   }
@@ -448,7 +448,7 @@ static ExprResult CheckObjCCollectionLiteralElement(Sema &S, Expr *Element,
     }
     // If this is potentially an Objective-C string literal, add the '@'.
     else if (StringLiteral *String = dyn_cast<StringLiteral>(OrigElement)) {
-      if (String->isOrdinary()) {
+      if (String->isAscii()) {
         S.Diag(OrigElement->getBeginLoc(), diag::err_box_literal_collection)
             << 0 << OrigElement->getSourceRange()
             << FixItHint::CreateInsertion(OrigElement->getBeginLoc(), "@");
@@ -533,7 +533,7 @@ ExprResult Sema::BuildObjCBoxedExpr(SourceRange SR, Expr *ValueExpr) {
         if (CE->getCastKind() == CK_ArrayToPointerDecay)
           if (auto *SL =
                   dyn_cast<StringLiteral>(CE->getSubExpr()->IgnoreParens())) {
-            assert((SL->isOrdinary() || SL->isUTF8()) &&
+            assert((SL->isAscii() || SL->isUTF8()) &&
                    "unexpected character encoding");
             StringRef Str = SL->getString();
             const llvm::UTF8 *StrBegin = Str.bytes_begin();
@@ -1280,11 +1280,11 @@ static ObjCMethodDecl *findMethodInCurrentClass(Sema &S, Selector Sel) {
   // whether Sel is potentially direct in this context.
   if (ObjCMethodDecl *MD = IFace->lookupMethod(Sel, /*isInstance=*/true))
     return MD;
-  if (ObjCMethodDecl *MD = IFace->lookupPrivateMethod(Sel, /*Instance=*/true))
+  if (ObjCMethodDecl *MD = IFace->lookupPrivateMethod(Sel, /*isInstance=*/true))
     return MD;
   if (ObjCMethodDecl *MD = IFace->lookupMethod(Sel, /*isInstance=*/false))
     return MD;
-  if (ObjCMethodDecl *MD = IFace->lookupPrivateMethod(Sel, /*Instance=*/false))
+  if (ObjCMethodDecl *MD = IFace->lookupPrivateMethod(Sel, /*isInstance=*/false))
     return MD;
 
   return nullptr;
@@ -3768,7 +3768,7 @@ static void addFixitForObjCARCConversion(
 
         SourceManager &SM = S.getSourceManager();
         char PrevChar = *SM.getCharacterData(range.getBegin().getLocWithOffset(-1));
-        if (Lexer::isAsciiIdentifierContinueChar(PrevChar, S.getLangOpts()))
+        if (Lexer::isIdentifierBodyChar(PrevChar, S.getLangOpts()))
           BridgeCall += ' ';
 
         BridgeCall += CFBridgeName;
@@ -3786,7 +3786,7 @@ static void addFixitForObjCARCConversion(
 
     SourceManager &SM = S.getSourceManager();
     char PrevChar = *SM.getCharacterData(range.getBegin().getLocWithOffset(-1));
-    if (Lexer::isAsciiIdentifierContinueChar(PrevChar, S.getLangOpts()))
+    if (Lexer::isIdentifierBodyChar(PrevChar, S.getLangOpts()))
       BridgeCall += ' ';
 
     BridgeCall += CFBridgeName;
@@ -3856,7 +3856,7 @@ static inline T *getObjCBridgeAttr(const TypedefType *TD) {
 
 static ObjCBridgeRelatedAttr *ObjCBridgeRelatedAttrFromType(QualType T,
                                                             TypedefNameDecl *&TDNDecl) {
-  while (const auto *TD = T->getAs<TypedefType>()) {
+  while (const TypedefType *TD = dyn_cast<TypedefType>(T.getTypePtr())) {
     TDNDecl = TD->getDecl();
     if (ObjCBridgeRelatedAttr *ObjCBAttr =
         getObjCBridgeAttr<ObjCBridgeRelatedAttr>(TD))
@@ -4003,7 +4003,7 @@ static bool CheckObjCBridgeNSCast(Sema &S, QualType castType, Expr *castExpr,
                                   bool &HadTheAttribute, bool warn) {
   QualType T = castExpr->getType();
   HadTheAttribute = false;
-  while (const auto *TD = T->getAs<TypedefType>()) {
+  while (const TypedefType *TD = dyn_cast<TypedefType>(T.getTypePtr())) {
     TypedefNameDecl *TDNDecl = TD->getDecl();
     if (TB *ObjCBAttr = getObjCBridgeAttr<TB>(TD)) {
       if (IdentifierInfo *Parm = ObjCBAttr->getBridgedType()) {
@@ -4011,11 +4011,12 @@ static bool CheckObjCBridgeNSCast(Sema &S, QualType castType, Expr *castExpr,
         if (Parm->isStr("id"))
           return true;
 
+        NamedDecl *Target = nullptr;
         // Check for an existing type with this name.
         LookupResult R(S, DeclarationName(Parm), SourceLocation(),
                        Sema::LookupOrdinaryName);
         if (S.LookupName(R, S.TUScope)) {
-          NamedDecl *Target = R.getFoundDecl();
+          Target = R.getFoundDecl();
           if (Target && isa<ObjCInterfaceDecl>(Target)) {
             ObjCInterfaceDecl *ExprClass = cast<ObjCInterfaceDecl>(Target);
             if (const ObjCObjectPointerType *InterfacePointerType =
@@ -4051,6 +4052,8 @@ static bool CheckObjCBridgeNSCast(Sema &S, QualType castType, Expr *castExpr,
                  diag::err_objc_cf_bridged_not_interface)
               << castExpr->getType() << Parm;
           S.Diag(TDNDecl->getBeginLoc(), diag::note_declared_at);
+          if (Target)
+            S.Diag(Target->getBeginLoc(), diag::note_declared_at);
         }
         return true;
       }
@@ -4066,7 +4069,7 @@ static bool CheckObjCBridgeCFCast(Sema &S, QualType castType, Expr *castExpr,
                                   bool &HadTheAttribute, bool warn) {
   QualType T = castType;
   HadTheAttribute = false;
-  while (const auto *TD = T->getAs<TypedefType>()) {
+  while (const TypedefType *TD = dyn_cast<TypedefType>(T.getTypePtr())) {
     TypedefNameDecl *TDNDecl = TD->getDecl();
     if (TB *ObjCBAttr = getObjCBridgeAttr<TB>(TD)) {
       if (IdentifierInfo *Parm = ObjCBAttr->getBridgedType()) {

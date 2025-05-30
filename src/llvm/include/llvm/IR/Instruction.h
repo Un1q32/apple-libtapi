@@ -24,6 +24,9 @@
 #include "llvm/IR/User.h"
 #include "llvm/IR/Value.h"
 #include "llvm/Support/AtomicOrdering.h"
+#include "llvm/Support/Casting.h"
+#include <algorithm>
+#include <cassert>
 #include <cstdint>
 #include <utility>
 
@@ -56,11 +59,11 @@ protected:
   // Template alias so that all Instruction storing alignment use the same
   // definiton.
   // Valid alignments are powers of two from 2^0 to 2^MaxAlignmentExponent =
-  // 2^32. We store them as Log2(Alignment), so we need 6 bits to encode the 33
+  // 2^29. We store them as Log2(Alignment), so we need 5 bits to encode the 30
   // possible values.
   template <unsigned Offset>
   using AlignmentBitfieldElementT =
-      typename Bitfield::Element<unsigned, Offset, 6,
+      typename Bitfield::Element<unsigned, Offset, 5,
                                  Value::MaxAlignmentExponent>;
 
   template <unsigned Offset>
@@ -149,13 +152,6 @@ public:
   /// it takes constant time.
   bool comesBefore(const Instruction *Other) const;
 
-  /// Get the first insertion point at which the result of this instruction
-  /// is defined. This is *not* the directly following instruction in a number
-  /// of cases, e.g. phi nodes or terminators that return values. This function
-  /// may return null if the insertion after the definition is not possible,
-  /// e.g. due to a catchswitch terminator.
-  Instruction *getInsertionPointAfterDef();
-
   //===--------------------------------------------------------------------===//
   // Subclass classification.
   //===--------------------------------------------------------------------===//
@@ -178,6 +174,10 @@ public:
   /// It checks if this instruction is the only user of at least one of
   /// its operands.
   bool isOnlyUserOfAnyOperand();
+
+  bool isIndirectTerminator() const {
+    return isIndirectTerminator(getOpcode());
+  }
 
   static const char* getOpcodeName(unsigned OpCode);
 
@@ -245,6 +245,17 @@ public:
     }
   }
 
+  /// Returns true if the OpCode is a terminator with indirect targets.
+  static inline bool isIndirectTerminator(unsigned OpCode) {
+    switch (OpCode) {
+    case Instruction::IndirectBr:
+    case Instruction::CallBr:
+      return true;
+    default:
+      return false;
+    }
+  }
+
   //===--------------------------------------------------------------------===//
   // Metadata manipulation.
   //===--------------------------------------------------------------------===//
@@ -296,6 +307,11 @@ public:
     Value::getAllMetadata(MDs);
   }
 
+  /// Fills the AAMDNodes structure with AA metadata from this instruction.
+  /// When Merge is true, the existing AA metadata is merged with that from this
+  /// instruction providing the most-general result.
+  void getAAMetadata(AAMDNodes &N, bool Merge = false) const;
+
   /// Set the metadata of the specified kind to the specified node. This updates
   /// or replaces metadata if already present, or removes it if Node is null.
   void setMetadata(unsigned KindID, MDNode *Node);
@@ -316,8 +332,6 @@ public:
   /// @{
   /// Passes are required to drop metadata they don't understand. This is a
   /// convenience method for passes to do so.
-  /// dropUndefImplyingAttrsAndUnknownMetadata should be used instead of
-  /// this API if the Instruction being modified is a call.
   void dropUnknownNonDebugMetadata(ArrayRef<unsigned> KnownIDs);
   void dropUnknownNonDebugMetadata() {
     return dropUnknownNonDebugMetadata(None);
@@ -336,11 +350,13 @@ public:
   /// to the existing node.
   void addAnnotationMetadata(StringRef Annotation);
 
-  /// Returns the AA metadata for this instruction.
-  AAMDNodes getAAMetadata() const;
-
-  /// Sets the AA metadata on this instruction from the AAMDNodes structure.
+  /// Sets the metadata on this instruction from the AAMDNodes structure.
   void setAAMetadata(const AAMDNodes &N);
+
+  /// Retrieve the raw weight values of a conditional branch or select.
+  /// Returns true on success with profile weights filled in.
+  /// Returns false if no metadata or invalid metadata was found.
+  bool extractProfMetadata(uint64_t &TrueVal, uint64_t &FalseVal) const;
 
   /// Retrieve total raw weight values of a branch.
   /// Returns true on success with profile total weights filled in.
@@ -371,20 +387,9 @@ public:
   /// Determine whether the no signed wrap flag is set.
   bool hasNoSignedWrap() const;
 
-  /// Return true if this operator has flags which may cause this instruction
-  /// to evaluate to poison despite having non-poison inputs.
-  bool hasPoisonGeneratingFlags() const;
-
   /// Drops flags that may cause this instruction to evaluate to poison despite
   /// having non-poison inputs.
   void dropPoisonGeneratingFlags();
-
-  /// This function drops non-debug unknown metadata (through
-  /// dropUnknownNonDebugMetadata). For calls, it also drops parameter and 
-  /// return attributes that can cause undefined behaviour. Both of these should
-  /// be done by passes which move instructions in IR.
-  void
-  dropUndefImplyingAttrsAndUnknownMetadata(ArrayRef<unsigned> KnownIDs = {});
 
   /// Determine whether the exact flag is set.
   bool isExact() const;

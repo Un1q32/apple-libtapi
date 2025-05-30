@@ -14,7 +14,7 @@
 
 #include "llvm/CodeGen/GlobalISel/Legalizer.h"
 #include "llvm/ADT/PostOrderIterator.h"
-#include "llvm/Analysis/OptimizationRemarkEmitter.h"
+#include "llvm/ADT/SetVector.h"
 #include "llvm/CodeGen/GlobalISel/CSEInfo.h"
 #include "llvm/CodeGen/GlobalISel/CSEMIRBuilder.h"
 #include "llvm/CodeGen/GlobalISel/GISelChangeObserver.h"
@@ -24,11 +24,15 @@
 #include "llvm/CodeGen/GlobalISel/LostDebugLocObserver.h"
 #include "llvm/CodeGen/GlobalISel/Utils.h"
 #include "llvm/CodeGen/MachineOptimizationRemarkEmitter.h"
+#include "llvm/CodeGen/MachineRegisterInfo.h"
 #include "llvm/CodeGen/TargetPassConfig.h"
 #include "llvm/CodeGen/TargetSubtargetInfo.h"
 #include "llvm/InitializePasses.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/Error.h"
+#include "llvm/Target/TargetMachine.h"
+
+#include <iterator>
 
 #define DEBUG_TYPE "legalizer"
 
@@ -214,6 +218,9 @@ Legalizer::legalizeMachineFunction(MachineFunction &MF, const LegalizerInfo &LI,
   RAIIMFObsDelInstaller Installer(MF, WrapperObserver);
   LegalizerHelper Helper(MF, LI, WrapperObserver, MIRBuilder);
   LegalizationArtifactCombiner ArtCombiner(MIRBuilder, MRI, LI);
+  auto RemoveDeadInstFromLists = [&WrapperObserver](MachineInstr *DeadMI) {
+    WrapperObserver.erasingInstr(*DeadMI);
+  };
   bool Changed = false;
   SmallVector<MachineInstr *, 128> RetryList;
   do {
@@ -225,8 +232,9 @@ Legalizer::legalizeMachineFunction(MachineFunction &MF, const LegalizerInfo &LI,
       assert(isPreISelGenericOpcode(MI.getOpcode()) &&
              "Expecting generic opcode");
       if (isTriviallyDead(MI, MRI)) {
-        salvageDebugInfo(MRI, MI);
-        eraseInstr(MI, MRI, &LocObserver);
+        LLVM_DEBUG(dbgs() << MI << "Is dead; erasing.\n");
+        MI.eraseFromParentAndMarkDBGValuesForRemoval();
+        LocObserver.checkpoint(false);
         continue;
       }
 
@@ -273,8 +281,10 @@ Legalizer::legalizeMachineFunction(MachineFunction &MF, const LegalizerInfo &LI,
       assert(isPreISelGenericOpcode(MI.getOpcode()) &&
              "Expecting generic opcode");
       if (isTriviallyDead(MI, MRI)) {
-        salvageDebugInfo(MRI, MI);
-        eraseInstr(MI, MRI, &LocObserver);
+        LLVM_DEBUG(dbgs() << MI << "Is dead\n");
+        RemoveDeadInstFromLists(&MI);
+        MI.eraseFromParentAndMarkDBGValuesForRemoval();
+        LocObserver.checkpoint(false);
         continue;
       }
       SmallVector<MachineInstr *, 4> DeadInstructions;
@@ -282,7 +292,11 @@ Legalizer::legalizeMachineFunction(MachineFunction &MF, const LegalizerInfo &LI,
       if (ArtCombiner.tryCombineInstruction(MI, DeadInstructions,
                                             WrapperObserver)) {
         WorkListObserver.printNewInstrs();
-        eraseInstrs(DeadInstructions, MRI, &LocObserver);
+        for (auto *DeadMI : DeadInstructions) {
+          LLVM_DEBUG(dbgs() << "Is dead: " << *DeadMI);
+          RemoveDeadInstFromLists(DeadMI);
+          DeadMI->eraseFromParentAndMarkDBGValuesForRemoval();
+        }
         LocObserver.checkpoint(
             VerifyDebugLocs ==
             DebugLocVerifyLevel::LegalizationsAndArtifactCombiners);
